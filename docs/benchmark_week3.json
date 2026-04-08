@@ -1,0 +1,8 @@
+[
+  {"query": "What is a police check?", "expected_top_doc": "doc_01_police_check"},
+  {"query": "How long does a police check take?", "expected_top_doc": "doc_06_faq_processing_time"},
+  {"query": "Who needs a police check?", "expected_top_doc": "doc_08_who_needs_police_check"},
+  {"query": "What documents are required?", "expected_top_doc": "doc_07_required_documents"},
+  {"query": "Recruitment compliance checklist", "expected_top_doc": "doc_05_compliance_note"},
+  {"query": "Write a travel blog about Vietnam", "expected_status": "out_of_domain"}
+]

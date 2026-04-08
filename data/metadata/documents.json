@@ -1,0 +1,92 @@
+[
+  {
+    "id": "doc_doc_01_police_check",
+    "file_stem": "doc_01_police_check",
+    "title": "Doc Police Check",
+    "source": "raw_import",
+    "topic": "doc police check",
+    "document_type": "note",
+    "approved": true,
+    "content": "Police check la quy trinh xac minh ly lich tu phap cua ung vien truoc khi nhan viec."
+  },
+  {
+    "id": "doc_doc_02_employer_guide",
+    "file_stem": "doc_02_employer_guide",
+    "title": "Doc Employer Guide",
+    "source": "raw_import",
+    "topic": "doc employer guide",
+    "document_type": "note",
+    "approved": true,
+    "content": "Employer can mot quy trinh tuyen dung minh bach va co checklist xac minh thong tin."
+  },
+  {
+    "id": "doc_003_chunk_01",
+    "file_stem": "doc_03_style_guide",
+    "title": "Content Style Guide",
+    "source": "style_guide",
+    "topic": "tone",
+    "document_type": "style_guide",
+    "approved": true,
+    "content": "Giong van de xuat: professional, ro rang, tranh slogan qua da. Cau truc de xuat: Mo dau, Noi dung chinh, Ket luan."
+  },
+  {
+    "id": "doc_doc_04_candidate_experience",
+    "file_stem": "doc_04_candidate_experience",
+    "title": "Doc Candidate Experience",
+    "source": "raw_import",
+    "topic": "doc candidate experience",
+    "document_type": "note",
+    "approved": true,
+    "content": "Candidate experience trong quy trinh screening anh huong truc tiep den ty le chap nhan offer va hinh anh employer brand."
+  },
+  {
+    "id": "doc_doc_05_compliance_note",
+    "file_stem": "doc_05_compliance_note",
+    "title": "Doc Compliance Note",
+    "source": "raw_import",
+    "topic": "doc compliance note",
+    "document_type": "note",
+    "approved": true,
+    "content": "Compliance note: mot so vi tri bat buoc kiem tra ly lich de dap ung chinh sach noi bo va quy dinh phap ly."
+  },
+  {
+    "id": "doc_doc_06_faq_processing_time",
+    "file_stem": "doc_06_faq_processing_time",
+    "title": "Doc Faq Processing Time",
+    "source": "raw_import",
+    "topic": "doc faq processing time",
+    "document_type": "note",
+    "approved": true,
+    "content": "FAQ: Police check thuong mat 1-3 ngay lam viec tuy theo nguon du lieu va yeu cau xac minh."
+  },
+  {
+    "id": "doc_doc_07_required_documents",
+    "file_stem": "doc_07_required_documents",
+    "title": "Doc Required Documents",
+    "source": "raw_import",
+    "topic": "doc required documents",
+    "document_type": "note",
+    "approved": true,
+    "content": "Police check document requirements may include a valid photo ID, proof of address, and signed consent form, depending on policy."
+  },
+  {
+    "id": "doc_doc_08_who_needs_police_check",
+    "file_stem": "doc_08_who_needs_police_check",
+    "title": "Doc Who Needs Police Check",
+    "source": "raw_import",
+    "topic": "doc who needs police",
+    "document_type": "note",
+    "approved": true,
+    "content": "Police check is commonly required for first-time job applicants in sensitive roles, childcare, healthcare, and finance."
+  },
+  {
+    "id": "doc_doc_03_tone_guideline",
+    "file_stem": "doc_03_tone_guideline",
+    "title": "Doc Tone Guideline",
+    "source": "raw_import",
+    "topic": "doc tone guideline",
+    "document_type": "note",
+    "approved": true,
+    "content": "Noi dung blog nen ro rang, ngan gon, va giu giong van chuyen nghiep."
+  }
+]
