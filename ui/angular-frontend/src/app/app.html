@@ -1,0 +1,178 @@
+﻿<div class="sentinel-layout" [class.dark-mode]="darkMode">
+  <aside class="side-nav">
+    <div class="brand-block">
+      <h2>{{ title }}</h2>
+      <p>Intelligence Briefing</p>
+    </div>
+
+    <nav class="menu-links">
+      <a href="#"><span class="material-symbols-outlined">edit_note</span> New Brief</a>
+      <a href="#"><span class="material-symbols-outlined">history</span> History</a>
+      <a href="#"><span class="material-symbols-outlined">folder_special</span> Saved Reports</a>
+      <a href="#"><span class="material-symbols-outlined">settings</span> Settings</a>
+    </nav>
+
+    <div class="side-actions">
+      <button class="btn primary" type="button" (click)="clearSession()">New Production</button>
+      <a href="#"><span class="material-symbols-outlined">menu_book</span> Documentation</a>
+    </div>
+  </aside>
+
+  <div class="workspace-shell">
+    <header class="top-nav">
+      <div class="top-nav-left">
+        <h1>Editorial Sentinel</h1>
+        <p>AI Blog Generator</p>
+      </div>
+
+      <nav class="top-links">
+        <a href="#">Dashboard</a>
+        <a href="#" class="active">Templates</a>
+        <a href="#">Analytics</a>
+      </nav>
+
+      <div class="top-actions">
+        <button class="btn ghost top-btn" type="button">Upgrade</button>
+        <button class="icon-btn" type="button" (click)="toggleDarkMode()" [title]="darkMode ? 'Switch to light mode' : 'Switch to dark mode'">
+          <span class="material-symbols-outlined">{{ darkMode ? 'light_mode' : 'dark_mode' }}</span>
+        </button>
+        <button class="icon-btn" type="button" title="Notifications">
+          <span class="material-symbols-outlined">notifications</span>
+        </button>
+        <button class="icon-btn" type="button" title="Help">
+          <span class="material-symbols-outlined">help</span>
+        </button>
+        <div class="status-pill" [class.ok]="apiReady" [class.bad]="!apiReady">
+          API {{ apiReady ? 'Connected' : 'Disconnected' }}
+        </div>
+      </div>
+    </header>
+
+    <main class="content-shell">
+      <section class="config-panel">
+        <div class="panel-head">
+          <h3>Configuration</h3>
+          <p>Define editorial parameters for your AI briefing.</p>
+        </div>
+
+        <div class="field-group">
+          <label for="blogPrompt">Blog Prompt</label>
+          <textarea
+            #promptInput
+            id="blogPrompt"
+            [(ngModel)]="prompt"
+            [disabled]="loading"
+            (keydown)="onPromptKeydown($event)"
+            placeholder="Describe the topic, scope, and desired outcome"
+          ></textarea>
+        </div>
+
+        <div class="field-grid">
+          <div class="field-group">
+            <label for="tone">Tone</label>
+            <select id="tone" [(ngModel)]="selectedTone" [disabled]="loading">
+              <option>Professional</option>
+              <option>Informative</option>
+              <option>Technical</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label for="wordCount">Word Count</label>
+            <select id="wordCount" [(ngModel)]="selectedWordCount" [disabled]="loading">
+              <option>800 Words</option>
+              <option>1200 Words</option>
+              <option>2000 Words</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label for="audience">Target Audience</label>
+          <select id="audience" [(ngModel)]="selectedAudience" [disabled]="loading">
+            <option>HR Professionals</option>
+            <option>Legal Compliance Teams</option>
+            <option>Business Owners</option>
+          </select>
+        </div>
+
+        <div class="field-group">
+          <label for="imageUrl">Reference Image URL (optional)</label>
+          <div class="inline-row">
+            <input
+              id="imageUrl"
+              [(ngModel)]="referenceImageUrl"
+              [disabled]="loading"
+              placeholder="https://images.example.com/hero.jpg"
+            />
+            <button class="btn ghost" type="button" (click)="applyImagePromptTemplate()" [disabled]="loading">
+              Use Template
+            </button>
+          </div>
+        </div>
+
+        <div class="sample-prompts">
+          <p>Sample prompts</p>
+          <button class="btn sample" *ngFor="let sample of samplePrompts" (click)="usePromptTemplate(sample)">
+            {{ sample }}
+          </button>
+        </div>
+
+        <button class="btn generate" (click)="sendPrompt()" [disabled]="loading || !prompt.trim()">
+          {{ loading ? 'Generating...' : 'Generate Blog' }}
+        </button>
+
+        <p class="error" *ngIf="errorMessage">{{ errorMessage }}</p>
+      </section>
+
+      <section class="result-panel">
+        <ng-container *ngIf="latestResponse as result; else emptyResult">
+          <div class="result-top">
+            <div class="result-meta">
+              <span class="success">Success</span>
+              <span>{{ draftedTimeLabel }}</span>
+            </div>
+            <div class="result-actions">
+              <button class="btn icon" type="button" (click)="copyDraft(result)">
+                <span class="material-symbols-outlined">content_copy</span>
+                Copy
+              </button>
+              <button class="btn icon" type="button" (click)="exportDraft(result)">
+                <span class="material-symbols-outlined">upload</span>
+                Export
+              </button>
+            </div>
+          </div>
+
+          <article class="blog-result">
+            <h2>{{ result.generated.title }}</h2>
+
+            <div class="hero-image">
+              <img [src]="referenceImageUrl || heroImageUrl" [alt]="heroImageAlt" loading="eager" decoding="async" />
+            </div>
+
+            <section class="result-block">
+              <h3>Outline</h3>
+              <ul>
+                <li *ngFor="let item of result.generated.outline">{{ item }}</li>
+              </ul>
+            </section>
+
+            <section class="result-block draft-block">
+              <h3>Draft</h3>
+              <p>{{ result.generated.draft }}</p>
+            </section>
+          </article>
+        </ng-container>
+
+        <ng-template #emptyResult>
+          <div class="empty-state">
+            <h2>Ready to Generate</h2>
+            <p>
+              Configure your briefing on the left and click Generate Blog to produce your first editorial draft.
+            </p>
+          </div>
+        </ng-template>
+      </section>
+    </main>
+  </div>
+</div>

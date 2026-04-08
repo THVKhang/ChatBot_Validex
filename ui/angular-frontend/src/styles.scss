@@ -1,0 +1,9 @@
+/* Global reset to prevent accidental horizontal scrollbars. */
+html,
+body {
+	margin: 0;
+	padding: 0;
+	width: 100%;
+	max-width: 100%;
+	overflow-x: hidden;
+}
