@@ -1,0 +1,12 @@
+[
+  {
+    "id": "gen_001",
+    "prompt": "Write a clear and professional blog for first-time job applicants about police check processing time in Australia.",
+    "golden_id": "golden_001"
+  },
+  {
+    "id": "gen_002",
+    "prompt": "Create a practical checklist-style blog for employers on required documents for police checks.",
+    "golden_id": "golden_002"
+  }
+]

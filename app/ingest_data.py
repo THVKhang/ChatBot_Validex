@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 import re
 from typing import Any
@@ -66,8 +67,12 @@ def ingest_raw_documents(
             "title": _title_from_stem(stem),
             "source": source,
             "topic": _topic_from_stem(stem),
+            "jurisdiction": "AU",
+            "authority_score": 0.8,
             "document_type": "note",
             "approved": True,
+            "source_url": "",
+            "last_updated": datetime.now().date().isoformat(),
             "content": cleaned_content,
         }
 

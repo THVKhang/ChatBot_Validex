@@ -8,8 +8,8 @@ from app.retriever import retrieve_with_guard
 
 
 def run_benchmark(
-    benchmark_path: str = "docs/benchmark_week3.json",
-    report_path: str = "docs/week3_benchmark_latest.md",
+    benchmark_path: str = "data/benchmark/retrieval_queries.json",
+    report_path: str = "data/benchmark/retrieval_report.md",
 ) -> dict:
     cases = json.loads(Path(benchmark_path).read_text(encoding="utf-8"))
     rows: list[dict] = []

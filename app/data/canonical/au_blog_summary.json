@@ -1,0 +1,31 @@
+{
+  "targets_total": 6,
+  "targets_allowed": 6,
+  "chunks_total": 5,
+  "changed_urls": 2,
+  "unchanged_urls": 0,
+  "local_pdf_total": 0,
+  "local_pdf_processed": 0,
+  "local_pdf_unchanged": 0,
+  "errors_total": 4,
+  "errors": [
+    {
+      "url": "https://validex.com.au/faqs.html",
+      "error": "empty content"
+    },
+    {
+      "url": "https://validex.com.au/blog",
+      "error": "404 Client Error: Not Found for url: https://validex.com.au/blog"
+    },
+    {
+      "url": "https://www.acic.gov.au/our-services/national-police-checking-service",
+      "error": "HTTPSConnectionPool(host='www.acic.gov.au', port=443): Read timed out. (read timeout=20)"
+    },
+    {
+      "url": "https://www.oaic.gov.au/privacy",
+      "error": "403 Client Error: Forbidden for url: https://www.oaic.gov.au/privacy"
+    }
+  ],
+  "output_jsonl": "data\\canonical\\au_blog_chunks.jsonl",
+  "state_path": "data\\canonical\\source_state.json"
+}

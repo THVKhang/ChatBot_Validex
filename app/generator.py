@@ -1,5 +1,6 @@
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import re
+from urllib.parse import quote_plus
 
 from app.parser import ParsedPrompt
 from app.retriever import RetrievedDoc
@@ -7,10 +8,69 @@ from app.retriever import RetrievedDoc
 
 @dataclass
 class GeneratedBlog:
+    @dataclass
+    class Section:
+        heading: str
+        body: str
+        image_url: str
+        image_alt: str
+
     title: str
     outline: list[str]
     draft: str
     sources_used: list[str]
+    sections: list[Section] = field(default_factory=list)
+
+
+def build_section_image_url(topic: str, heading: str) -> str:
+    query = quote_plus(f"{topic} {heading} professional editorial")
+    return f"https://source.unsplash.com/1600x900/?{query}"
+
+
+def _section_body(parsed: ParsedPrompt, heading: str, snippets: str) -> str:
+    tone_line = parsed.tone.replace("_", " ")
+    return (
+        f"Trong phan \"{heading}\", bai viet tap trung vao nhu cau cua {parsed.audience} "
+        f"voi giong van {tone_line}. Noi dung can ro rang, co tinh hanh dong va de ap dung trong thuc te.\n\n"
+        f"Diem grounding tu tai lieu:\n{snippets}"
+    )
+
+
+def build_sections(parsed: ParsedPrompt, outline: list[str], docs: list[RetrievedDoc]) -> list[GeneratedBlog.Section]:
+    snippets = "\n".join([f"- [{doc.doc_id}] {doc.content[:160]}" for doc in docs[:2]])
+    if not snippets:
+        snippets = "- Chua co tai lieu tham chieu"
+
+    sections: list[GeneratedBlog.Section] = []
+    for raw_heading in outline:
+        heading = raw_heading.split(":", 1)[-1].strip() if ":" in raw_heading else raw_heading.strip()
+        if not heading:
+            continue
+        sections.append(
+            GeneratedBlog.Section(
+                heading=heading,
+                body=_section_body(parsed, heading, snippets),
+                image_url=build_section_image_url(parsed.topic, heading),
+                image_alt=f"{heading} illustration",
+            )
+        )
+    return sections
+
+
+def render_markdown_blog(title: str, sections: list[GeneratedBlog.Section]) -> str:
+    blocks: list[str] = [f"# {title}"]
+    for section in sections:
+        blocks.extend(
+            [
+                "",
+                f"## {section.heading}",
+                "",
+                f"![{section.image_alt}]({section.image_url})",
+                "",
+                section.body,
+            ]
+        )
+    return "\n".join(blocks)
 
 
 def format_title(topic: str) -> str:
@@ -90,78 +150,60 @@ def generate_blog_output(
     if previous_draft:
         previous_excerpt = previous_draft[:350].strip()
 
+    sections = build_sections(parsed, outline, docs)
+    if previous_excerpt:
+        sections.insert(
+            0,
+            GeneratedBlog.Section(
+                heading="Context from Previous Draft",
+                body=f"Tom tat noi dung lien quan tu luot truoc:\n- {previous_excerpt}",
+                image_url=build_section_image_url(parsed.topic, "previous draft context"),
+                image_alt="Previous draft context",
+            ),
+        )
+
     if parsed.intent == "shorten":
-        draft = (
-            f"{clean_title}: police check giup doanh nghiep xac minh thong tin va giam rui ro trong tuyen dung. "
-            f"Cho doi tuong {parsed.audience}, phien ban nay duoc rut gon voi giong van {tone_line}. "
-            "Can lam ro 3 diem: muc dich kiem tra, doi tuong can kiem tra, va bo giay to can chuan bi. "
-            "CTA goi y: lien he team ho tro de nhan checklist trien khai nhanh.\n\n"
-            + (f"Ngu canh tu draft truoc:\n- {previous_excerpt}\n\n" if previous_excerpt else "")
-            + "Ngu canh truy xuat:\n"
-            + f"{source_snippets}"
+        sections = sections[:3]
+    if parsed.length == "long":
+        sections.extend(
+            [
+                GeneratedBlog.Section(
+                    heading="Implementation Checklist",
+                    body=(
+                        f"De trien khai cho {parsed.audience}:\n"
+                        "1) Xac dinh pham vi kiem tra.\n"
+                        "2) Chuan hoa tai lieu bat buoc.\n"
+                        "3) Truyen thong timeline cho ung vien.\n"
+                        "4) Theo doi KPI onboarding va compliance."
+                    ),
+                    image_url=build_section_image_url(parsed.topic, "implementation checklist"),
+                    image_alt="Implementation checklist",
+                )
+            ]
         )
+
+    if not sections:
+        sections = [
+            GeneratedBlog.Section(
+                heading="Overview",
+                body=f"{clean_title} duoc trinh bay theo tone {tone_line} cho {parsed.audience}.",
+                image_url=build_section_image_url(parsed.topic, "overview"),
+                image_alt="Overview image",
+            )
+        ]
+
+    draft = render_markdown_blog(clean_title, sections)
+    if parsed.intent == "shorten":
+        draft = f"> Phien ban rut gon\n\n{draft}"
     elif parsed.intent == "rewrite":
-        draft = (
-            f"Phien ban rewrite cho chu de {clean_title}. Noi dung duoc dieu chinh theo tone {tone_line} "
-            f"va huong den {parsed.audience}.\n\n"
-            "Ban rewrite can giu cau truc ro rang: mo dau dinh nghia, phan giua la use case, ket la hanh dong tiep theo. "
-            "Ngan ngu can nhat quan, tranh lap y, va uu tien thong tin co the ap dung ngay trong onboarding.\n\n"
-            + (f"Ngu canh tu draft truoc:\n- {previous_excerpt}\n\n" if previous_excerpt else "")
-            + "Ngu canh truy xuat:\n"
-            + f"{source_snippets}"
-        )
-    elif parsed.length == "short":
-        draft = (
-            f"{clean_title} la buoc xac minh quan trong trong tuyen dung. "
-            f"Bai viet huong den {parsed.audience} voi giong van {tone_line}, tap trung vao gia tri thuc te va huong dan ngan gon. "
-            "Ban nen neu ro muc dich, thoi gian xu ly, va checklist giay to co ban de nguoi doc hanh dong ngay.\n\n"
-            "Grounded points:\n"
-            f"{grounded_points}\n\n"
-            "Ngu canh truy xuat:\n"
-            f"{source_snippets}"
-        )
-    elif parsed.length == "long":
-        draft = (
-            f"{clean_title} la mot chu de then chot trong quan tri rui ro va quality cua quy trinh tuyen dung. "
-            f"Bai viet nay huong den {parsed.audience}, su dung giong van {tone_line}, va trinh bay theo huong de hieu nhung day du boi canh.\n\n"
-            "Truoc het, police check dong vai tro nhu mot co che xac minh co ban de doanh nghiep giam thieu sai sot trong quyet dinh nhan su. "
-            "Voi cac vi tri nhay cam, day khong chi la buoc ky thuat ma con lien quan den compliance va uy tin to chuc. "
-            "Khi truyen thong dung cach, ung vien se hieu ro day la buoc bao ve ca hai ben thay vi mot thu tuc can tro.\n\n"
-            "Tiep theo, mot bai blog chat luong nen phan tach ro doi tuong can kiem tra, bo giay to can nop, va timeline xu ly du kien. "
-            "Dieu nay giup team backoffice thong nhat thong diep, giam so cau hoi lap lai, va tang toc do onboarding. "
-            "Ngoai ra, bo sung vi du tinh huong thuc te se giup nguoi doc nhanh chong lien he voi cong viec hang ngay.\n\n"
-            "Sau cung, nen ket bai bang mot checklist hanh dong: xac dinh yeu cau theo vai tro, thong bao minh bach cho ung vien, "
-            "theo doi trang thai xu ly, va co dau moi ho tro khi phat sinh vuong mac. "
-            "Voi cach viet nay, noi dung vua dat muc thong tin can thiet vua giu duoc tinh ung dung.\n\n"
-            "Grounded points:\n"
-            f"{grounded_points}\n\n"
-            "Ngu canh truy xuat:\n"
-            f"{source_snippets}"
-        )
-    else:
-        draft = (
-            f"{clean_title} la mot chu de quan trong trong quy trinh tuyen dung va compliance. "
-            f"Bai viet nay huong den doi tuong {parsed.audience}, su dung giong van {tone_line}, "
-            "nham giai thich de hieu va ap dung duoc ngay.\n\n"
-            "Truoc het, police check giup doanh nghiep xac minh thong tin co ban, giam rui ro va tang do tin cay. "
-            "Voi nhung vai tro nhay cam hoac moi truong can tinh an toan cao, buoc nay thuong duoc xem la tieu chuan toi thieu. "
-            "Neu truyen thong khong ro rang, ung vien de bo quy trinh hoac hieu sai muc dich kiem tra.\n\n"
-            "Tiep theo, doanh nghiep nen thong bao ky ve pham vi kiem tra, thoi gian xu ly va cac giay to can thiet. "
-            "Cach trinh bay minh bach se cai thien candidate experience va giam tre han onboarding. "
-            "Doi voi nhan vien backoffice, mot checklist ngan gon giup thong nhat cach huong dan giua cac team.\n\n"
-            "Grounded points:\n"
-            f"{grounded_points}\n\n"
-            "Cuoi cung, noi dung blog nen ket hop dinh nghia, use case thuc te va huong dan hanh dong cu the. "
-            "Ban co the ket bai bang CTA nhu: lien he team ho tro de nhan checklist police check phu hop tung vi tri.\n\n"
-            "Ngu canh truy xuat:\n"
-            f"{source_snippets}"
-        )
+        draft = f"> Rewrite theo tone yeu cau\n\n{draft}"
 
     return GeneratedBlog(
         title=clean_title,
         outline=outline,
         draft=draft,
         sources_used=sources_used,
+        sections=sections,
     )
 
 

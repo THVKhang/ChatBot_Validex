@@ -1,0 +1,21 @@
+[
+  {
+    "query": "What is a police check?",
+    "expected_status": "ok",
+    "expected_top_doc": "doc_01_police_check"
+  },
+  {
+    "query": "How long does a police check take?",
+    "expected_status": "ok",
+    "expected_top_doc": "doc_06_faq_processing_time"
+  },
+  {
+    "query": "What documents are required for a police check?",
+    "expected_status": "ok",
+    "expected_top_doc": "doc_07_required_documents"
+  },
+  {
+    "query": "Write a travel blog about Vietnam",
+    "expected_status": "out_of_domain"
+  }
+]

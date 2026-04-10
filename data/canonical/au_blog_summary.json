@@ -1,0 +1,14 @@
+{
+  "targets_total": 0,
+  "targets_allowed": 0,
+  "chunks_total": 229,
+  "changed_urls": 0,
+  "unchanged_urls": 0,
+  "local_pdf_total": 7,
+  "local_pdf_processed": 0,
+  "local_pdf_unchanged": 7,
+  "errors_total": 0,
+  "errors": [],
+  "output_jsonl": "data\\canonical\\au_blog_chunks.jsonl",
+  "state_path": "data\\canonical\\source_state.json"
+}

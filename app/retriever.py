@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import json
+from datetime import datetime
 from pathlib import Path
 from math import sqrt
 
@@ -29,6 +30,10 @@ class MetadataRecord:
     topic: str
     document_type: str
     approved: bool
+    jurisdiction: str = "AU"
+    authority_score: float = 0.5
+    source_url: str = ""
+    last_updated: str = ""
 
 
 SYNONYM_GROUPS = {
@@ -133,11 +138,26 @@ def _load_metadata_index(metadata_path: str | None) -> dict[str, MetadataRecord]
         file_stem = item.get("file_stem")
         if not file_stem:
             continue
+        authority_score = item.get("authority_score", 0.5)
+        try:
+            authority_score = float(authority_score)
+        except (TypeError, ValueError):
+            authority_score = 0.5
+        authority_score = max(0.0, min(1.0, authority_score))
+
+        last_updated = str(item.get("last_updated", "") or "").strip()
+        if not last_updated:
+            last_updated = datetime.now().date().isoformat()
+
         index[file_stem] = MetadataRecord(
             file_stem=file_stem,
             topic=item.get("topic", ""),
             document_type=item.get("document_type", ""),
             approved=bool(item.get("approved", False)),
+            jurisdiction=str(item.get("jurisdiction", "AU") or "AU"),
+            authority_score=authority_score,
+            source_url=str(item.get("source_url", "") or ""),
+            last_updated=last_updated,
         )
     return index
 
@@ -166,6 +186,9 @@ def _metadata_boost(
 
     if metadata.approved:
         boost += 1
+
+    # Prefer higher-authority sources (e.g. government pages) when relevance is similar.
+    boost += int(round(metadata.authority_score * 3))
 
     if "compliance" in query_lower and metadata.document_type in {"checklist", "requirements"}:
         boost += 3

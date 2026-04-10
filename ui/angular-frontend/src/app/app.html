@@ -6,11 +6,40 @@
     </div>
 
     <nav class="menu-links">
-      <a href="#"><span class="material-symbols-outlined">edit_note</span> New Brief</a>
-      <a href="#"><span class="material-symbols-outlined">history</span> History</a>
-      <a href="#"><span class="material-symbols-outlined">folder_special</span> Saved Reports</a>
-      <a href="#"><span class="material-symbols-outlined">settings</span> Settings</a>
+      <a href="#" [class.active]="activeMenu === 'new'" (click)="$event.preventDefault(); setMenu('new')">
+        <span class="material-symbols-outlined">edit_note</span> New Brief
+      </a>
+      <a href="#" [class.active]="activeMenu === 'history'" (click)="$event.preventDefault(); setMenu('history')">
+        <span class="material-symbols-outlined">history</span> History
+      </a>
+      <a href="#" [class.active]="activeMenu === 'saved'" (click)="$event.preventDefault(); setMenu('saved')">
+        <span class="material-symbols-outlined">folder_special</span> Saved Reports
+      </a>
+      <a href="#" [class.active]="activeMenu === 'settings'" (click)="$event.preventDefault(); setMenu('settings')">
+        <span class="material-symbols-outlined">settings</span> Settings
+      </a>
     </nav>
+
+    <section class="reports-list" *ngIf="activeMenu === 'history' || activeMenu === 'saved'">
+      <p>Recent Reports</p>
+      <div class="reports-loading" *ngIf="reportsLoading">Loading...</div>
+      <div class="report-row" *ngFor="let report of reports">
+        <button class="report-item" type="button" (click)="openReport(report.id)">
+          <strong>{{ report.title || 'Untitled report' }}</strong>
+          <span>{{ report.draft_preview }}</span>
+        </button>
+        <button
+          class="report-delete"
+          type="button"
+          title="Delete report"
+          [disabled]="deletingReportId === report.id"
+          (click)="deleteReport(report.id)"
+        >
+          <span class="material-symbols-outlined">delete</span>
+        </button>
+      </div>
+      <div class="reports-empty" *ngIf="!reportsLoading && !reports.length">No saved reports yet.</div>
+    </section>
 
     <div class="side-actions">
       <button class="btn primary" type="button" (click)="clearSession()">New Production</button>
@@ -26,13 +55,24 @@
       </div>
 
       <nav class="top-links">
-        <a href="#">Dashboard</a>
-        <a href="#" class="active">Templates</a>
-        <a href="#">Analytics</a>
+        <a href="#" [class.active]="activeTopTab === 'dashboard'" (click)="$event.preventDefault(); setTopTab('dashboard')">Dashboard</a>
+        <a href="#" [class.active]="activeTopTab === 'templates'" (click)="$event.preventDefault(); setTopTab('templates')">Templates</a>
+        <a href="#" [class.active]="activeTopTab === 'analytics'" (click)="$event.preventDefault(); setTopTab('analytics')">Analytics</a>
       </nav>
 
       <div class="top-actions">
+        <div class="runtime-chip">
+          <span>{{ runtimeRetrievalMode }}</span>
+          <small>retrieval</small>
+        </div>
+        <div class="runtime-chip">
+          <span>{{ runtimeGenerationMode }}</span>
+          <small>generation</small>
+        </div>
         <button class="btn ghost top-btn" type="button">Upgrade</button>
+        <button class="icon-btn" type="button" title="Refresh Runtime" (click)="refreshRuntime()">
+          <span class="material-symbols-outlined">sync</span>
+        </button>
         <button class="icon-btn" type="button" (click)="toggleDarkMode()" [title]="darkMode ? 'Switch to light mode' : 'Switch to dark mode'">
           <span class="material-symbols-outlined">{{ darkMode ? 'light_mode' : 'dark_mode' }}</span>
         </button>
@@ -49,6 +89,7 @@
     </header>
 
     <main class="content-shell">
+      <ng-container *ngIf="activeTopTab !== 'analytics'; else analyticsView">
       <section class="config-panel">
         <div class="panel-head">
           <h3>Configuration</h3>
@@ -121,30 +162,65 @@
           {{ loading ? 'Generating...' : 'Generate Blog' }}
         </button>
 
+        <section class="runtime-panel" *ngIf="apiReady">
+          <div class="runtime-head">
+            <h4>Runtime Metrics</h4>
+            <span>{{ runtimeQualityGateEnabled ? 'Quality Gate ON' : 'Quality Gate OFF' }}</span>
+          </div>
+          <div class="runtime-grid">
+            <div class="runtime-metric">
+              <strong>{{ metricsData?.chat_requests_total || 0 }}</strong>
+              <span>Total Requests</span>
+            </div>
+            <div class="runtime-metric">
+              <strong>{{ metricsData?.chat_errors_total || 0 }}</strong>
+              <span>Total Errors</span>
+            </div>
+            <div class="runtime-metric">
+              <strong>{{ metricsAvgLatencyMs }}</strong>
+              <span>Latency Avg (ms)</span>
+            </div>
+            <div class="runtime-metric">
+              <strong>{{ metricsP95LatencyMs }}</strong>
+              <span>Latency P95 (ms)</span>
+            </div>
+            <div class="runtime-metric">
+              <strong>{{ qualityGateBlockedRate }}</strong>
+              <span>Quality Gate Blocked</span>
+            </div>
+          </div>
+          <p class="error" *ngIf="metricsError">{{ metricsError }}</p>
+        </section>
+
         <p class="error" *ngIf="errorMessage">{{ errorMessage }}</p>
+        <p class="error" *ngIf="reportsError">{{ reportsError }}</p>
       </section>
 
       <section class="result-panel">
-        <ng-container *ngIf="latestResponse as result; else emptyResult">
+        <ng-container *ngIf="hasResult; else emptyResult">
           <div class="result-top">
             <div class="result-meta">
               <span class="success">Success</span>
               <span>{{ draftedTimeLabel }}</span>
             </div>
             <div class="result-actions">
-              <button class="btn icon" type="button" (click)="copyDraft(result)">
+              <button class="btn icon" type="button" *ngIf="latestResponse as result" (click)="copyDraft(result)">
                 <span class="material-symbols-outlined">content_copy</span>
                 Copy
               </button>
-              <button class="btn icon" type="button" (click)="exportDraft(result)">
+              <button class="btn icon" type="button" *ngIf="latestResponse as result" (click)="exportDraft(result)">
                 <span class="material-symbols-outlined">upload</span>
                 Export
+              </button>
+              <button class="btn icon" type="button" *ngIf="latestResponse" (click)="saveLatestReport()" [disabled]="savingReport">
+                <span class="material-symbols-outlined">save</span>
+                {{ savingReport ? 'Saving...' : 'Save Draft' }}
               </button>
             </div>
           </div>
 
           <article class="blog-result">
-            <h2>{{ result.generated.title }}</h2>
+            <h2>{{ activeResultTitle }}</h2>
 
             <div class="hero-image">
               <img [src]="referenceImageUrl || heroImageUrl" [alt]="heroImageAlt" loading="eager" decoding="async" />
@@ -153,14 +229,27 @@
             <section class="result-block">
               <h3>Outline</h3>
               <ul>
-                <li *ngFor="let item of result.generated.outline">{{ item }}</li>
+                <li *ngFor="let item of activeResultOutline">{{ item }}</li>
               </ul>
             </section>
 
-            <section class="result-block draft-block">
-              <h3>Draft</h3>
-              <p>{{ result.generated.draft }}</p>
+            <section class="result-block section-list" *ngIf="activeResultSections.length; else fallbackDraftOnly">
+              <h3>Blog Sections</h3>
+              <article class="blog-section" *ngFor="let section of activeResultSections">
+                <h4>{{ section.heading }}</h4>
+                <div class="section-image" *ngIf="section.image_url">
+                  <img [src]="section.image_url" [alt]="section.image_alt || section.heading" loading="lazy" decoding="async" />
+                </div>
+                <p *ngFor="let line of sectionParagraphs(section.body)">{{ line }}</p>
+              </article>
             </section>
+
+            <ng-template #fallbackDraftOnly>
+              <section class="result-block draft-block">
+                <h3>Draft</h3>
+                <p>{{ activeResultDraft }}</p>
+              </section>
+            </ng-template>
           </article>
         </ng-container>
 
@@ -173,6 +262,60 @@
           </div>
         </ng-template>
       </section>
+      </ng-container>
+
+      <ng-template #analyticsView>
+        <section class="analytics-page">
+          <div class="analytics-head">
+            <h2>Runtime Analytics</h2>
+            <p>Live observability for retrieval, generation, quality gate, and latency.</p>
+          </div>
+
+          <div class="analytics-grid">
+            <article class="analytics-card">
+              <h3>Request Overview</h3>
+              <div class="metric-line"><span>Total Requests</span><strong>{{ metricsData?.chat_requests_total || 0 }}</strong></div>
+              <div class="metric-line"><span>Total Errors</span><strong>{{ metricsData?.chat_errors_total || 0 }}</strong></div>
+              <div class="metric-line"><span>Quality Gate Blocked</span><strong>{{ metricsData?.quality_gate_blocked_total || 0 }}</strong></div>
+              <div class="metric-line"><span>Blocked Rate</span><strong>{{ qualityGateBlockedRate }}</strong></div>
+            </article>
+
+            <article class="analytics-card">
+              <h3>Latency</h3>
+              <div class="metric-line"><span>Samples</span><strong>{{ metricsData?.latency?.samples || 0 }}</strong></div>
+              <div class="metric-line"><span>Average</span><strong>{{ metricsAvgLatencyMs }} ms</strong></div>
+              <div class="metric-line"><span>P95</span><strong>{{ metricsP95LatencyMs }} ms</strong></div>
+            </article>
+
+            <article class="analytics-card">
+              <h3>Runtime Modes</h3>
+              <div class="metric-line"><span>Retrieval</span><strong>{{ runtimeRetrievalMode }}</strong></div>
+              <div class="metric-line"><span>Generation</span><strong>{{ runtimeGenerationMode }}</strong></div>
+              <div class="metric-line"><span>Quality Gate</span><strong>{{ runtimeQualityGateEnabled ? 'ON' : 'OFF' }}</strong></div>
+            </article>
+
+            <article class="analytics-card wide">
+              <h3>Generation Mode Distribution</h3>
+              <div class="dist-row" *ngFor="let item of modeEntries(metricsData?.generation_mode_count)">
+                <span>{{ item.key }}</span>
+                <strong>{{ item.value }}</strong>
+              </div>
+              <div class="dist-empty" *ngIf="!modeEntries(metricsData?.generation_mode_count).length">No data yet.</div>
+            </article>
+
+            <article class="analytics-card wide">
+              <h3>Retrieval Mode Distribution</h3>
+              <div class="dist-row" *ngFor="let item of modeEntries(metricsData?.retrieval_mode_count)">
+                <span>{{ item.key }}</span>
+                <strong>{{ item.value }}</strong>
+              </div>
+              <div class="dist-empty" *ngIf="!modeEntries(metricsData?.retrieval_mode_count).length">No data yet.</div>
+            </article>
+          </div>
+
+          <p class="error" *ngIf="metricsError">{{ metricsError }}</p>
+        </section>
+      </ng-template>
     </main>
   </div>
 </div>

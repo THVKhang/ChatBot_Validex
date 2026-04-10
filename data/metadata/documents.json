@@ -5,8 +5,12 @@
     "title": "Doc Police Check",
     "source": "raw_import",
     "topic": "doc police check",
+    "jurisdiction": "AU",
+    "authority_score": 0.95,
     "document_type": "note",
     "approved": true,
+    "source_url": "https://validex.com.au/faqs",
+    "last_updated": "2026-04-10",
     "content": "Police check la quy trinh xac minh ly lich tu phap cua ung vien truoc khi nhan viec."
   },
   {
@@ -15,8 +19,12 @@
     "title": "Doc Employer Guide",
     "source": "raw_import",
     "topic": "doc employer guide",
+    "jurisdiction": "AU",
+    "authority_score": 0.9,
     "document_type": "note",
     "approved": true,
+    "source_url": "https://validex.com.au/how-it-works",
+    "last_updated": "2026-04-10",
     "content": "Employer can mot quy trinh tuyen dung minh bach va co checklist xac minh thong tin."
   },
   {
@@ -25,8 +33,12 @@
     "title": "Content Style Guide",
     "source": "style_guide",
     "topic": "tone",
+    "jurisdiction": "AU",
+    "authority_score": 0.75,
     "document_type": "style_guide",
     "approved": true,
+    "source_url": "",
+    "last_updated": "2026-04-10",
     "content": "Giong van de xuat: professional, ro rang, tranh slogan qua da. Cau truc de xuat: Mo dau, Noi dung chinh, Ket luan."
   },
   {
@@ -35,8 +47,12 @@
     "title": "Doc Candidate Experience",
     "source": "raw_import",
     "topic": "doc candidate experience",
+    "jurisdiction": "AU",
+    "authority_score": 0.8,
     "document_type": "note",
     "approved": true,
+    "source_url": "https://validex.com.au/blog",
+    "last_updated": "2026-04-10",
     "content": "Candidate experience trong quy trinh screening anh huong truc tiep den ty le chap nhan offer va hinh anh employer brand."
   },
   {
@@ -45,8 +61,12 @@
     "title": "Doc Compliance Note",
     "source": "raw_import",
     "topic": "doc compliance note",
+    "jurisdiction": "AU",
+    "authority_score": 0.98,
     "document_type": "note",
     "approved": true,
+    "source_url": "https://www.acic.gov.au/our-services/national-police-checking-service",
+    "last_updated": "2026-04-10",
     "content": "Compliance note: mot so vi tri bat buoc kiem tra ly lich de dap ung chinh sach noi bo va quy dinh phap ly."
   },
   {
@@ -55,8 +75,12 @@
     "title": "Doc Faq Processing Time",
     "source": "raw_import",
     "topic": "doc faq processing time",
+    "jurisdiction": "AU",
+    "authority_score": 0.92,
     "document_type": "note",
     "approved": true,
+    "source_url": "https://validex.com.au/faqs",
+    "last_updated": "2026-04-10",
     "content": "FAQ: Police check thuong mat 1-3 ngay lam viec tuy theo nguon du lieu va yeu cau xac minh."
   },
   {
@@ -65,8 +89,12 @@
     "title": "Doc Required Documents",
     "source": "raw_import",
     "topic": "doc required documents",
+    "jurisdiction": "AU",
+    "authority_score": 0.96,
     "document_type": "note",
     "approved": true,
+    "source_url": "https://validex.com.au/faqs",
+    "last_updated": "2026-04-10",
     "content": "Police check document requirements may include a valid photo ID, proof of address, and signed consent form, depending on policy."
   },
   {
@@ -75,8 +103,12 @@
     "title": "Doc Who Needs Police Check",
     "source": "raw_import",
     "topic": "doc who needs police",
+    "jurisdiction": "AU",
+    "authority_score": 0.94,
     "document_type": "note",
     "approved": true,
+    "source_url": "https://validex.com.au/faqs",
+    "last_updated": "2026-04-10",
     "content": "Police check is commonly required for first-time job applicants in sensitive roles, childcare, healthcare, and finance."
   },
   {
@@ -85,8 +117,12 @@
     "title": "Doc Tone Guideline",
     "source": "raw_import",
     "topic": "doc tone guideline",
+    "jurisdiction": "AU",
+    "authority_score": 0.7,
     "document_type": "note",
     "approved": true,
+    "source_url": "",
+    "last_updated": "2026-04-10",
     "content": "Noi dung blog nen ro rang, ngan gon, va giu giong van chuyen nghiep."
   }
 ]

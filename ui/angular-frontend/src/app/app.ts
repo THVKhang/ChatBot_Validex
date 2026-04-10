@@ -1,9 +1,14 @@
-import { AfterViewInit, Component, ElementRef, ViewChild } from '@angular/core';
+import { AfterViewInit, Component, ElementRef, OnDestroy, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 
 import { ChatService } from './chat.service';
+import { BlogSection } from './chat.models';
 import { ChatApiResponse, ChatMessage } from './chat.models';
+import { HealthResponse } from './chat.models';
+import { MetricsResponse } from './chat.models';
+import { ReportDetail } from './chat.models';
+import { ReportSummary } from './chat.models';
 
 @Component({
   selector: 'app-root',
@@ -24,6 +29,17 @@ export class App {
   apiReady = false;
   errorMessage = '';
   generatedAt: Date | null = null;
+  reportsLoading = false;
+  reportsError = '';
+  savingReport = false;
+  deletingReportId: string | null = null;
+  activeMenu: 'new' | 'history' | 'saved' | 'settings' = 'new';
+  activeTopTab: 'dashboard' | 'templates' | 'analytics' = 'templates';
+  selectedReport: ReportDetail | null = null;
+  healthData: HealthResponse | null = null;
+  metricsData: MetricsResponse | null = null;
+  metricsError = '';
+  private pollTimerId: number | null = null;
 
   readonly heroImageUrl =
     'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=1600&q=80';
@@ -36,20 +52,13 @@ export class App {
   ];
 
   readonly messages: ChatMessage[] = [];
+  readonly reports: ReportSummary[] = [];
 
   @ViewChild('promptInput')
   promptInput?: ElementRef<HTMLTextAreaElement>;
 
   constructor(private readonly chatService: ChatService) {
-    this.chatService.healthCheck().subscribe({
-      next: () => {
-        this.apiReady = true;
-      },
-      error: () => {
-        this.apiReady = false;
-        this.errorMessage = 'Backend API is not running. Start the API server before testing the frontend.';
-      }
-    });
+    this.refreshRuntime();
   }
 
   ngAfterViewInit(): void {
@@ -66,10 +75,66 @@ export class App {
     if (promptFromUrl && autoSend) {
       setTimeout(() => this.sendPrompt(), 150);
     }
+
+    this.loadReports();
+    this.startRuntimePolling();
+  }
+
+  ngOnDestroy(): void {
+    if (this.pollTimerId !== null) {
+      window.clearInterval(this.pollTimerId);
+      this.pollTimerId = null;
+    }
+  }
+
+  startRuntimePolling(): void {
+    if (this.pollTimerId !== null) {
+      window.clearInterval(this.pollTimerId);
+    }
+
+    this.pollTimerId = window.setInterval(() => {
+      this.refreshRuntime();
+    }, 10000);
+  }
+
+  refreshRuntime(): void {
+    this.chatService.healthCheck().subscribe({
+      next: (health) => {
+        this.apiReady = true;
+        this.healthData = health;
+      },
+      error: () => {
+        this.apiReady = false;
+        this.healthData = null;
+        this.errorMessage = 'Backend API is not running. Start the API server before testing the frontend.';
+      }
+    });
+
+    this.chatService.getMetrics().subscribe({
+      next: (metrics) => {
+        this.metricsData = metrics;
+        this.metricsError = '';
+      },
+      error: () => {
+        this.metricsData = null;
+        this.metricsError = 'Unable to fetch runtime metrics.';
+      },
+    });
   }
 
   useSample(prompt: string): void {
     this.prompt = prompt;
+  }
+
+  setMenu(menu: 'new' | 'history' | 'saved' | 'settings'): void {
+    this.activeMenu = menu;
+    if (menu === 'history' || menu === 'saved') {
+      this.loadReports();
+    }
+  }
+
+  setTopTab(tab: 'dashboard' | 'templates' | 'analytics'): void {
+    this.activeTopTab = tab;
   }
 
   toggleDarkMode(): void {
@@ -81,6 +146,8 @@ export class App {
     this.sessionId = null;
     this.errorMessage = '';
     this.generatedAt = null;
+    this.selectedReport = null;
+    this.activeMenu = 'new';
     this.focusPrompt();
   }
 
@@ -106,6 +173,7 @@ export class App {
       next: (response: ChatApiResponse) => {
         this.sessionId = response.session_id;
         this.generatedAt = new Date();
+        this.selectedReport = null;
         this.messages.push({
           role: 'assistant',
           text: response.generated.draft,
@@ -138,6 +206,95 @@ export class App {
     this.focusPrompt();
   }
 
+  saveLatestReport(): void {
+    const payload = this.latestResponse;
+    if (!payload || this.savingReport) {
+      return;
+    }
+
+    const latestUserPrompt = this.latestUserPrompt;
+    if (!latestUserPrompt) {
+      this.errorMessage = 'No prompt found for the current draft.';
+      return;
+    }
+
+    this.savingReport = true;
+    this.reportsError = '';
+
+    this.chatService
+      .saveReport({
+        session_id: this.sessionId,
+        prompt: latestUserPrompt,
+        generated: payload.generated,
+      })
+      .subscribe({
+        next: ({ report }) => {
+          this.savingReport = false;
+          this.selectedReport = report;
+          this.loadReports();
+          this.activeMenu = 'saved';
+        },
+        error: () => {
+          this.savingReport = false;
+          this.reportsError = 'Unable to save the draft right now.';
+        },
+      });
+  }
+
+  loadReports(): void {
+    this.reportsLoading = true;
+    this.reportsError = '';
+    this.chatService.listReports(30).subscribe({
+      next: ({ reports }) => {
+        this.reportsLoading = false;
+        this.reports.splice(0, this.reports.length, ...reports);
+      },
+      error: () => {
+        this.reportsLoading = false;
+        this.reportsError = 'Unable to load saved reports.';
+      },
+    });
+  }
+
+  openReport(reportId: string): void {
+    this.reportsError = '';
+    this.chatService.getReport(reportId).subscribe({
+      next: ({ report }) => {
+        this.selectedReport = report;
+        this.generatedAt = report.created_at ? new Date(report.created_at) : null;
+        this.activeMenu = 'saved';
+      },
+      error: () => {
+        this.reportsError = 'Unable to open this report.';
+      },
+    });
+  }
+
+  deleteReport(reportId: string): void {
+    if (this.deletingReportId) {
+      return;
+    }
+
+    this.deletingReportId = reportId;
+    this.reportsError = '';
+
+    this.chatService.deleteReport(reportId).subscribe({
+      next: () => {
+        this.deletingReportId = null;
+        const nextReports = this.reports.filter((item) => item.id !== reportId);
+        this.reports.splice(0, this.reports.length, ...nextReports);
+
+        if (this.selectedReport?.id === reportId) {
+          this.selectedReport = null;
+        }
+      },
+      error: () => {
+        this.deletingReportId = null;
+        this.reportsError = 'Unable to delete this report.';
+      },
+    });
+  }
+
   copyDraft(response: ChatApiResponse): void {
     navigator.clipboard
       .writeText(response.generated.draft)
@@ -168,6 +325,94 @@ export class App {
 
     const minutes = Math.max(1, Math.floor((Date.now() - this.generatedAt.getTime()) / 60000));
     return `Drafted ${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  }
+
+  get latestUserPrompt(): string {
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.messages[index];
+      if (message.role === 'user') {
+        return message.text;
+      }
+    }
+    return '';
+  }
+
+  get activeResultTitle(): string {
+    if (this.selectedReport) {
+      return this.selectedReport.title;
+    }
+    return this.latestResponse?.generated.title || '';
+  }
+
+  get activeResultOutline(): string[] {
+    if (this.selectedReport) {
+      return this.selectedReport.outline;
+    }
+    return this.latestResponse?.generated.outline || [];
+  }
+
+  get activeResultDraft(): string {
+    if (this.selectedReport) {
+      return this.selectedReport.draft;
+    }
+    return this.latestResponse?.generated.draft || '';
+  }
+
+  get activeResultSections(): BlogSection[] {
+    if (this.selectedReport?.sections?.length) {
+      return this.selectedReport.sections;
+    }
+    return this.latestResponse?.generated.sections || [];
+  }
+
+  sectionParagraphs(body: string): string[] {
+    return body
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  get hasResult(): boolean {
+    return Boolean(this.selectedReport || this.latestResponse);
+  }
+
+  get runtimeRetrievalMode(): string {
+    return this.healthData?.runtime?.retrieval_mode || 'unknown';
+  }
+
+  get runtimeGenerationMode(): string {
+    return this.healthData?.runtime?.generation_mode || 'unknown';
+  }
+
+  get runtimeQualityGateEnabled(): boolean {
+    return Boolean(this.healthData?.runtime?.quality_gate_enabled);
+  }
+
+  get metricsAvgLatencyMs(): number {
+    return this.metricsData?.latency?.avg_ms || 0;
+  }
+
+  get metricsP95LatencyMs(): number {
+    return this.metricsData?.latency?.p95_ms || 0;
+  }
+
+  get qualityGateBlockedRate(): string {
+    const total = this.metricsData?.chat_requests_total || 0;
+    const blocked = this.metricsData?.quality_gate_blocked_total || 0;
+    if (!total) {
+      return '0%';
+    }
+    return `${Math.round((blocked / total) * 100)}%`;
+  }
+
+  modeEntries(map: Record<string, number> | undefined): Array<{ key: string; value: number }> {
+    if (!map) {
+      return [];
+    }
+
+    return Object.entries(map)
+      .map(([key, value]) => ({ key, value }))
+      .sort((a, b) => b.value - a.value);
   }
 
   private buildConfiguredPrompt(basePrompt: string): string {
