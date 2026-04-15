@@ -10,10 +10,13 @@ from app.config import settings
 
 try:
     from langchain_openai import OpenAIEmbeddings
-except Exception as exc:  # pragma: no cover - optional dependency
-    raise RuntimeError(
-        "Missing vector dependencies. Install langchain-openai first."
-    ) from exc
+except Exception:  # pragma: no cover - optional dependency
+    OpenAIEmbeddings = None
+
+try:
+    from langchain_google_genai import GoogleGenerativeAIEmbeddings
+except Exception:  # pragma: no cover - optional dependency
+    GoogleGenerativeAIEmbeddings = None
 
 
 def _load_metadata(path: Path) -> dict[str, dict]:
@@ -33,8 +36,6 @@ def _load_metadata(path: Path) -> dict[str, dict]:
 
 
 def _build_vector_store():
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is required")
     if not settings.pinecone_api_key:
         raise RuntimeError("PINECONE_API_KEY is required")
     if not settings.pinecone_index:
@@ -51,10 +52,34 @@ def _build_vector_store():
     if pinecone_vector_store_cls is None:
         raise RuntimeError("PineconeVectorStore class was not found in langchain_pinecone module")
 
-    embeddings = OpenAIEmbeddings(
-        model=settings.embedding_model,
-        api_key=settings.openai_api_key,
-    )
+    embeddings = None
+    provider = settings.embedding_provider.strip().lower()
+    if provider not in {"auto", "openai", "google"}:
+        provider = "auto"
+
+    preferred_google_embedding = settings.google_embedding_model.strip()
+    if not preferred_google_embedding:
+        fallback_google_embedding = settings.embedding_model.strip()
+        if fallback_google_embedding.startswith("models/"):
+            preferred_google_embedding = fallback_google_embedding
+    if not preferred_google_embedding:
+        preferred_google_embedding = "models/gemini-embedding-001"
+    if not preferred_google_embedding.startswith("models/"):
+        preferred_google_embedding = f"models/{preferred_google_embedding}"
+
+    if provider in {"auto", "google"} and settings.google_api_key and GoogleGenerativeAIEmbeddings is not None:
+        embeddings = GoogleGenerativeAIEmbeddings(
+            model=preferred_google_embedding,
+            google_api_key=settings.google_api_key,
+        )
+    elif provider in {"auto", "openai"} and settings.openai_api_key and OpenAIEmbeddings is not None:
+        embeddings = OpenAIEmbeddings(
+            model=settings.embedding_model,
+            api_key=settings.openai_api_key,
+        )
+
+    if embeddings is None:
+        raise RuntimeError("No embedding provider configured. Set GOOGLE_API_KEY or OPENAI_API_KEY.")
 
     try:
         return pinecone_vector_store_cls(

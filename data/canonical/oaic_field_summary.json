@@ -1,0 +1,57 @@
+{
+  "targets_total": 1,
+  "targets_allowed": 1,
+  "chunks_total": 0,
+  "changed_urls": 0,
+  "unchanged_urls": 0,
+  "local_pdf_total": 0,
+  "local_pdf_processed": 0,
+  "local_pdf_unchanged": 0,
+  "filtered_chunks_total": 0,
+  "rejected_chunks_total": 0,
+  "rejected_output_path": "data\\samples\\rejected_chunks_oaic_field.jsonl",
+  "discovery_exit_reason": "targets_exhausted",
+  "discovered_sub_links_tried": [],
+  "discovered_sub_links_total": 0,
+  "discovered_chunks_total": 0,
+  "cleaning_rules": {
+    "min_chunk_words": 28,
+    "min_keyword_matches": 2,
+    "core_keywords": [
+      "police check",
+      "background",
+      "identity",
+      "conviction",
+      "legislation",
+      "australia",
+      "application"
+    ],
+    "au_police_check_keywords": [
+      "afp",
+      "acic",
+      "check",
+      "applicant",
+      "identity",
+      "result",
+      "conviction"
+    ],
+    "noise_phrases": [
+      "cookie policy",
+      "subscribe now",
+      "all rights reserved",
+      "follow us on",
+      "privacy statement",
+      "last updated by admin"
+    ],
+    "require_stealth": true
+  },
+  "errors_total": 1,
+  "errors": [
+    {
+      "url": "https://www.oaic.gov.au/privacy",
+      "error": "403 forbidden. Source blocks bot traffic. Download PDF manually into data/raw/pdfs and ingest locally."
+    }
+  ],
+  "output_jsonl": "data\\canonical\\oaic_field_chunks.jsonl",
+  "state_path": "data\\canonical\\oaic_field_state.json"
+}

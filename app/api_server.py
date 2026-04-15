@@ -2,6 +2,7 @@ from collections import defaultdict
 from collections import deque
 import importlib
 import time
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -15,11 +16,15 @@ from pydantic import Field
 from app.config import settings
 from app.langchain_pipeline import pipeline
 from app.main import process_prompt
+from app.publisher import build_publish_output
 from app.report_store import delete_report
 from app.report_store import get_report
 from app.report_store import list_reports
 from app.report_store import save_report
+from app.report_store import update_report_status
 from app.session_manager import SessionManager
+from app.source_analytics import fetch_knowledge_health
+from app.source_analytics import fetch_source_analytics
 
 
 class ChatRequest(BaseModel):
@@ -46,6 +51,10 @@ class SaveReportRequest(BaseModel):
     prompt: str
     generated: GeneratedPayload
     session_id: str | None = None
+
+
+class UpdateReportStatusRequest(BaseModel):
+    status: Literal["Draft", "Reviewed", "Approved"]
 
 
 app = FastAPI(title="AI Blog Generator API", version="0.1.0")
@@ -226,3 +235,60 @@ def report_delete(report_id: str) -> dict:
     if not deleted:
         raise HTTPException(status_code=404, detail="Report not found")
     return {"status": "deleted", "report_id": report_id}
+
+
+@app.patch("/api/reports/{report_id}/status")
+def report_status_update(report_id: str, request: UpdateReportStatusRequest) -> dict:
+    report, error = update_report_status(report_id, request.status)
+    if error == "not_found":
+        raise HTTPException(status_code=404, detail="Report not found")
+    if error == "invalid_transition":
+        raise HTTPException(
+            status_code=409,
+            detail="Invalid status transition. Use Draft -> Reviewed -> Approved.",
+        )
+    if error == "invalid_status":
+        raise HTTPException(status_code=400, detail="Invalid report status")
+    return {"report": report}
+
+
+@app.post("/api/reports/{report_id}/publish")
+def report_publish(report_id: str, output_format: Literal["markdown", "html"] = "markdown") -> dict:
+    report = get_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    status = str(report.get("status", "Draft"))
+    if status != "Approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Only Approved reports can be published.",
+        )
+
+    try:
+        output = build_publish_output(report, output_format=output_format)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "report_id": report_id,
+        "status": "published",
+        "report_status": status,
+        "output": output,
+    }
+
+
+@app.get("/api/source-analytics")
+def source_analytics() -> dict:
+    try:
+        return fetch_source_analytics()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/knowledge/health")
+def knowledge_health() -> dict:
+    try:
+        return fetch_knowledge_health()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

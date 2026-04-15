@@ -6,9 +6,14 @@ import { ChatService } from './chat.service';
 import { BlogSection } from './chat.models';
 import { ChatApiResponse, ChatMessage } from './chat.models';
 import { HealthResponse } from './chat.models';
+import { KnowledgeHealthResponse } from './chat.models';
 import { MetricsResponse } from './chat.models';
+import { AuthorityBandStat } from './chat.models';
 import { ReportDetail } from './chat.models';
+import { ReportStatus } from './chat.models';
 import { ReportSummary } from './chat.models';
+import { SourceAnalyticsResponse } from './chat.models';
+import { TopicChunkStat } from './chat.models';
 
 @Component({
   selector: 'app-root',
@@ -20,7 +25,6 @@ export class App {
   title = 'Editorial Sentinel';
   prompt = '';
   darkMode = false;
-  referenceImageUrl = '';
   selectedTone = 'Professional';
   selectedWordCount = '800 Words';
   selectedAudience = 'HR Professionals';
@@ -32,18 +36,19 @@ export class App {
   reportsLoading = false;
   reportsError = '';
   savingReport = false;
+  updatingReportStatus = false;
   deletingReportId: string | null = null;
   activeMenu: 'new' | 'history' | 'saved' | 'settings' = 'new';
   activeTopTab: 'dashboard' | 'templates' | 'analytics' = 'templates';
   selectedReport: ReportDetail | null = null;
   healthData: HealthResponse | null = null;
   metricsData: MetricsResponse | null = null;
+  sourceAnalyticsData: SourceAnalyticsResponse | null = null;
+  knowledgeHealthData: KnowledgeHealthResponse | null = null;
   metricsError = '';
+  sourceAnalyticsError = '';
+  knowledgeHealthError = '';
   private pollTimerId: number | null = null;
-
-  readonly heroImageUrl =
-    'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=1600&q=80';
-  readonly heroImageAlt = 'Team working in a modern digital workspace';
 
   readonly samplePrompts: string[] = [
     'Generate an in-depth editorial regarding police check procedures and background verification policies in the modern workplace.',
@@ -120,6 +125,28 @@ export class App {
         this.metricsError = 'Unable to fetch runtime metrics.';
       },
     });
+
+    this.chatService.getSourceAnalytics().subscribe({
+      next: (analytics) => {
+        this.sourceAnalyticsData = analytics;
+        this.sourceAnalyticsError = '';
+      },
+      error: () => {
+        this.sourceAnalyticsData = null;
+        this.sourceAnalyticsError = 'Unable to fetch source analytics.';
+      },
+    });
+
+    this.chatService.getKnowledgeHealth().subscribe({
+      next: (health) => {
+        this.knowledgeHealthData = health;
+        this.knowledgeHealthError = '';
+      },
+      error: () => {
+        this.knowledgeHealthData = null;
+        this.knowledgeHealthError = 'Unable to fetch knowledge health.';
+      },
+    });
   }
 
   useSample(prompt: string): void {
@@ -161,9 +188,8 @@ export class App {
       return;
     }
 
-    const finalPrompt = this.buildPromptWithImage(this.buildConfiguredPrompt(trimmed));
-    const imageUrl = this.referenceImageUrl.trim();
-    const userText = imageUrl ? `${trimmed}\n\n[reference_image] ${imageUrl}` : trimmed;
+    const finalPrompt = this.buildConfiguredPrompt(trimmed);
+    const userText = trimmed;
 
     this.errorMessage = '';
     this.messages.push({ role: 'user', text: userText });
@@ -193,17 +219,6 @@ export class App {
       event.preventDefault();
       this.sendPrompt();
     }
-  }
-
-  applyImagePromptTemplate(): void {
-    const imageUrl = this.referenceImageUrl.trim() || 'https://images.example.com/reference.jpg';
-    this.prompt = [
-      'Write a blog section based on this visual direction.',
-      'Focus on trust, compliance, and modern digital onboarding.',
-      `Reference image: ${imageUrl}`,
-      'Tone: professional, confident, clear.'
-    ].join('\n');
-    this.focusPrompt();
   }
 
   saveLatestReport(): void {
@@ -295,6 +310,31 @@ export class App {
     });
   }
 
+  updateSelectedReportStatus(status: ReportStatus): void {
+    if (!this.selectedReport || this.updatingReportStatus) {
+      return;
+    }
+    if (this.selectedReport.status === status) {
+      return;
+    }
+
+    this.updatingReportStatus = true;
+    this.reportsError = '';
+
+    this.chatService.updateReportStatus(this.selectedReport.id, status).subscribe({
+      next: ({ report }) => {
+        this.updatingReportStatus = false;
+        this.selectedReport = report;
+        this.loadReports();
+      },
+      error: (err) => {
+        this.updatingReportStatus = false;
+        const detail = err?.error?.detail;
+        this.reportsError = typeof detail === 'string' ? detail : 'Unable to update report status.';
+      },
+    });
+  }
+
   copyDraft(response: ChatApiResponse): void {
     navigator.clipboard
       .writeText(response.generated.draft)
@@ -376,6 +416,18 @@ export class App {
     return Boolean(this.selectedReport || this.latestResponse);
   }
 
+  get activeReportStatus(): ReportStatus | '' {
+    return this.selectedReport?.status || '';
+  }
+
+  get canMarkReviewed(): boolean {
+    return this.selectedReport?.status === 'Draft';
+  }
+
+  get canMarkApproved(): boolean {
+    return this.selectedReport?.status === 'Reviewed';
+  }
+
   get runtimeRetrievalMode(): string {
     return this.healthData?.runtime?.retrieval_mode || 'unknown';
   }
@@ -415,6 +467,51 @@ export class App {
       .sort((a, b) => b.value - a.value);
   }
 
+  get sourceTopicStats(): TopicChunkStat[] {
+    return this.sourceAnalyticsData?.topics || [];
+  }
+
+  get sourceAuthorityStats(): AuthorityBandStat[] {
+    return this.sourceAnalyticsData?.authority_bands || [];
+  }
+
+  get maxTopicChunks(): number {
+    return Math.max(0, ...this.sourceTopicStats.map((item) => item.chunks));
+  }
+
+  get maxAuthoritySources(): number {
+    return Math.max(0, ...this.sourceAuthorityStats.map((item) => item.sources));
+  }
+
+  get knowledgeGenuinePercent(): number {
+    return this.knowledgeHealthData?.genuine_percent || 0;
+  }
+
+  get knowledgeFakePercent(): number {
+    return this.knowledgeHealthData?.fake_percent || 0;
+  }
+
+  get knowledgeOtherPercent(): number {
+    return this.knowledgeHealthData?.other_percent || 0;
+  }
+
+  get knowledgeReadyForRetrieval(): boolean {
+    return Boolean(this.knowledgeHealthData?.ready_for_retrieval);
+  }
+
+  percentWidth(value: number): string {
+    const bounded = Math.max(0, Math.min(100, Math.round(value * 100) / 100));
+    return `${bounded}%`;
+  }
+
+  barWidth(value: number, maxValue: number): string {
+    if (maxValue <= 0) {
+      return '0%';
+    }
+    const percent = Math.round((value / maxValue) * 100);
+    return `${Math.max(8, percent)}%`;
+  }
+
   private buildConfiguredPrompt(basePrompt: string): string {
     return [
       basePrompt,
@@ -423,22 +520,6 @@ export class App {
       `- tone: ${this.selectedTone}`,
       `- target_word_count: ${this.selectedWordCount}`,
       `- target_audience: ${this.selectedAudience}`,
-    ].join('\n');
-  }
-
-  private buildPromptWithImage(basePrompt: string): string {
-    const imageUrl = this.referenceImageUrl.trim();
-    if (!imageUrl) {
-      return basePrompt;
-    }
-
-    return [
-      basePrompt,
-      '',
-      'Use this image as visual reference for style and context:',
-      `- image_url: ${imageUrl}`,
-      '- keep visual language modern and trustworthy',
-      '- maintain realistic details and sharp descriptive cues'
     ].join('\n');
   }
 

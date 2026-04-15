@@ -630,6 +630,67 @@ input:focus {
   color: #64748b;
 }
 
+.bar-row {
+  display: grid;
+  gap: 6px;
+}
+
+.bar-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.bar-meta span {
+  font-size: 0.78rem;
+  color: #586579;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.bar-meta strong {
+  font-size: 0.9rem;
+  color: #0f2a6b;
+  font-family: 'Manrope', 'Inter', sans-serif;
+}
+
+.bar-track {
+  height: 10px;
+  border-radius: 999px;
+  background: #edf2ff;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.bar-fill.topic {
+  background: linear-gradient(90deg, #2563eb, #0ea5e9);
+}
+
+.bar-fill.authority {
+  background: linear-gradient(90deg, #059669, #10b981);
+}
+
+.bar-fill.genuine {
+  background: linear-gradient(90deg, #0f9d58, #22c55e);
+}
+
+.bar-fill.fake {
+  background: linear-gradient(90deg, #e11d48, #fb7185);
+}
+
+.bar-fill.other {
+  background: linear-gradient(90deg, #475569, #94a3b8);
+}
+
+.health-row {
+  margin-top: 8px;
+}
+
 .result-top {
   display: flex;
   justify-content: space-between;
@@ -684,22 +745,6 @@ input:focus {
   color: #00143e;
 }
 
-.hero-image {
-  border-radius: 14px;
-  overflow: hidden;
-  margin-bottom: 24px;
-  border: 1px solid #dbe2f9;
-  aspect-ratio: 16 / 9;
-}
-
-.hero-image img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center;
-  display: block;
-  filter: saturate(1.04) contrast(1.04);
-}
 
 .result-block {
   margin-top: 24px;
@@ -884,8 +929,17 @@ input:focus {
 
 .sentinel-layout.dark-mode .metric-line span,
 .sentinel-layout.dark-mode .dist-row span,
-.sentinel-layout.dark-mode .dist-empty {
+.sentinel-layout.dark-mode .dist-empty,
+.sentinel-layout.dark-mode .bar-meta span {
   color: #94a3b8;
+}
+
+.sentinel-layout.dark-mode .bar-meta strong {
+  color: #dbeafe;
+}
+
+.sentinel-layout.dark-mode .bar-track {
+  background: #1e293b;
 }
 
 .sentinel-layout.dark-mode .top-nav {
@@ -960,8 +1014,7 @@ input:focus {
   color: #94a3b8;
 }
 
-.sentinel-layout.dark-mode .result-block,
-.sentinel-layout.dark-mode .hero-image {
+.sentinel-layout.dark-mode .result-block {
   background: #0f172a;
   border-color: #273042;
   box-shadow: none;

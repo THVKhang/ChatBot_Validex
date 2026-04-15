@@ -19,6 +19,18 @@ DEFAULT_LENGTH = "medium"
 
 
 def _detect_intent(prompt_lower: str) -> str:
+    if any(kw in prompt_lower for kw in ["edit", "revise", "update", "adjust", "fix", "sua", "chinh sua", "chỉnh sửa"]):
+        return "rewrite"
+
+    image_edit_patterns = [
+        r"\b(?:keep|remove|reduce|limit|retain|only|show|use|make|set|change)\b.*\b(?:image|images|picture|pictures|photo|photos)\b",
+        r"\b(?:image|images|picture|pictures|photo|photos)\b.*\b(?:keep|remove|reduce|limit|retain|only|show|use|make|set|change)\b",
+        r"\b(?:chi|chỉ|giu|giữ|bo|bỏ|xoa|xóa|giam|giảm)\b.*\b(?:anh|ảnh|hinh|hình)\b",
+        r"\bmake\s+it\s+(?:\d+|one|two|three)\s+(?:image|images|picture|pictures|photo|photos)\b",
+    ]
+    if any(re.search(pattern, prompt_lower) for pattern in image_edit_patterns):
+        return "rewrite"
+
     if any(kw in prompt_lower for kw in ["rewrite", "viet lai", "re-write"]):
         return "rewrite"
     if any(kw in prompt_lower for kw in ["shorter", "rut gon", "ngan hon", "tom tat"]):
@@ -37,6 +49,19 @@ def _detect_tone(prompt_lower: str) -> str:
 
 
 def _detect_length(prompt_lower: str) -> str:
+    word_target_match = re.search(r"\b(\d{1,3}(?:,\d{3})+|\d{3,4})\s*(chu|tu|words?)\b", prompt_lower)
+    if word_target_match:
+        raw_value = word_target_match.group(1).replace(",", "")
+        try:
+            target_words = int(raw_value)
+            if target_words <= 500:
+                return "short"
+            if target_words <= 1000:
+                return "medium"
+            return "long"
+        except ValueError:
+            pass
+
     if any(kw in prompt_lower for kw in ["short", "shorter", "ngan", "ngan gon", "rut gon"]):
         return "short"
     if any(kw in prompt_lower for kw in ["long", "dai", "chi tiet"]):
@@ -45,6 +70,12 @@ def _detect_length(prompt_lower: str) -> str:
 
 
 def _detect_audience(prompt_lower: str) -> str:
+    configured_match = re.search(r"target_audience\s*:\s*([^\r\n]+)", prompt_lower)
+    if configured_match:
+        configured_value = configured_match.group(1).strip(" .,!?:;\n\t")
+        if configured_value:
+            return configured_value
+
     audience_keywords = [
         "job seekers",
         "first-time job applicants",
@@ -64,15 +95,42 @@ def _detect_audience(prompt_lower: str) -> str:
     return DEFAULT_AUDIENCE
 
 
-def _extract_topic(prompt: str, prompt_lower: str) -> str:
-    markers = ["about", "ve"]
+def _extract_topic(prompt: str, prompt_lower: str, intent: str) -> str:
+    markers = ["about", "regarding", "ve", "về"]
+
+    # Frontend sends additional config lines after the first prompt sentence,
+    # so extract marker content up to the first line break.
     for marker in markers:
-        pattern = rf"{marker}\s+(.+)$"
+        pattern = rf"\b{marker}\s+([^\r\n]+)"
         match = re.search(pattern, prompt, flags=re.IGNORECASE)
         if match:
             topic = match.group(1).strip(" .,!?:;\n\t")
             if topic:
                 return topic
+
+    # Follow-up prompts like "make it shorter" should keep previous topic context.
+    if intent in {"shorten", "rewrite"}:
+        return "current draft"
+
+    # Fallback for create-blog prompts without explicit markers.
+    # Use the first line as topic after removing common command prefixes.
+    first_line = prompt.splitlines()[0].strip() if prompt.strip() else ""
+    if first_line:
+        first_line = re.sub(
+            r"^(write|create|generate|draft|viet|viết|soan|soạn)\s+",
+            "",
+            first_line,
+            flags=re.IGNORECASE,
+        )
+        first_line = re.sub(
+            r"^(a\s+|an\s+)?(blog|article|post|bai\s+blog|bài\s+blog)\s+",
+            "",
+            first_line,
+            flags=re.IGNORECASE,
+        )
+        first_line = first_line.strip(" .,!?:;\n\t")
+        if len(first_line) >= 8:
+            return first_line
 
     # For prompts like "Make it shorter", keep a stable fallback.
     return "current draft"
@@ -108,7 +166,7 @@ def parse_prompt(prompt: str) -> ParsedPrompt:
     tone = _detect_tone(prompt_lower)
     audience = _detect_audience(prompt_lower)
     length = _detect_length(prompt_lower)
-    topic = _clean_topic_text(_extract_topic(prompt, prompt_lower))
+    topic = _clean_topic_text(_extract_topic(prompt, prompt_lower, intent))
 
     return ParsedPrompt(
         raw_prompt=prompt,

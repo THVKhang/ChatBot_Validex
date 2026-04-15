@@ -50,9 +50,13 @@ export interface ChatMessage {
   payload?: ChatApiResponse;
 }
 
+export type ReportStatus = 'Draft' | 'Reviewed' | 'Approved';
+
 export interface ReportSummary {
   id: string;
   created_at: string;
+  updated_at?: string;
+  status: ReportStatus;
   session_id: string | null;
   title: string;
   prompt: string;
@@ -62,6 +66,8 @@ export interface ReportSummary {
 export interface ReportDetail {
   id: string;
   created_at: string;
+  updated_at?: string;
+  status: ReportStatus;
   session_id: string | null;
   title: string;
   prompt: string;
@@ -100,6 +106,10 @@ export interface DeleteReportResponse {
   report_id: string;
 }
 
+export interface UpdateReportStatusRequest {
+  status: ReportStatus;
+}
+
 export interface HealthRuntime {
   retrieval_mode: string;
   generation_mode: string;
@@ -134,4 +144,44 @@ export interface MetricsResponse {
     avg_ms: number;
     p95_ms: number;
   };
+}
+
+export interface TopicChunkStat {
+  topic: string;
+  chunks: number;
+}
+
+export interface AuthorityBandStat {
+  band: string;
+  sources: number;
+  chunks: number;
+}
+
+export interface SourceAnalyticsResponse {
+  table: string;
+  total_chunks: number;
+  total_sources: number;
+  topics: TopicChunkStat[];
+  authority_bands: AuthorityBandStat[];
+  generated_at: string;
+}
+
+export interface EmbeddingProviderStat {
+  provider: string;
+  chunks: number;
+}
+
+export interface KnowledgeHealthResponse {
+  table: string;
+  total_chunks: number;
+  has_embedding_provider: boolean;
+  genuine_chunks: number;
+  fake_chunks: number;
+  other_chunks: number;
+  genuine_percent: number;
+  fake_percent: number;
+  other_percent: number;
+  provider_breakdown: EmbeddingProviderStat[];
+  ready_for_retrieval: boolean;
+  generated_at: string;
 }

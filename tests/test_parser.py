@@ -56,3 +56,59 @@ def test_parser_cleans_topic_with_tone_clause():
 def test_parser_cleans_topic_with_audience_suffix():
     parsed = parse_user_input("Write a blog about police checks for job seekers")
     assert parsed.topic.lower() == "police checks"
+
+
+def test_parser_extracts_topic_from_regarding_marker():
+    parsed = parse_user_input(
+        "Generate an in-depth editorial regarding police check procedures and background verification policies in the modern workplace."
+    )
+    assert "police check procedures" in parsed.topic.lower()
+
+
+def test_parser_extracts_topic_from_multiline_configured_prompt():
+    parsed = parse_user_input(
+        "Generate an in-depth editorial regarding police check procedures and background verification policies in the modern workplace.\n\n"
+        "Editorial settings:\n"
+        "- tone: Professional\n"
+        "- target_word_count: 800 Words\n"
+        "- target_audience: HR Professionals"
+    )
+    assert "police check procedures" in parsed.topic.lower()
+
+
+def test_parser_extracts_audience_from_multiline_configured_prompt():
+    parsed = parse_user_input(
+        "Generate an in-depth editorial regarding police check procedures and background verification policies in the modern workplace.\n\n"
+        "Editorial settings:\n"
+        "- tone: Professional\n"
+        "- target_word_count: 800 Words\n"
+        "- target_audience: HR Professionals"
+    )
+    assert parsed.audience == "hr professionals"
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "make it 1 picture",
+        "Keep only 1 picture for blog",
+        "Remove all images from this draft",
+        "Chi giu 1 anh cho bai blog",
+    ],
+)
+def test_parser_treats_image_edit_prompts_as_rewrite(prompt):
+    parsed = parse_user_input(prompt)
+    assert parsed.intent == "rewrite"
+
+
+@pytest.mark.parametrize(
+    "prompt,expected_length",
+    [
+        ("Write a 400 chu blog about police check", "short"),
+        ("Viet bai 800 tu ve police check cho employer", "medium"),
+        ("Write 1,200 words about police check compliance", "long"),
+    ],
+)
+def test_parser_detects_length_from_word_target(prompt, expected_length):
+    parsed = parse_user_input(prompt)
+    assert parsed.length == expected_length

@@ -1,0 +1,52 @@
+{
+  "targets_total": 0,
+  "targets_allowed": 0,
+  "chunks_total": 108,
+  "changed_urls": 0,
+  "unchanged_urls": 0,
+  "local_pdf_total": 7,
+  "local_pdf_processed": 7,
+  "local_pdf_unchanged": 0,
+  "filtered_chunks_total": 121,
+  "rejected_chunks_total": 121,
+  "rejected_output_path": "data\\samples\\pdf_ingest_rejected.jsonl",
+  "discovery_exit_reason": "targets_exhausted",
+  "discovered_sub_links_tried": [],
+  "discovered_sub_links_total": 0,
+  "discovered_chunks_total": 0,
+  "cleaning_rules": {
+    "min_chunk_words": 28,
+    "min_keyword_matches": 2,
+    "core_keywords": [
+      "police check",
+      "background",
+      "identity",
+      "conviction",
+      "legislation",
+      "australia",
+      "application"
+    ],
+    "au_police_check_keywords": [
+      "afp",
+      "acic",
+      "check",
+      "applicant",
+      "identity",
+      "result",
+      "conviction"
+    ],
+    "noise_phrases": [
+      "cookie policy",
+      "subscribe now",
+      "all rights reserved",
+      "follow us on",
+      "privacy statement",
+      "last updated by admin"
+    ],
+    "require_stealth": false
+  },
+  "errors_total": 0,
+  "errors": [],
+  "output_jsonl": "data\\canonical\\pdf_ingest_run.jsonl",
+  "state_path": "data\\canonical\\pdf_ingest_run_state.json"
+}

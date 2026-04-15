@@ -1,3 +1,4 @@
+from app.config import settings
 from app.main import run_once
 from app.session_manager import SessionManager
 
@@ -16,5 +17,8 @@ def test_run_once_uses_previous_draft_context_for_shorten():
 def test_run_once_out_of_domain_returns_safe_message():
     session = SessionManager()
     output = run_once("Write a travel guide about Paris", session)
-    assert "Need More Context" in output
-    assert "Ly do:" in output
+    assert (
+        settings.hybrid_warning_text in output
+        or "=== SOURCES USED ===" in output
+    )
+    assert "Need More Context" not in output

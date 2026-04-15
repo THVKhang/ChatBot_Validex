@@ -26,6 +26,7 @@
       <div class="report-row" *ngFor="let report of reports">
         <button class="report-item" type="button" (click)="openReport(report.id)">
           <strong>{{ report.title || 'Untitled report' }}</strong>
+          <small>Status: {{ report.status }}</small>
           <span>{{ report.draft_preview }}</span>
         </button>
         <button
@@ -136,21 +137,6 @@
           </select>
         </div>
 
-        <div class="field-group">
-          <label for="imageUrl">Reference Image URL (optional)</label>
-          <div class="inline-row">
-            <input
-              id="imageUrl"
-              [(ngModel)]="referenceImageUrl"
-              [disabled]="loading"
-              placeholder="https://images.example.com/hero.jpg"
-            />
-            <button class="btn ghost" type="button" (click)="applyImagePromptTemplate()" [disabled]="loading">
-              Use Template
-            </button>
-          </div>
-        </div>
-
         <div class="sample-prompts">
           <p>Sample prompts</p>
           <button class="btn sample" *ngFor="let sample of samplePrompts" (click)="usePromptTemplate(sample)">
@@ -201,6 +187,7 @@
           <div class="result-top">
             <div class="result-meta">
               <span class="success">Success</span>
+              <span *ngIf="selectedReport">Status: {{ activeReportStatus }}</span>
               <span>{{ draftedTimeLabel }}</span>
             </div>
             <div class="result-actions">
@@ -216,15 +203,31 @@
                 <span class="material-symbols-outlined">save</span>
                 {{ savingReport ? 'Saving...' : 'Save Draft' }}
               </button>
+              <button
+                class="btn icon"
+                type="button"
+                *ngIf="selectedReport && canMarkReviewed"
+                (click)="updateSelectedReportStatus('Reviewed')"
+                [disabled]="updatingReportStatus"
+              >
+                <span class="material-symbols-outlined">fact_check</span>
+                {{ updatingReportStatus ? 'Updating...' : 'Mark Reviewed' }}
+              </button>
+              <button
+                class="btn icon"
+                type="button"
+                *ngIf="selectedReport && canMarkApproved"
+                (click)="updateSelectedReportStatus('Approved')"
+                [disabled]="updatingReportStatus"
+              >
+                <span class="material-symbols-outlined">verified</span>
+                {{ updatingReportStatus ? 'Updating...' : 'Approve' }}
+              </button>
             </div>
           </div>
 
           <article class="blog-result">
             <h2>{{ activeResultTitle }}</h2>
-
-            <div class="hero-image">
-              <img [src]="referenceImageUrl || heroImageUrl" [alt]="heroImageAlt" loading="eager" decoding="async" />
-            </div>
 
             <section class="result-block">
               <h3>Outline</h3>
@@ -295,6 +298,73 @@
             </article>
 
             <article class="analytics-card wide">
+              <h3>Knowledge Health</h3>
+              <div class="metric-line"><span>Vector Table</span><strong>{{ knowledgeHealthData?.table || '-' }}</strong></div>
+              <div class="metric-line"><span>Total Chunks</span><strong>{{ knowledgeHealthData?.total_chunks || 0 }}</strong></div>
+              <div class="metric-line"><span>Retriever Ready</span><strong>{{ knowledgeReadyForRetrieval ? 'YES' : 'NO' }}</strong></div>
+
+              <div class="bar-row health-row">
+                <div class="bar-meta">
+                  <span>Genuine vectors</span>
+                  <strong>{{ knowledgeGenuinePercent }}%</strong>
+                </div>
+                <div class="bar-track">
+                  <div class="bar-fill genuine" [style.width]="percentWidth(knowledgeGenuinePercent)"></div>
+                </div>
+              </div>
+
+              <div class="bar-row health-row">
+                <div class="bar-meta">
+                  <span>Fake vectors</span>
+                  <strong>{{ knowledgeFakePercent }}%</strong>
+                </div>
+                <div class="bar-track">
+                  <div class="bar-fill fake" [style.width]="percentWidth(knowledgeFakePercent)"></div>
+                </div>
+              </div>
+
+              <div class="bar-row health-row" *ngIf="knowledgeOtherPercent > 0">
+                <div class="bar-meta">
+                  <span>Other/unknown</span>
+                  <strong>{{ knowledgeOtherPercent }}%</strong>
+                </div>
+                <div class="bar-track">
+                  <div class="bar-fill other" [style.width]="percentWidth(knowledgeOtherPercent)"></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="analytics-card wide">
+              <h3>Knowledge Coverage by Topic</h3>
+              <div class="dist-empty" *ngIf="!sourceTopicStats.length">No topic coverage data yet.</div>
+              <div class="bar-row" *ngFor="let item of sourceTopicStats">
+                <div class="bar-meta">
+                  <span>{{ item.topic }}</span>
+                  <strong>{{ item.chunks }}</strong>
+                </div>
+                <div class="bar-track">
+                  <div class="bar-fill topic" [style.width]="barWidth(item.chunks, maxTopicChunks)"></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="analytics-card wide">
+              <h3>Authority Score Distribution</h3>
+              <div class="metric-line"><span>Total Chunks</span><strong>{{ sourceAnalyticsData?.total_chunks || 0 }}</strong></div>
+              <div class="metric-line"><span>Total Sources</span><strong>{{ sourceAnalyticsData?.total_sources || 0 }}</strong></div>
+              <div class="dist-empty" *ngIf="!sourceAuthorityStats.length">No authority distribution data yet.</div>
+              <div class="bar-row" *ngFor="let item of sourceAuthorityStats">
+                <div class="bar-meta">
+                  <span>{{ item.band }}</span>
+                  <strong>{{ item.sources }} sources</strong>
+                </div>
+                <div class="bar-track">
+                  <div class="bar-fill authority" [style.width]="barWidth(item.sources, maxAuthoritySources)"></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="analytics-card wide">
               <h3>Generation Mode Distribution</h3>
               <div class="dist-row" *ngFor="let item of modeEntries(metricsData?.generation_mode_count)">
                 <span>{{ item.key }}</span>
@@ -314,6 +384,8 @@
           </div>
 
           <p class="error" *ngIf="metricsError">{{ metricsError }}</p>
+          <p class="error" *ngIf="sourceAnalyticsError">{{ sourceAnalyticsError }}</p>
+          <p class="error" *ngIf="knowledgeHealthError">{{ knowledgeHealthError }}</p>
         </section>
       </ng-template>
     </main>

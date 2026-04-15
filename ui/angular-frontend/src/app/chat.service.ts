@@ -10,6 +10,9 @@ import { ReportDetailResponse } from './chat.models';
 import { ReportsListResponse } from './chat.models';
 import { SaveReportRequest } from './chat.models';
 import { SaveReportResponse } from './chat.models';
+import { KnowledgeHealthResponse } from './chat.models';
+import { SourceAnalyticsResponse } from './chat.models';
+import { ReportStatus } from './chat.models';
 
 @Injectable({ providedIn: 'root' })
 export class ChatService {
@@ -32,6 +35,14 @@ export class ChatService {
     return this.http.get<MetricsResponse>(`${this.apiBase}/metrics`);
   }
 
+  getSourceAnalytics(): Observable<SourceAnalyticsResponse> {
+    return this.http.get<SourceAnalyticsResponse>(`${this.apiBase}/source-analytics`);
+  }
+
+  getKnowledgeHealth(): Observable<KnowledgeHealthResponse> {
+    return this.http.get<KnowledgeHealthResponse>(`${this.apiBase}/knowledge/health`);
+  }
+
   saveReport(request: SaveReportRequest): Observable<SaveReportResponse> {
     return this.http.post<SaveReportResponse>(`${this.apiBase}/reports`, request);
   }
@@ -44,6 +55,12 @@ export class ChatService {
 
   getReport(reportId: string): Observable<ReportDetailResponse> {
     return this.http.get<ReportDetailResponse>(`${this.apiBase}/reports/${reportId}`);
+  }
+
+  updateReportStatus(reportId: string, status: ReportStatus): Observable<ReportDetailResponse> {
+    return this.http.patch<ReportDetailResponse>(`${this.apiBase}/reports/${reportId}/status`, {
+      status,
+    });
   }
 
   deleteReport(reportId: string): Observable<DeleteReportResponse> {

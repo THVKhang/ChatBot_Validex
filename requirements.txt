@@ -9,6 +9,7 @@ langchain-openai==0.2.8
 langchain-community==0.3.7
 langchain-pinecone==0.2.0
 pinecone==6.0.2
+curl_cffi==0.7.3
 requests==2.32.3
 beautifulsoup4==4.12.3
 pypdf==5.1.0

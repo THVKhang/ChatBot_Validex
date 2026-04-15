@@ -1,15 +1,26 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
+import random
 from typing import Any
 
 import psycopg
 from dotenv import load_dotenv
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
+
+try:
+    from langchain_openai import OpenAIEmbeddings
+except Exception:  # pragma: no cover - optional dependency
+    OpenAIEmbeddings = None
+
+try:
+    from langchain_google_genai import GoogleGenerativeAIEmbeddings
+except Exception:  # pragma: no cover - optional dependency
+    GoogleGenerativeAIEmbeddings = None
 
 from app.config import settings
 
@@ -66,25 +77,90 @@ def _chunk_hash(record: dict[str, Any]) -> str:
     return hashlib.sha1(serialized.encode("utf-8")).hexdigest()
 
 
-def _embed_records(records: list[dict[str, Any]]) -> tuple[list[list[float]], int]:
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is required")
+def _build_embedding_client(google_output_dimensionality: int | None = None) -> tuple[Any | None, str]:
+    provider = os.getenv("EMBEDDING_PROVIDER", settings.embedding_provider).strip().lower()
+    if provider not in {"auto", "openai", "google"}:
+        provider = "auto"
 
-    embedding_model = OpenAIEmbeddings(
-        model=settings.embedding_model,
-        api_key=settings.openai_api_key,
-    )
+    resolved_google_output_dimensionality = google_output_dimensionality
+    if resolved_google_output_dimensionality is None:
+        env_dimension = os.getenv("GOOGLE_EMBEDDING_OUTPUT_DIMENSION", "").strip()
+        if env_dimension:
+            resolved_google_output_dimensionality = int(env_dimension)
+
+    if resolved_google_output_dimensionality is not None:
+        if resolved_google_output_dimensionality <= 0 or resolved_google_output_dimensionality > 8192:
+            raise RuntimeError("GOOGLE_EMBEDDING_OUTPUT_DIMENSION must be in range 1..8192")
+
+    preferred_google_embedding = settings.google_embedding_model.strip()
+    if not preferred_google_embedding:
+        fallback_google_embedding = settings.embedding_model.strip()
+        if fallback_google_embedding.startswith("models/"):
+            preferred_google_embedding = fallback_google_embedding
+    if not preferred_google_embedding:
+        preferred_google_embedding = "models/gemini-embedding-001"
+    if not preferred_google_embedding.startswith("models/"):
+        preferred_google_embedding = f"models/{preferred_google_embedding}"
+
+    if provider in {"auto", "google"} and settings.google_api_key and GoogleGenerativeAIEmbeddings is not None:
+        try:
+            google_kwargs: dict[str, Any] = {
+                "model": preferred_google_embedding,
+                "google_api_key": settings.google_api_key,
+            }
+            if resolved_google_output_dimensionality is not None:
+                google_kwargs["output_dimensionality"] = resolved_google_output_dimensionality
+
+            return (
+                GoogleGenerativeAIEmbeddings(**google_kwargs),
+                "google",
+            )
+        except Exception:
+            if provider == "google":
+                return (None, "")
+
+    if provider in {"auto", "openai"} and settings.openai_api_key and OpenAIEmbeddings is not None:
+        try:
+            return (
+                OpenAIEmbeddings(
+                    model=settings.embedding_model,
+                    api_key=settings.openai_api_key,
+                ),
+                "openai",
+            )
+        except Exception:
+            return (None, "")
+
+    return (None, "")
+
+
+def _embed_records(records: list[dict[str, Any]]) -> tuple[list[list[float]], int, str]:
+    embedding_client, _provider = _build_embedding_client()
+    if embedding_client is None:
+        allow_fake = os.getenv("ALLOW_FAKE_EMBEDDINGS", "0") == "1"
+        if not allow_fake:
+            raise RuntimeError("No embedding provider configured. Set GOOGLE_API_KEY or OPENAI_API_KEY.")
+        fake_dim = int(os.getenv("FAKE_EMBEDDING_DIM", "1536"))
+        if fake_dim <= 0 or fake_dim > 8192:
+            raise RuntimeError("FAKE_EMBEDDING_DIM must be in range 1..8192")
+        vectors: list[list[float]] = []
+        for item in records:
+            text = str(item.get("text", ""))
+            seed = int(hashlib.sha1(text.encode("utf-8")).hexdigest()[:16], 16)
+            rng = random.Random(seed)
+            vectors.append([rng.uniform(-1.0, 1.0) for _ in range(fake_dim)])
+        return vectors, fake_dim, "fake"
 
     texts = [str(item.get("text", "")) for item in records]
-    vectors = embedding_model.embed_documents(texts)
+    vectors = embedding_client.embed_documents(texts)
     if not vectors:
-        return [], 0
-    return vectors, len(vectors[0])
+        return [], 0, _provider or "unknown"
+    return vectors, len(vectors[0]), _provider or "unknown"
 
 
 def ingest_jsonl_to_pgvector(
     jsonl_path: str = "data/canonical/au_blog_chunks.jsonl",
-    table_name: str = "rag_blog_chunks",
+    table_name: str = settings.pgvector_table,
     state_path: str = "data/canonical/embedding_state.json",
     incremental: bool = True,
 ) -> dict[str, Any]:
@@ -106,6 +182,8 @@ def ingest_jsonl_to_pgvector(
         signature = _chunk_hash(record)
         next_state[chunk_id] = signature
         if not incremental or previous_state.get(chunk_id) != signature:
+            record = dict(record)
+            record["chunk_hash"] = signature
             changed_records.append(record)
 
     removed_chunk_ids = [chunk_id for chunk_id in previous_state.keys() if chunk_id not in next_state]
@@ -123,8 +201,9 @@ def ingest_jsonl_to_pgvector(
 
     vectors: list[list[float]] = []
     dimension = 0
+    embedding_provider = "unknown"
     if changed_records:
-        vectors, dimension = _embed_records(changed_records)
+        vectors, dimension, embedding_provider = _embed_records(changed_records)
         if not vectors or dimension <= 0:
             return {"status": "error", "message": "embedding failed", "upserted": 0}
 
@@ -135,13 +214,16 @@ def ingest_jsonl_to_pgvector(
 
     deleted_count = 0
 
-    with psycopg.connect(db_url) as conn:
+    # Disable auto-prepared statements for compatibility with transaction poolers.
+    with psycopg.connect(db_url, prepare_threshold=None) as conn:
         with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
             cur.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {table_name} (
                     chunk_id TEXT PRIMARY KEY,
+                    chunk_hash TEXT NOT NULL,
+                    embedding_provider TEXT NOT NULL DEFAULT 'unknown',
                     doc_id TEXT NOT NULL,
                     source_url TEXT NOT NULL,
                     source_domain TEXT NOT NULL,
@@ -157,10 +239,14 @@ def ingest_jsonl_to_pgvector(
                 )
                 """
             )
+            cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS chunk_hash TEXT")
+            cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS embedding_provider TEXT")
 
             upsert_sql = f"""
                 INSERT INTO {table_name} (
                     chunk_id,
+                    chunk_hash,
+                    embedding_provider,
                     doc_id,
                     source_url,
                     source_domain,
@@ -174,6 +260,8 @@ def ingest_jsonl_to_pgvector(
                     embedding
                 ) VALUES (
                     %(chunk_id)s,
+                    %(chunk_hash)s,
+                    %(embedding_provider)s,
                     %(doc_id)s,
                     %(source_url)s,
                     %(source_domain)s,
@@ -188,6 +276,8 @@ def ingest_jsonl_to_pgvector(
                 )
                 ON CONFLICT (chunk_id)
                 DO UPDATE SET
+                    chunk_hash = EXCLUDED.chunk_hash,
+                    embedding_provider = EXCLUDED.embedding_provider,
                     doc_id = EXCLUDED.doc_id,
                     source_url = EXCLUDED.source_url,
                     source_domain = EXCLUDED.source_domain,
@@ -206,6 +296,8 @@ def ingest_jsonl_to_pgvector(
                 payloads.append(
                     {
                         "chunk_id": str(item.get("chunk_id", "")),
+                        "chunk_hash": str(item.get("chunk_hash", "")) or _chunk_hash(item),
+                        "embedding_provider": str(item.get("embedding_provider", "")) or embedding_provider,
                         "doc_id": str(item.get("doc_id", "")),
                         "source_url": str(item.get("source_url", "")),
                         "source_domain": str(item.get("source_domain", "")),
@@ -261,8 +353,9 @@ def ingest_jsonl_to_postgres_langchain(
     if not records:
         return {"status": "error", "message": f"no records found in {jsonl_path}", "upserted": 0}
 
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is required")
+    embedding_client, provider = _build_embedding_client()
+    if embedding_client is None:
+        raise RuntimeError("No embedding provider configured. Set GOOGLE_API_KEY or OPENAI_API_KEY.")
 
     conn = (
         connection_string
@@ -297,19 +390,17 @@ def ingest_jsonl_to_postgres_langchain(
         return {"status": "error", "message": "no non-empty text records to ingest", "upserted": 0}
 
     try:
-        from langchain_community.vectorstores import PGVector
+        vectorstores_module = importlib.import_module("langchain_community.vectorstores")
+        PGVector = getattr(vectorstores_module, "PGVector", None)
+        if PGVector is None:
+            raise RuntimeError("PGVector class was not found in langchain_community.vectorstores")
     except Exception as exc:
         raise RuntimeError(
             "Missing langchain_community PGVector dependency. Install langchain-community and pgvector."
         ) from exc
 
-    embeddings = OpenAIEmbeddings(
-        model=settings.embedding_model,
-        api_key=settings.openai_api_key,
-    )
-
     PGVector.from_documents(
-        embedding=embeddings,
+        embedding=embedding_client,
         documents=docs_to_insert,
         collection_name=collection_name,
         connection_string=conn,
@@ -320,14 +411,26 @@ def ingest_jsonl_to_postgres_langchain(
         "status": "ok",
         "collection": collection_name,
         "upserted": len(docs_to_insert),
+        "embedding_provider": provider or "unknown",
         "mode": "langchain_pgvector",
     }
 
 
 if __name__ == "__main__":
     mode = os.getenv("INGEST_MODE", "raw_sql").strip().lower()
-    if mode == "langchain":
-        result = ingest_jsonl_to_postgres_langchain()
-    else:
-        result = ingest_jsonl_to_pgvector()
+    try:
+        if mode == "langchain":
+            result = ingest_jsonl_to_postgres_langchain()
+        else:
+            result = ingest_jsonl_to_pgvector()
+    except Exception as exc:
+        result = {
+            "status": "error",
+            "mode": mode,
+            "message": str(exc),
+            "hint": (
+                "Set GOOGLE_API_KEY or OPENAI_API_KEY and DATABASE_URL (raw_sql) or PGVECTOR_CONNECTION_STRING (langchain), "
+                "then rerun."
+            ),
+        }
     print(json.dumps(result, indent=2))
