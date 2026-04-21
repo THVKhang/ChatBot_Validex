@@ -58,16 +58,37 @@ class UpdateReportStatusRequest(BaseModel):
 
 
 app = FastAPI(title="AI Blog Generator API", version="0.1.0")
+
+_allowed_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-_sessions: dict[str, SessionManager] = defaultdict(SessionManager)
+# TTL-tracked sessions: maps session_id -> (SessionManager, last_access_timestamp)
+_sessions_store: dict[str, tuple[SessionManager, float]] = {}
 _rate_limit_window: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _get_or_create_session(session_id: str) -> SessionManager:
+    """Fetch an existing session or create a new one, updating last-access time."""
+    ttl = max(60, settings.session_ttl_seconds)
+    now = time.time()
+    # Evict stale sessions to prevent memory growth.
+    stale = [sid for sid, (_, ts) in _sessions_store.items() if now - ts > ttl]
+    for sid in stale:
+        _sessions_store.pop(sid, None)
+    if session_id in _sessions_store:
+        mgr, _ = _sessions_store[session_id]
+        _sessions_store[session_id] = (mgr, now)
+        return mgr
+    mgr = SessionManager()
+    _sessions_store[session_id] = (mgr, now)
+    return mgr
+
 _metrics: dict[str, object] = {
     "chat_requests_total": 0,
     "chat_errors_total": 0,
@@ -179,7 +200,7 @@ def metrics() -> dict:
 def chat(request: ChatRequest) -> dict:
     start = time.perf_counter()
     session_id = request.session_id or str(uuid4())
-    session = _sessions[session_id]
+    session = _get_or_create_session(session_id)
     _metrics["chat_requests_total"] += 1
 
     try:

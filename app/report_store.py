@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+try:
+    from filelock import FileLock
+except ImportError:  # pragma: no cover - optional dependency
+    FileLock = None  # type: ignore[assignment,misc]
+
 from app.config import settings
 
 
@@ -49,6 +54,10 @@ def _read_reports(path: Path) -> list[dict[str, Any]]:
     return normalized
 
 
+def _lock_path(path: Path) -> Path:
+    return path.with_suffix(path.suffix + ".lock")
+
+
 def _write_reports(path: Path, reports: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(path.suffix + ".tmp")
@@ -67,7 +76,7 @@ def save_report(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     storage_path = Path(settings.reports_path)
-    reports = _read_reports(storage_path)
+    lock = FileLock(str(_lock_path(storage_path)), timeout=10) if FileLock is not None else None
 
     report = {
         "id": str(uuid4()),
@@ -82,8 +91,16 @@ def save_report(
         "sources_used": sources_used,
         "sections": sections or [],
     }
-    reports.append(report)
-    _write_reports(storage_path, reports)
+
+    if lock is not None:
+        with lock:
+            reports = _read_reports(storage_path)
+            reports.append(report)
+            _write_reports(storage_path, reports)
+    else:
+        reports = _read_reports(storage_path)
+        reports.append(report)
+        _write_reports(storage_path, reports)
     return report
 
 
@@ -125,32 +142,43 @@ def update_report_status(report_id: str, status: str) -> tuple[dict[str, Any] | 
         return None, "invalid_status"
 
     storage_path = Path(settings.reports_path)
-    reports = _read_reports(storage_path)
+    lock = FileLock(str(_lock_path(storage_path)), timeout=10) if FileLock is not None else None
     now = datetime.now(timezone.utc).isoformat()
 
-    for item in reports:
-        if item.get("id") != report_id:
-            continue
+    def _do_update() -> tuple[dict[str, Any] | None, str | None]:
+        reports = _read_reports(storage_path)
+        for item in reports:
+            if item.get("id") != report_id:
+                continue
+            current_status = _normalize_status(str(item.get("status", "Draft"))) or "Draft"
+            allowed_next = STATUS_TRANSITIONS.get(current_status, {current_status})
+            if target_status not in allowed_next:
+                return None, "invalid_transition"
+            item["status"] = target_status
+            item["updated_at"] = now
+            _write_reports(storage_path, reports)
+            return item, None
+        return None, "not_found"
 
-        current_status = _normalize_status(str(item.get("status", "Draft"))) or "Draft"
-        allowed_next = STATUS_TRANSITIONS.get(current_status, {current_status})
-        if target_status not in allowed_next:
-            return None, "invalid_transition"
-
-        item["status"] = target_status
-        item["updated_at"] = now
-        _write_reports(storage_path, reports)
-        return item, None
-
-    return None, "not_found"
+    if lock is not None:
+        with lock:
+            return _do_update()
+    return _do_update()
 
 
 def delete_report(report_id: str) -> bool:
     storage_path = Path(settings.reports_path)
-    reports = _read_reports(storage_path)
-    kept = [item for item in reports if item.get("id") != report_id]
-    if len(kept) == len(reports):
-        return False
+    lock = FileLock(str(_lock_path(storage_path)), timeout=10) if FileLock is not None else None
 
-    _write_reports(storage_path, kept)
-    return True
+    def _do_delete() -> bool:
+        reports = _read_reports(storage_path)
+        kept = [item for item in reports if item.get("id") != report_id]
+        if len(kept) == len(reports):
+            return False
+        _write_reports(storage_path, kept)
+        return True
+
+    if lock is not None:
+        with lock:
+            return _do_delete()
+    return _do_delete()

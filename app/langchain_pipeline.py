@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from dataclasses import replace
 import hashlib
@@ -237,6 +238,22 @@ class LangChainRAGPipeline:
                     "Validate SEO quality of a blog draft. Input must be the current draft text."
                 ),
             ),
+            tool_cls(
+                name="universal_web_scraper",
+                func=self._tool_universal_web_scraper,
+                description=(
+                    "Scrape and extract clean text from ANY website URL. "
+                    "Input MUST be a valid HTTP/HTTPS URL."
+                ),
+            ),
+            tool_cls(
+                name="image_ocr_extractor",
+                func=self._tool_image_ocr_extractor,
+                description=(
+                    "Extract text (OCR) from an image URL using Google Gemini Multimodal. "
+                    "Input MUST be a valid HTTP/HTTPS image URL."
+                ),
+            ),
         ]
 
         try:
@@ -288,9 +305,22 @@ class LangChainRAGPipeline:
         if host not in allowlist:
             return "Configured website domain is not in TOOL_ALLOWED_DOMAINS."
 
+        def _fetch() -> bytes:
+            with urlopen(settings.validex_website_url, timeout=8) as response:  # noqa: S310
+                return response.read()
+
         try:
-            with urlopen(settings.validex_website_url, timeout=8) as response:
-                html = response.read().decode("utf-8", errors="ignore")
+            # Run blocking urlopen in a thread to avoid blocking the event loop.
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    html_bytes = loop.run_in_executor(pool, _fetch)
+                    # run_in_executor returns a Future; in a sync context we use the thread pool directly.
+                    html_bytes = pool.submit(_fetch).result(timeout=10)
+            else:
+                html_bytes = _fetch()
+            html = html_bytes.decode("utf-8", errors="ignore")
         except Exception:
             return "Unable to fetch website content right now."
 
@@ -301,6 +331,64 @@ class LangChainRAGPipeline:
         if not text:
             return "Website content is empty after cleanup."
         return text[:2200]
+
+    def _tool_universal_web_scraper(self, url: str) -> str:
+        url = url.strip()
+        if not url.startswith("http"):
+            return "Invalid URL provided. Must start with http:// or https://"
+        
+        try:
+            from curl_cffi import requests as cffi_requests
+            from bs4 import BeautifulSoup
+            response = cffi_requests.get(url, impersonate="chrome", timeout=15)
+            soup = BeautifulSoup(response.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+                tag.decompose()
+            text = soup.get_text(separator="\n")
+            text = re.sub(r'\n{3,}', '\n\n', text).strip()
+            if not text:
+                return "Scraping succeeded but no readable text found."
+            return text[:6000]
+        except Exception as e:
+            return f"Scraping failed: {e}"
+
+    def _tool_image_ocr_extractor(self, url: str) -> str:
+        url = url.strip()
+        if not url.startswith("http"):
+            return "Invalid URL provided for OCR. Must start with http:// or https://"
+        
+        if self._llm is None:
+            return "LLM is not configured, cannot perform OCR."
+            
+        try:
+            import urllib.request
+            import base64
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                image_data = response.read()
+            
+            # Determine mime type from URL extension or default to jpeg
+            mime_type = "image/jpeg"
+            if url.lower().endswith(".png"):
+                mime_type = "image/png"
+            elif url.lower().endswith(".webp"):
+                mime_type = "image/webp"
+                
+            base64_img = base64.b64encode(image_data).decode("utf-8")
+            
+            from langchain_core.messages import HumanMessage
+            msg = HumanMessage(content=[
+                {"type": "text", "text": "Hãy trích xuất TẤT CẢ văn bản, chữ viết, bảng biểu (OCR) có trong hình ảnh này một cách chính xác nhất bằng tiếng Việt."},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_img}"}}
+            ])
+            
+            ocr_response = self._llm.invoke([msg])
+            result = getattr(ocr_response, "content", "")
+            if not result:
+                return "OCR completed but no text was detected."
+            return str(result)
+        except Exception as e:
+            return f"OCR extraction failed: {e}"
 
     def _tool_unsplash_image_search(self, query: str) -> str:
         image_url, alt_text = self._search_unsplash_image(query)
@@ -378,6 +466,9 @@ class LangChainRAGPipeline:
 
     def _resolve_section_image(self, topic: str, image_keyword: str, heading: str) -> tuple[str, str]:
         keyword = re.sub(r"\s+", " ", image_keyword).strip() or heading or topic
+        # Allow LLM to explicitly remove an image by setting keyword to REMOVE_IMAGE.
+        if keyword.upper() == "REMOVE_IMAGE":
+            return ("", "")
         image_url, alt_text = self._search_unsplash_image(keyword)
         if image_url:
             return (image_url, alt_text or f"{heading} illustration")
@@ -466,7 +557,10 @@ class LangChainRAGPipeline:
             "Return fields: intent, topic, tone, audience, length.\n"
             "Rules:\n"
             "- intent must be one of: create_blog, rewrite, shorten.\n"
-            "- If user asks to edit/rewrite/update an existing draft (including image count changes), use intent=rewrite and topic=current draft unless a new explicit topic is provided.\n"
+            "- If the user prompt is just a keyword, short phrase, or question WITHOUT a clear edit/rewrite/shorten command, "
+            "assume intent=create_blog and use the EXACT user input as the topic.\n"
+            "- If user asks to edit/rewrite/update an existing draft (including image count changes, removing images, etc.), "
+            "use intent=rewrite and topic=current draft unless a new explicit topic is provided.\n"
             "- If user asks to make content shorter/summarize, use intent=shorten and topic=current draft unless a new explicit topic is provided.\n"
             "- length must be one of: short, medium, long. Infer from explicit word targets when possible.\n"
             "- audience should capture explicit target audience if present, otherwise general audience.\n"
@@ -514,12 +608,12 @@ class LangChainRAGPipeline:
         # Enabled by default for debugging prompt/response mismatches in production-like flows.
         if os.getenv("LOG_RAW_LLM_IO", "1") != "1":
             return
-        logger.warning(
+        logger.debug(
             "LLM_RAW_PROMPT[%s]: %s",
             stage,
             self._normalize_whitespace_for_log(prompt_text),
         )
-        logger.warning(
+        logger.debug(
             "LLM_RAW_RESPONSE[%s]: %s",
             stage,
             self._normalize_whitespace_for_log(response_text),
@@ -562,6 +656,8 @@ class LangChainRAGPipeline:
                     model=preferred_google_model,
                     google_api_key=settings.google_api_key,
                     temperature=0.2,
+                    max_retries=1,
+                    timeout=30.0,
                 )
             except Exception:
                 if provider == "google":
@@ -573,6 +669,8 @@ class LangChainRAGPipeline:
                     model=settings.model_name,
                     api_key=settings.openai_api_key,
                     temperature=0.2,
+                    max_retries=1,
+                    timeout=30.0,
                 )
             except Exception:
                 return None
@@ -1040,31 +1138,34 @@ class LangChainRAGPipeline:
         retrieval_status: str,
     ) -> GeneratedBlog:
         warning = settings.hybrid_warning_text.strip()
+
+        # Try structured output first so the blog gets full sections + Unsplash images
+        # even when RAG context is unavailable.
+        if self._llm is not None and settings.use_live_llm:
+            structured_result = self._generate_with_structured_output(
+                parsed, docs=[], previous_draft=previous_draft,
+            )
+            if structured_result is not None:
+                structured_result.sources_used = []
+                if not structured_result.draft.startswith(warning):
+                    structured_result.draft = f"{warning}\n\n{structured_result.draft}"
+                return structured_result
+
+            # Fallback: try markdown-direct generation.
+            md_result = self._generate_markdown_directly_with_llm(
+                parsed, docs=[], previous_draft=previous_draft,
+            )
+            if md_result is not None:
+                md_result.sources_used = []
+                if not md_result.draft.startswith(warning):
+                    md_result.draft = f"{warning}\n\n{md_result.draft}"
+                return md_result
+
+        # Final fallback: static template.
         generated = self._generate_with_fallback(parsed, [], previous_draft)
         generated.sources_used = []
-
-        if self._llm is not None and settings.use_live_llm:
-            instruction = (
-                "You are an expert blog writer. "
-                "You may use general world knowledge when official RAG context is unavailable.\n"
-                f"You MUST put this exact warning sentence as the first line: {warning}\n"
-                f"Topic: {parsed.topic}\nAudience: {parsed.audience}\nTone: {parsed.tone}\nLength: {parsed.length}\n"
-                f"Retrieval status: {retrieval_status}\n"
-                "Write a complete markdown blog with title and section headings."
-            )
-            try:
-                response = self._llm.invoke(instruction)
-                draft = str(getattr(response, "content", "") or "").strip()
-                if draft:
-                    if not draft.startswith(warning):
-                        draft = f"{warning}\n\n{draft}"
-                    generated.draft = draft
-            except Exception:
-                pass
-
         if not generated.draft.startswith(warning):
             generated.draft = f"{warning}\n\n{generated.draft}"
-
         return generated
 
     @staticmethod
@@ -1449,7 +1550,10 @@ class LangChainRAGPipeline:
             + "Use Vietnamese unless the user explicitly requests English. "
             + "Follow Chain-of-Verification internally before final output: verify every claim against retrieved context. "
             + f"If a required fact is missing, include exactly: \"{MISSING_INTERNAL_DATA_TEXT}\" "
-            + "Append citations in this format: [Nguồn: Tiêu đề tài liệu | URL: đường_dẫn_nếu_có]."
+            + "Append citations in this format: [Nguồn: Tiêu đề tài liệu | URL: đường_dẫn_nếu_có].\n"
+            + "IMAGE REMOVAL: If the user asks to remove/delete an image from a specific section, "
+            + "set image_search_keyword to exactly \"REMOVE_IMAGE\" for that section. "
+            + "Keep all other sections' image_search_keyword as normal descriptive keywords."
         )
 
         try:
@@ -1657,7 +1761,9 @@ class LangChainRAGPipeline:
             "You should reason step-by-step and call tools when useful:\n"
             "- Use database_vector_search or pinecone_search for factual grounding.\n"
             "- Use pinecone_search for legal/compliance facts.\n"
-            "- Use validex_website_reader for service/pricing context if available.\n"
+            "- Use validex_website_reader for Validex service/pricing context.\n"
+            "- Use universal_web_scraper if you need to fetch real-time data from a specific external URL.\n"
+            "- Use image_ocr_extractor if the user provides an image URL or you need to read an image.\n"
             "- Use unsplash_image_search to validate image keyword quality.\n"
             "- Use seo_blog_check on your draft before finalizing.\n"
             "Grounding and citation requirements:\n"

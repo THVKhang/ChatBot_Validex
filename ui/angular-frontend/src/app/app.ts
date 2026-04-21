@@ -62,6 +62,9 @@ export class App {
   @ViewChild('promptInput')
   promptInput?: ElementRef<HTMLTextAreaElement>;
 
+  @ViewChild('chatHistory')
+  chatHistory?: ElementRef<HTMLDivElement>;
+
   constructor(private readonly chatService: ChatService) {
     this.refreshRuntime();
   }
@@ -182,6 +185,15 @@ export class App {
     setTimeout(() => this.promptInput?.nativeElement.focus(), 30);
   }
 
+  scrollChatToBottom(): void {
+    setTimeout(() => {
+      const el = this.chatHistory?.nativeElement;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      }
+    }, 50);
+  }
+
   sendPrompt(): void {
     const trimmed = this.prompt.trim();
     if (!trimmed || this.loading) {
@@ -193,7 +205,9 @@ export class App {
 
     this.errorMessage = '';
     this.messages.push({ role: 'user', text: userText });
+    this.prompt = '';
     this.loading = true;
+    this.scrollChatToBottom();
 
     this.chatService.sendMessage(finalPrompt, this.sessionId).subscribe({
       next: (response: ChatApiResponse) => {
@@ -206,6 +220,7 @@ export class App {
           payload: response,
         });
         this.loading = false;
+        this.scrollChatToBottom();
       },
       error: () => {
         this.loading = false;

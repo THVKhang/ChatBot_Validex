@@ -1,4 +1,4 @@
-﻿:host {
+:host {
   display: block;
   min-height: 100vh;
   width: 100%;
@@ -342,11 +342,11 @@
 .config-panel {
   background: #f1f3ff;
   border-right: 1px solid #dbe2f9;
-  padding: 30px;
-  display: grid;
-  gap: 18px;
-  align-content: start;
-  overflow-y: auto;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: calc(100vh - 64px);
 }
 
 .panel-head h3 {
@@ -398,7 +398,7 @@ input {
 }
 
 textarea {
-  min-height: 190px;
+  min-height: 60px;
   resize: vertical;
 }
 
@@ -435,8 +435,247 @@ input:focus {
   gap: 8px;
 }
 
+/* ─── Chat History ──────────────────────── */
+.chat-history {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scroll-behavior: smooth;
+}
+
+.chat-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  color: #94a3b8;
+  padding: 40px 16px;
+}
+
+.chat-empty-icon {
+  font-size: 40px;
+  opacity: 0.4;
+}
+
+.chat-empty h4 {
+  margin: 0;
+  font-family: 'Manrope', 'Inter', sans-serif;
+  font-size: 1.1rem;
+  color: #334155;
+}
+
+.chat-empty p {
+  margin: 0;
+  font-size: 0.82rem;
+  max-width: 28ch;
+}
+
+.chat-message {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  animation: msg-in 0.25s ease-out;
+}
+
+.chat-message.user {
+  flex-direction: row-reverse;
+}
+
+.msg-avatar {
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+
+.chat-message.user .msg-avatar {
+  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  color: #fff;
+}
+
+.chat-message.assistant .msg-avatar {
+  background: linear-gradient(135deg, #10b981, #06b6d4);
+  color: #fff;
+}
+
+.msg-bubble {
+  max-width: 80%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 0.84rem;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.chat-message.user .msg-bubble {
+  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-message.assistant .msg-bubble {
+  background: #fff;
+  color: #1f2937;
+  border: 1px solid #e2e8f0;
+  border-bottom-left-radius: 4px;
+}
+
+.msg-text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.msg-time {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.68rem;
+  opacity: 0.7;
+  font-weight: 600;
+}
+
+.chat-message.user .msg-time {
+  text-align: right;
+}
+
+/* Typing indicator */
+.chat-typing {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.chat-typing .msg-bubble.typing {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  padding: 12px 18px;
+  border-radius: 14px;
+  border-bottom-left-radius: 4px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #94a3b8;
+  animation: typing-bounce 1.4s infinite ease-in-out;
+}
+
+.dot:nth-child(2) { animation-delay: 0.2s; }
+.dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typing-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-5px); opacity: 1; }
+}
+
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Collapsible Config ──────────────── */
+.config-details {
+  padding: 0 16px;
+  margin: 0;
+  border-top: 1px solid #dbe2f9;
+}
+
+.config-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0;
+  font-family: 'Inter', 'Segoe UI', sans-serif;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #586579;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.config-summary::-webkit-details-marker { display: none; }
+
+.config-summary .material-symbols-outlined {
+  font-size: 16px;
+  transition: transform 0.2s ease;
+}
+
+details[open] .config-summary .material-symbols-outlined {
+  transform: rotate(90deg);
+}
+
+.config-body {
+  padding: 0 0 12px;
+  display: grid;
+  gap: 12px;
+}
+
+/* ─── Chat Input Bar ──────────────────── */
+.chat-input-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid #dbe2f9;
+  background: #f1f3ff;
+}
+
+.chat-input-bar textarea {
+  flex: 1;
+  min-height: 42px;
+  max-height: 120px;
+  resize: none;
+  border-radius: 14px;
+  padding: 10px 14px;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.btn-send {
+  width: 42px;
+  height: 42px;
+  min-width: 42px;
+  border-radius: 50%;
+  border: 0;
+  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.btn-send:not(:disabled):hover {
+  transform: scale(1.06);
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4);
+}
+
+.btn-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-send .material-symbols-outlined {
+  font-size: 20px;
+}
+
 .runtime-panel {
-  margin-top: 8px;
+  margin: 0 16px 8px;
   padding: 12px;
   border-radius: 12px;
   border: 1px solid #dbe2f9;
@@ -958,6 +1197,42 @@ input:focus {
   border-right-color: #273042;
 }
 
+.sentinel-layout.dark-mode .chat-empty h4 {
+  color: #cbd5e1;
+}
+
+.sentinel-layout.dark-mode .chat-empty p {
+  color: #64748b;
+}
+
+.sentinel-layout.dark-mode .chat-message.assistant .msg-bubble {
+  background: #1e293b;
+  color: #e2e8f0;
+  border-color: #334155;
+}
+
+.sentinel-layout.dark-mode .chat-typing .msg-bubble.typing {
+  background: #1e293b;
+  border-color: #334155;
+}
+
+.sentinel-layout.dark-mode .dot {
+  background: #64748b;
+}
+
+.sentinel-layout.dark-mode .config-details {
+  border-top-color: #273042;
+}
+
+.sentinel-layout.dark-mode .config-summary {
+  color: #94a3b8;
+}
+
+.sentinel-layout.dark-mode .chat-input-bar {
+  background: #0f172a;
+  border-top-color: #273042;
+}
+
 .sentinel-layout.dark-mode textarea,
 .sentinel-layout.dark-mode select,
 .sentinel-layout.dark-mode input {
@@ -1120,6 +1395,7 @@ input:focus {
   .config-panel {
     border-right: 0;
     border-bottom: 1px solid #dbe2f9;
+    max-height: 50vh;
   }
 
   .inline-row {

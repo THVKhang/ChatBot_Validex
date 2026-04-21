@@ -7,7 +7,8 @@ langchain==0.3.7
 langchain-core==0.3.18
 langchain-openai==0.2.8
 langchain-community==0.3.7
-langchain-pinecone==0.2.0
+langchain-pinecone>=0.2.3
+langchain-google-genai>=2.0.0
 pinecone==6.0.2
 curl_cffi==0.7.3
 requests==2.32.3
@@ -18,3 +19,5 @@ psycopg[binary]==3.2.3
 psycopg2-binary==2.9.10
 pgvector==0.3.6
 redis==5.2.1
+filelock>=3.13.0
+httpx>=0.27.0

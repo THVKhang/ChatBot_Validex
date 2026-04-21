@@ -1,4 +1,4 @@
-﻿<div class="sentinel-layout" [class.dark-mode]="darkMode">
+<div class="sentinel-layout" [class.dark-mode]="darkMode">
   <aside class="side-nav">
     <div class="brand-block">
       <h2>{{ title }}</h2>
@@ -92,61 +92,94 @@
     <main class="content-shell">
       <ng-container *ngIf="activeTopTab !== 'analytics'; else analyticsView">
       <section class="config-panel">
-        <div class="panel-head">
-          <h3>Configuration</h3>
-          <p>Define editorial parameters for your AI briefing.</p>
+        <!-- Chat History -->
+        <div class="chat-history" #chatHistory>
+          <div class="chat-empty" *ngIf="!messages.length">
+            <span class="material-symbols-outlined chat-empty-icon">chat_bubble</span>
+            <h4>Start a conversation</h4>
+            <p>Type a keyword or topic below to generate your first blog.</p>
+          </div>
+          <div
+            class="chat-message"
+            *ngFor="let msg of messages"
+            [class.user]="msg.role === 'user'"
+            [class.assistant]="msg.role === 'assistant'"
+          >
+            <div class="msg-avatar">
+              <span class="material-symbols-outlined">{{ msg.role === 'user' ? 'person' : 'smart_toy' }}</span>
+            </div>
+            <div class="msg-bubble">
+              <p class="msg-text">{{ msg.text | slice:0:500 }}</p>
+              <span class="msg-time" *ngIf="msg.payload">Blog updated ✓</span>
+            </div>
+          </div>
+          <div class="chat-typing" *ngIf="loading">
+            <div class="msg-avatar"><span class="material-symbols-outlined">smart_toy</span></div>
+            <div class="msg-bubble typing">
+              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            </div>
+          </div>
         </div>
 
-        <div class="field-group">
-          <label for="blogPrompt">Blog Prompt</label>
+        <!-- Collapsible Config -->
+        <details class="config-details" [open]="!messages.length">
+          <summary class="config-summary">
+            <span class="material-symbols-outlined">tune</span> Configuration
+          </summary>
+          <div class="config-body">
+            <div class="field-grid">
+              <div class="field-group">
+                <label for="tone">Tone</label>
+                <select id="tone" [(ngModel)]="selectedTone" [disabled]="loading">
+                  <option>Professional</option>
+                  <option>Informative</option>
+                  <option>Technical</option>
+                </select>
+              </div>
+              <div class="field-group">
+                <label for="wordCount">Word Count</label>
+                <select id="wordCount" [(ngModel)]="selectedWordCount" [disabled]="loading">
+                  <option>800 Words</option>
+                  <option>1200 Words</option>
+                  <option>2000 Words</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label for="audience">Target Audience</label>
+              <select id="audience" [(ngModel)]="selectedAudience" [disabled]="loading">
+                <option>HR Professionals</option>
+                <option>Legal Compliance Teams</option>
+                <option>Business Owners</option>
+              </select>
+            </div>
+          </div>
+        </details>
+
+        <!-- Sample Prompts (only show when no messages) -->
+        <div class="sample-prompts" *ngIf="!messages.length">
+          <p>Quick start</p>
+          <button class="btn sample" *ngFor="let sample of samplePrompts" (click)="usePromptTemplate(sample)">
+            {{ sample }}
+          </button>
+        </div>
+
+        <!-- Chat Input Bar (pinned bottom) -->
+        <div class="chat-input-bar">
           <textarea
             #promptInput
             id="blogPrompt"
             [(ngModel)]="prompt"
             [disabled]="loading"
             (keydown)="onPromptKeydown($event)"
-            placeholder="Describe the topic, scope, and desired outcome"
+            placeholder="Type a keyword, topic, or editing instruction..."
+            rows="2"
           ></textarea>
-        </div>
-
-        <div class="field-grid">
-          <div class="field-group">
-            <label for="tone">Tone</label>
-            <select id="tone" [(ngModel)]="selectedTone" [disabled]="loading">
-              <option>Professional</option>
-              <option>Informative</option>
-              <option>Technical</option>
-            </select>
-          </div>
-          <div class="field-group">
-            <label for="wordCount">Word Count</label>
-            <select id="wordCount" [(ngModel)]="selectedWordCount" [disabled]="loading">
-              <option>800 Words</option>
-              <option>1200 Words</option>
-              <option>2000 Words</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="field-group">
-          <label for="audience">Target Audience</label>
-          <select id="audience" [(ngModel)]="selectedAudience" [disabled]="loading">
-            <option>HR Professionals</option>
-            <option>Legal Compliance Teams</option>
-            <option>Business Owners</option>
-          </select>
-        </div>
-
-        <div class="sample-prompts">
-          <p>Sample prompts</p>
-          <button class="btn sample" *ngFor="let sample of samplePrompts" (click)="usePromptTemplate(sample)">
-            {{ sample }}
+          <button class="btn-send" (click)="sendPrompt()" [disabled]="loading || !prompt.trim()" title="Send">
+            <span class="material-symbols-outlined">{{ loading ? 'hourglass_top' : 'send' }}</span>
           </button>
         </div>
-
-        <button class="btn generate" (click)="sendPrompt()" [disabled]="loading || !prompt.trim()">
-          {{ loading ? 'Generating...' : 'Generate Blog' }}
-        </button>
 
         <section class="runtime-panel" *ngIf="apiReady">
           <div class="runtime-head">

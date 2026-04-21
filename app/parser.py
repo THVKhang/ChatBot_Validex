@@ -114,8 +114,10 @@ def _extract_topic(prompt: str, prompt_lower: str, intent: str) -> str:
 
     # Fallback for create-blog prompts without explicit markers.
     # Use the first line as topic after removing common command prefixes.
+    # Accept short keywords (>= 2 chars) so users can just type a keyword.
     first_line = prompt.splitlines()[0].strip() if prompt.strip() else ""
     if first_line:
+        raw_first_line = first_line
         first_line = re.sub(
             r"^(write|create|generate|draft|viet|viết|soan|soạn)\s+",
             "",
@@ -129,8 +131,12 @@ def _extract_topic(prompt: str, prompt_lower: str, intent: str) -> str:
             flags=re.IGNORECASE,
         )
         first_line = first_line.strip(" .,!?:;\n\t")
-        if len(first_line) >= 8:
+        if len(first_line) >= 2:
             return first_line
+        # If stripping removed too much, use the raw first line as the topic.
+        raw_first_line = raw_first_line.strip(" .,!?:;\n\t")
+        if len(raw_first_line) >= 2:
+            return raw_first_line
 
     # For prompts like "Make it shorter", keep a stable fallback.
     return "current draft"

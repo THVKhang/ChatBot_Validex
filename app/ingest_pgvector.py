@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 from typing import Any
 
 import psycopg
@@ -26,6 +27,18 @@ from app.config import settings
 
 
 load_dotenv()
+
+_SAFE_TABLE_NAME_RE = re.compile(r'^[a-z][a-z0-9_]{0,62}$')
+
+
+def _validate_table_name(name: str) -> str:
+    """Raise ValueError if name is not a safe PostgreSQL identifier."""
+    if not _SAFE_TABLE_NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid table name {name!r}. "
+            "Must start with a lowercase letter and contain only [a-z0-9_] (max 63 chars)."
+        )
+    return name
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -164,6 +177,7 @@ def ingest_jsonl_to_pgvector(
     state_path: str = "data/canonical/embedding_state.json",
     incremental: bool = True,
 ) -> dict[str, Any]:
+    table_name = _validate_table_name(table_name)  # Guard against SQL injection
     path = Path(jsonl_path)
     records = _load_jsonl(path)
     if not records:

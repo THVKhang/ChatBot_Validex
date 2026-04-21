@@ -269,7 +269,9 @@ def retrieve_with_guard(
 
     top_score = all_results[0].score
     second_score = all_results[1].score if len(all_results) > 1 else 0
-    confidence = top_score / (top_score + second_score + 1)
+    # Gap-based confidence: how much better is the top result vs the runner-up?
+    # Normalizes to [0, 1] regardless of absolute score magnitude.
+    confidence = (top_score - second_score) / (top_score + 1)
 
     if top_score < min_top_score:
         return RetrievalDecision([], "low_confidence", confidence, top_score, "top score under threshold")

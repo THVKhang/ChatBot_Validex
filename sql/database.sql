@@ -21,8 +21,16 @@ CREATE TABLE IF NOT EXISTS validex_knowledge (
 CREATE INDEX IF NOT EXISTS idx_validex_knowledge_topic ON validex_knowledge(topic);
 CREATE INDEX IF NOT EXISTS idx_validex_knowledge_source_domain ON validex_knowledge(source_domain);
 
--- Optional ANN index for faster similarity search on larger datasets.
-CREATE INDEX IF NOT EXISTS idx_validex_knowledge_embedding_ivfflat
+-- HNSW ANN index: better than IVFFlat for small/medium datasets (<100k rows).
+-- IVFFlat requires ~lists*30 rows (lists=100 → 3000 rows) to train well and degrades below that.
+-- HNSW has no training phase, works well at any dataset size, and provides good recall.
+CREATE INDEX IF NOT EXISTS idx_validex_knowledge_embedding_hnsw
 ON validex_knowledge
-USING ivfflat (embedding vector_cosine_ops)
-WITH (lists = 100);
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+
+-- Optional: switch to IVFFlat only when the table has >50k rows for better throughput.
+-- CREATE INDEX IF NOT EXISTS idx_validex_knowledge_embedding_ivfflat
+-- ON validex_knowledge
+-- USING ivfflat (embedding vector_cosine_ops)
+-- WITH (lists = 100);

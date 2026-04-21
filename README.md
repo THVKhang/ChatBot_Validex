@@ -12,7 +12,21 @@ pip install -r requirements.txt
 
 2. Run backend API
 
+You must run the server using your virtual environment to ensure all dependencies like `psycopg` are found.
+
+**Option A (Directly using venv):**
 ```bash
+# Windows
+.\.venv\Scripts\python.exe -m uvicorn app.api_server:app --reload --host 0.0.0.0 --port 8000
+
+# macOS / Linux
+./.venv/bin/python -m uvicorn app.api_server:app --reload --host 0.0.0.0 --port 8000
+```
+
+**Option B (Activate venv first):**
+```bash
+# Windows
+.\.venv\Scripts\activate
 python -m uvicorn app.api_server:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -27,7 +41,11 @@ npm start
 4. Run tests
 
 ```bash
-python -m pytest -q
+# Windows
+.\.venv\Scripts\python.exe -m pytest -q
+
+# macOS / Linux
+./.venv/bin/python -m pytest -q
 ```
 
 ## Gemini API Setup (Google AI Studio)

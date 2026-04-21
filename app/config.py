@@ -78,6 +78,11 @@ class Settings:
         "TOOL_ALLOWED_DOMAINS",
         "validex.com.au,www.validex.com.au,acic.gov.au,www.acic.gov.au,afp.gov.au,www.afp.gov.au,oaic.gov.au,www.oaic.gov.au",
     )
+    allowed_origins: str = os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:4200,http://localhost:8000",
+    )
+    session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "3600"))
 
 
 settings = Settings()
