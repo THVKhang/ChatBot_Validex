@@ -142,6 +142,20 @@ def test_pgvector_non_fake_guard_skips_local_fallback(monkeypatch):
 
     monkeypatch.setattr(pipeline, "_retrieve_from_local_guard", fake_local)
 
+    # Disable Web Search fallback for this test
+    class DummyDDGS:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def text(self, *args, **kwargs): return []
+    import sys
+    if "duckduckgo_search" in sys.modules:
+        monkeypatch.setattr("duckduckgo_search.DDGS", DummyDDGS)
+    else:
+        import sys
+        class DummyDDGSModule:
+            DDGS = DummyDDGS
+        sys.modules["duckduckgo_search"] = DummyDDGSModule
+
     bundle = pipeline._retrieve({"effective_topic": "police check", "retrieval_top_k": 4})
 
     assert bundle.decision.status == "no_match"

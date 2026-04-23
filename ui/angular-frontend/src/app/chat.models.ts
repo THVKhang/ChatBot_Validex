@@ -42,12 +42,20 @@ export interface ChatApiResponse {
   retrieved: RetrievedResult[];
   retrieval_meta: RetrievalMeta;
   generated: GeneratedResult;
+  runtime?: {
+    generation_mode?: string;
+    retrieval_mode?: string;
+    quality_gate_blocked?: boolean;
+    external_knowledge_used?: boolean;
+    fallback_reason?: string | null;
+  };
 }
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
   payload?: ChatApiResponse;
+  latencyMs?: number;
 }
 
 export type ReportStatus = 'Draft' | 'Reviewed' | 'Approved';
@@ -131,6 +139,18 @@ export interface HealthResponse {
     use_rate_limit: boolean;
     use_redis_rate_limit?: boolean;
   };
+}
+
+export interface ChatSessionSummary {
+  session_id: string;
+  updated_at: string;
+  title: string;
+  turn_count: number;
+}
+
+export interface ChatSessionHistory {
+  session_id: string;
+  turns: any[];
 }
 
 export interface MetricsResponse {

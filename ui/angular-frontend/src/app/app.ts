@@ -1,8 +1,9 @@
-import { AfterViewInit, Component, ElementRef, OnDestroy, ViewChild } from '@angular/core';
+import { Component, ElementRef, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 
-import { ChatService } from './chat.service';
+import { ChatService, StreamEvent } from './chat.service';
+import { MarkdownPipe } from './markdown.pipe';
 import { BlogSection } from './chat.models';
 import { ChatApiResponse, ChatMessage } from './chat.models';
 import { HealthResponse } from './chat.models';
@@ -14,10 +15,12 @@ import { ReportStatus } from './chat.models';
 import { ReportSummary } from './chat.models';
 import { SourceAnalyticsResponse } from './chat.models';
 import { TopicChunkStat } from './chat.models';
+import { ChatSessionSummary, ChatSessionHistory } from './chat.models';
+import { AuthService } from './auth.service';
 
 @Component({
   selector: 'app-root',
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, MarkdownPipe],
   templateUrl: './app.html',
   styleUrl: './app.scss'
 })
@@ -40,6 +43,10 @@ export class App {
   deletingReportId: string | null = null;
   activeMenu: 'new' | 'history' | 'saved' | 'settings' = 'new';
   activeTopTab: 'dashboard' | 'templates' | 'analytics' = 'templates';
+
+  sessionsLoading = false;
+  sessionsError = '';
+  sessions: ChatSessionSummary[] = [];
   selectedReport: ReportDetail | null = null;
   healthData: HealthResponse | null = null;
   metricsData: MetricsResponse | null = null;
@@ -48,7 +55,33 @@ export class App {
   metricsError = '';
   sourceAnalyticsError = '';
   knowledgeHealthError = '';
+  useStreaming = true;
   private pollTimerId: number | null = null;
+  attachedFile: string | null = null;
+  attachedFileContent: string | null = null;
+  isUploading = false;
+
+  // Authentication State
+  currentUser: string | null = null;
+  showAuthModal = false;
+  authMode: 'login' | 'register' = 'login';
+  authUsername = '';
+  authPassword = '';
+  authError = '';
+  authLoading = false;
+
+  thinkingStatus = '';
+  private thinkingInterval: any;
+
+  private startThinkingCycle(): void {
+    // We now rely on real-time SSE "thinking" events from LangGraph multi-agent architecture
+    // This is just the initial state
+    this.thinkingStatus = 'Initializing Multi-Agent system...';
+  }
+
+  private stopThinkingCycle(): void {
+    this.thinkingStatus = '';
+  }
 
   readonly samplePrompts: string[] = [
     'Generate an in-depth editorial regarding police check procedures and background verification policies in the modern workplace.',
@@ -65,8 +98,11 @@ export class App {
   @ViewChild('chatHistory')
   chatHistory?: ElementRef<HTMLDivElement>;
 
-  constructor(private readonly chatService: ChatService) {
+  constructor(private readonly chatService: ChatService, private authService: AuthService) {
     this.refreshRuntime();
+    this.authService.currentUser$.subscribe(user => {
+      this.currentUser = user;
+    });
   }
 
   ngAfterViewInit(): void {
@@ -158,7 +194,9 @@ export class App {
 
   setMenu(menu: 'new' | 'history' | 'saved' | 'settings'): void {
     this.activeMenu = menu;
-    if (menu === 'history' || menu === 'saved') {
+    if (menu === 'history') {
+      this.loadSessions();
+    } else if (menu === 'saved') {
       this.loadReports();
     }
   }
@@ -196,12 +234,21 @@ export class App {
 
   sendPrompt(): void {
     const trimmed = this.prompt.trim();
-    if (!trimmed || this.loading) {
+    if (!trimmed && !this.attachedFileContent || this.loading) {
       return;
     }
 
-    const finalPrompt = this.buildConfiguredPrompt(trimmed);
-    const userText = trimmed;
+    let finalPrompt = this.buildConfiguredPrompt(trimmed);
+    let userText = trimmed;
+
+    if (this.attachedFileContent) {
+      const fileContext = `\n\n[CONTEXT FROM ATTACHED FILE: ${this.attachedFile}]\n${this.attachedFileContent}\n\n`;
+      finalPrompt += fileContext;
+      userText = `[File Attached: ${this.attachedFile}]\n` + userText;
+      
+      this.attachedFile = null;
+      this.attachedFileContent = null;
+    }
 
     this.errorMessage = '';
     this.messages.push({ role: 'user', text: userText });
@@ -209,24 +256,122 @@ export class App {
     this.loading = true;
     this.scrollChatToBottom();
 
+    if (this.useStreaming) {
+      this.sendViaStream(finalPrompt);
+    } else {
+      this.sendViaHttp(finalPrompt);
+    }
+  }
+
+  private sendViaHttp(finalPrompt: string): void {
     this.chatService.sendMessage(finalPrompt, this.sessionId).subscribe({
       next: (response: ChatApiResponse) => {
-        this.sessionId = response.session_id;
-        this.generatedAt = new Date();
-        this.selectedReport = null;
-        this.messages.push({
-          role: 'assistant',
-          text: response.generated.draft,
-          payload: response,
-        });
-        this.loading = false;
-        this.scrollChatToBottom();
+        this.handleResponse(response);
       },
       error: () => {
         this.loading = false;
         this.errorMessage = 'Cannot reach the API. Check that the backend server is running at http://localhost:8000.';
       }
     });
+  }
+
+  private async sendViaStream(finalPrompt: string): Promise<void> {
+    const startTime = Date.now();
+
+    // Add a placeholder assistant message
+    const assistantMsg: ChatMessage = {
+      role: 'assistant',
+      text: '',
+    };
+    this.messages.push(assistantMsg);
+    this.scrollChatToBottom();
+    this.startThinkingCycle();
+
+    try {
+      await this.chatService.sendMessageStream(
+        finalPrompt,
+        this.sessionId,
+        (event: StreamEvent) => {
+          if (event.type === 'meta') {
+            // Update latency display
+            const latency = event.data.latency_ms;
+            if (latency) {
+              assistantMsg.latencyMs = Math.round(latency);
+            }
+          } else if (event.type === 'thinking') {
+            const stepName = event.data?.step || 'Agent working';
+            if (stepName === 'Parser') this.thinkingStatus = 'Parsing prompt semantics...';
+            else if (stepName === 'Researcher') this.thinkingStatus = 'Data Collector AI retrieving knowledge...';
+            else if (stepName === 'Writer') this.thinkingStatus = 'Blog Writer AI generating draft...';
+            else if (stepName === 'Editor') this.thinkingStatus = 'Editor AI reviewing compliance...';
+            else this.thinkingStatus = `${stepName} is working...`;
+          } else if (event.type === 'done') {
+            this.stopThinkingCycle();
+            const response = event.data as ChatApiResponse;
+            this.sessionId = response.session_id;
+            this.generatedAt = new Date();
+            this.selectedReport = null;
+            assistantMsg.text = response.generated.draft;
+            assistantMsg.payload = response;
+            assistantMsg.latencyMs = Date.now() - startTime;
+            this.loading = false;
+            this.scrollChatToBottom();
+          } else if (event.type === 'error') {
+            this.stopThinkingCycle();
+            this.loading = false;
+            this.errorMessage = event.data.error || 'Stream error';
+          }
+        }
+      );
+    } catch {
+      this.stopThinkingCycle();
+      this.loading = false;
+      this.errorMessage = 'Cannot reach the API. Check that the backend server is running.';
+    }
+
+    if (this.loading) {
+      this.stopThinkingCycle();
+      this.loading = false;
+    }
+  }
+
+  private handleResponse(response: ChatApiResponse): void {
+    this.sessionId = response.session_id;
+    this.generatedAt = new Date();
+    this.selectedReport = null;
+    this.messages.push({
+      role: 'assistant',
+      text: response.generated.draft,
+      payload: response,
+    });
+    this.loading = false;
+    this.scrollChatToBottom();
+  }
+
+  regenerateMessage(messageIndex: number): void {
+    // Find the user message that prompted this assistant response
+    let userPrompt = '';
+    for (let i = messageIndex - 1; i >= 0; i--) {
+      if (this.messages[i].role === 'user') {
+        userPrompt = this.messages[i].text;
+        break;
+      }
+    }
+    if (!userPrompt || this.loading) return;
+
+    // Remove the old assistant message
+    this.messages.splice(messageIndex, 1);
+
+    // Re-send
+    this.loading = true;
+    this.scrollChatToBottom();
+    const finalPrompt = this.buildConfiguredPrompt(userPrompt);
+
+    if (this.useStreaming) {
+      this.sendViaStream(finalPrompt);
+    } else {
+      this.sendViaHttp(finalPrompt);
+    }
   }
 
   onPromptKeydown(event: KeyboardEvent): void {
@@ -283,6 +428,47 @@ export class App {
         this.reportsLoading = false;
         this.reportsError = 'Unable to load saved reports.';
       },
+    });
+  }
+
+  loadSessions(): void {
+    this.sessionsLoading = true;
+    this.sessionsError = '';
+    this.chatService.getChatSessions(30).subscribe({
+      next: (sessions) => {
+        this.sessionsLoading = false;
+        this.sessions.splice(0, this.sessions.length, ...sessions);
+      },
+      error: () => {
+        this.sessionsLoading = false;
+        this.sessionsError = 'Unable to load chat sessions.';
+      },
+    });
+  }
+
+  openSession(sessionId: string): void {
+    this.sessionsError = '';
+    this.chatService.getChatSession(sessionId).subscribe({
+      next: (history: ChatSessionHistory) => {
+        this.clearSession();
+        this.sessionId = history.session_id;
+        
+        // Reconstruct messages from turns
+        for (const turn of history.turns) {
+          if (turn.user_prompt) {
+            this.messages.push({ role: 'user', text: turn.user_prompt });
+          }
+          if (turn.assistant_output) {
+            this.messages.push({ role: 'assistant', text: turn.assistant_output });
+          }
+        }
+        
+        this.activeMenu = 'new';
+        this.scrollChatToBottom();
+      },
+      error: () => {
+        this.sessionsError = 'Unable to load this session.';
+      }
     });
   }
 
@@ -358,9 +544,70 @@ export class App {
       });
   }
 
+  exportDraft(markdown: string, format: 'docx' | 'html'): void {
+    this.chatService.exportChat(markdown, format).subscribe({
+      next: (blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `validex_report.${format}`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        a.remove();
+      },
+      error: () => {
+        this.errorMessage = `Unable to export to ${format.toUpperCase()}.`;
+      }
+    });
+  }
+
   usePromptTemplate(sample: string): void {
     this.prompt = sample;
     this.focusPrompt();
+  }
+
+  adminKey = '';
+  isIngesting = false;
+  ingestResult = '';
+
+  triggerIngest(): void {
+    if (!this.adminKey) {
+      this.ingestResult = 'API Key required.';
+      return;
+    }
+    this.isIngesting = true;
+    this.ingestResult = '';
+    this.chatService.triggerIngest(this.adminKey).subscribe({
+      next: (res) => {
+        this.isIngesting = false;
+        this.ingestResult = res.message || 'Ingestion started/completed.';
+      },
+      error: (err) => {
+        this.isIngesting = false;
+        this.ingestResult = 'Error: ' + (err?.error?.detail || 'Unauthorized or failed.');
+      }
+    });
+  }
+
+  onFileSelected(event: any): void {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    this.isUploading = true;
+    this.errorMessage = '';
+    
+    this.chatService.uploadFile(file).subscribe({
+      next: (res) => {
+        this.isUploading = false;
+        this.attachedFile = res.filename;
+        this.attachedFileContent = res.extracted_text;
+      },
+      error: (err) => {
+        this.isUploading = false;
+        this.errorMessage = 'Failed to extract text from file: ' + (err?.error?.detail || err.message);
+      }
+    });
   }
 
   get latestResponse(): ChatApiResponse | null {
@@ -538,26 +785,70 @@ export class App {
     ].join('\n');
   }
 
-  exportDraft(response: ChatApiResponse): void {
-    const content = [
-      `Title: ${response.generated.title}`,
-      '',
-      'Outline:',
-      ...response.generated.outline.map((item, index) => `${index + 1}. ${item}`),
-      '',
-      'Draft:',
-      response.generated.draft,
-      '',
-      'Sources Used:',
-      ...response.generated.sources_used,
-    ].join('\n');
+  // --- Auth Methods ---
+  openAuthModal(mode: 'login' | 'register') {
+    this.authMode = mode;
+    this.showAuthModal = true;
+    this.authError = '';
+    this.authUsername = '';
+    this.authPassword = '';
+  }
 
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `draft-${Date.now()}.txt`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+  closeAuthModal() {
+    this.showAuthModal = false;
+  }
+
+  submitAuth() {
+    if (!this.authUsername || !this.authPassword) {
+      this.authError = 'Please enter username and password.';
+      return;
+    }
+
+    this.authLoading = true;
+    this.authError = '';
+
+    if (this.authMode === 'login') {
+      this.authService.login(this.authUsername, this.authPassword).subscribe({
+        next: () => {
+          this.authLoading = false;
+          this.closeAuthModal();
+          this.loadSessions(); // Reload sessions for the logged-in user
+        },
+        error: (err) => {
+          this.authLoading = false;
+          this.authError = err?.error?.detail || 'Login failed. Check your credentials.';
+        }
+      });
+    } else {
+      this.authService.register(this.authUsername, this.authPassword).subscribe({
+        next: () => {
+          // Auto login after register
+          this.authService.login(this.authUsername, this.authPassword).subscribe({
+            next: () => {
+              this.authLoading = false;
+              this.closeAuthModal();
+              this.loadSessions();
+            },
+            error: () => {
+              this.authLoading = false;
+              this.authMode = 'login';
+              this.authError = 'Registration successful. Please log in.';
+            }
+          });
+        },
+        error: (err) => {
+          this.authLoading = false;
+          this.authError = err?.error?.detail || 'Registration failed. Username might be taken.';
+        }
+      });
+    }
+  }
+
+  logout() {
+    this.authService.logout();
+    this.sessionId = null;
+    this.messages.length = 0;
+    this.sessions = [];
+    this.activeMenu = 'new';
   }
 }

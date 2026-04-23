@@ -2,25 +2,43 @@ from app.langchain_pipeline import pipeline
 from app.session_manager import SessionManager
 
 
-def process_prompt(prompt: str, session: SessionManager) -> dict:
-    previous_topic = None
-    previous_draft = None
-    last_turn = session.latest_turn()
-    if last_turn:
-        previous_topic = last_turn.parsed_topic or None
-        previous_draft = last_turn.generated_draft or None
-
-    payload = pipeline.run(
-        prompt,
-        previous_turn_topic=previous_topic,
-        previous_draft=previous_draft,
-    )
+def process_prompt(prompt: str, session: SessionManager, *, request_id: str | None = None) -> dict:
+    from app.graph import multi_agent_graph
+    
+    # Initialize the LangGraph state
+    initial_state = {
+        "prompt": prompt,
+        "session": session,
+        "request_id": request_id,
+        "revision_count": 0
+    }
+    
+    # Execute the Graph
+    final_state = multi_agent_graph.invoke(initial_state)
+    
+    # Format the payload for backward compatibility with frontend/tests
+    payload = {
+        "parsed": final_state.get("parsed", {}),
+        "retrieved": final_state.get("retrieved_docs", []),
+        "generated": {
+            "title": final_state.get("title", ""),
+            "outline": final_state.get("outline", []),
+            "draft": final_state.get("draft", ""),
+            "sources_used": final_state.get("sources_used", [])
+        },
+        # Map quality gate status
+        "runtime": {
+            "quality_gate_blocked": bool(final_state.get("editor_feedback")),
+            "generation_mode": "multi-agent",
+            "retrieval_mode": "hybrid"
+        }
+    }
 
     session.add_turn(
         prompt,
         "",  # Keep compact storage for API/CLI shared path.
-        parsed_intent=payload["parsed"]["intent"],
-        parsed_topic=payload["parsed"]["topic"],
+        parsed_intent=payload["parsed"].get("intent", ""),
+        parsed_topic=payload["parsed"].get("topic", ""),
         generated_draft=payload["generated"]["draft"],
     )
     return payload

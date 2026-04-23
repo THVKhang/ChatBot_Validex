@@ -83,6 +83,21 @@ class Settings:
         "http://localhost:4200,http://localhost:8000",
     )
     session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "3600"))
+    # Circuit breaker: skip LLM after N consecutive failures for a cooldown period
+    circuit_breaker_threshold: int = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "3"))
+    circuit_breaker_cooldown_seconds: int = int(os.getenv("CIRCUIT_BREAKER_COOLDOWN_SECONDS", "60"))
+    # Conversation memory: max history turns sent to LLM
+    max_conversation_turns: int = int(os.getenv("MAX_CONVERSATION_TURNS", "5"))
+    # Prompt guard
+    enable_prompt_guard: bool = os.getenv("ENABLE_PROMPT_GUARD", "1") == "1"
+    max_prompt_length: int = int(os.getenv("MAX_PROMPT_LENGTH", "10000"))
+    # Response cache
+    cache_enabled: bool = os.getenv("CACHE_ENABLED", "1") == "1"
+    cache_max_entries: int = int(os.getenv("CACHE_MAX_ENTRIES", "100"))
+    cache_ttl_seconds: int = int(os.getenv("CACHE_TTL_SECONDS", "900"))
+    # Admin API
+    admin_api_key: str = os.getenv("ADMIN_API_KEY", "")
 
 
 settings = Settings()
+

@@ -20,8 +20,8 @@
       </a>
     </nav>
 
-    <section class="reports-list" *ngIf="activeMenu === 'history' || activeMenu === 'saved'">
-      <p>Recent Reports</p>
+    <section class="reports-list" *ngIf="activeMenu === 'saved'">
+      <p>Saved Reports</p>
       <div class="reports-loading" *ngIf="reportsLoading">Loading...</div>
       <div class="report-row" *ngFor="let report of reports">
         <button class="report-item" type="button" (click)="openReport(report.id)">
@@ -42,11 +42,58 @@
       <div class="reports-empty" *ngIf="!reportsLoading && !reports.length">No saved reports yet.</div>
     </section>
 
+    <section class="sessions-list" *ngIf="activeMenu === 'history'">
+      <p>Recent Chats</p>
+      <div class="reports-loading" *ngIf="sessionsLoading">Loading...</div>
+      <div class="report-row" *ngFor="let session of sessions">
+        <button class="report-item" type="button" (click)="openSession(session.session_id)">
+          <strong>{{ session.title }}</strong>
+          <small>{{ session.turn_count }} message(s)</small>
+          <span *ngIf="session.updated_at">{{ session.updated_at | date:'short' }}</span>
+        </button>
+      </div>
+      <div class="reports-empty" *ngIf="!sessionsLoading && !sessions.length">No chat history.</div>
+    </section>
+
     <div class="side-actions">
+      <div class="user-profile">
+        <span *ngIf="currentUser" class="user-greeting">Hi, {{ currentUser }}</span>
+        <button class="btn secondary" type="button" *ngIf="!currentUser" (click)="openAuthModal('login')">Log In</button>
+        <button class="btn secondary" type="button" *ngIf="currentUser" (click)="logout()">Log Out</button>
+      </div>
       <button class="btn primary" type="button" (click)="clearSession()">New Production</button>
       <a href="#"><span class="material-symbols-outlined">menu_book</span> Documentation</a>
     </div>
   </aside>
+
+  <!-- Auth Modal -->
+  <div class="modal-overlay" *ngIf="showAuthModal">
+    <div class="modal-content auth-modal">
+      <div class="modal-header">
+        <h3>{{ authMode === 'login' ? 'Log In' : 'Register' }}</h3>
+        <button class="btn-close" (click)="closeAuthModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="error" *ngIf="authError">{{ authError }}</p>
+        <div class="field-group">
+          <label>Username</label>
+          <input type="text" [(ngModel)]="authUsername" placeholder="Enter username">
+        </div>
+        <div class="field-group">
+          <label>Password</label>
+          <input type="password" [(ngModel)]="authPassword" placeholder="Enter password">
+        </div>
+        <button class="btn primary full-width" (click)="submitAuth()" [disabled]="authLoading">
+          {{ authLoading ? 'Please wait...' : (authMode === 'login' ? 'Log In' : 'Register') }}
+        </button>
+        <div class="auth-toggle">
+          <a href="#" (click)="$event.preventDefault(); authMode = (authMode === 'login' ? 'register' : 'login')">
+            {{ authMode === 'login' ? 'Need an account? Register' : 'Already have an account? Log In' }}
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="workspace-shell">
     <header class="top-nav">
@@ -101,7 +148,7 @@
           </div>
           <div
             class="chat-message"
-            *ngFor="let msg of messages"
+            *ngFor="let msg of messages; let i = index"
             [class.user]="msg.role === 'user'"
             [class.assistant]="msg.role === 'assistant'"
           >
@@ -109,14 +156,33 @@
               <span class="material-symbols-outlined">{{ msg.role === 'user' ? 'person' : 'smart_toy' }}</span>
             </div>
             <div class="msg-bubble">
-              <p class="msg-text">{{ msg.text | slice:0:500 }}</p>
-              <span class="msg-time" *ngIf="msg.payload">Blog updated ✓</span>
+              <div *ngIf="msg.role === 'assistant' && msg.text" class="msg-markdown" [innerHTML]="msg.text | markdown"></div>
+              <p *ngIf="msg.role === 'user'" class="msg-text">{{ msg.text }}</p>
+              <div class="msg-footer" *ngIf="msg.role === 'assistant' && (msg.payload || msg.latencyMs)">
+                <span class="msg-latency" *ngIf="msg.latencyMs">
+                  <span class="material-symbols-outlined">timer</span>
+                  {{ msg.latencyMs }}ms
+                </span>
+                <span class="msg-mode" *ngIf="msg.payload?.runtime?.generation_mode as mode">
+                  {{ mode }}
+                </span>
+                <button class="btn-regenerate" type="button" (click)="exportDraft(msg.text, 'docx')" [disabled]="loading || !msg.text" title="Export to Word">
+                  <span class="material-symbols-outlined">description</span> Word
+                </button>
+                <button class="btn-regenerate" type="button" (click)="exportDraft(msg.text, 'html')" [disabled]="loading || !msg.text" title="Export to HTML">
+                  <span class="material-symbols-outlined">html</span> HTML
+                </button>
+                <button class="btn-regenerate" type="button" (click)="regenerateMessage(i)" [disabled]="loading" title="Regenerate">
+                  <span class="material-symbols-outlined">refresh</span>
+                </button>
+              </div>
             </div>
           </div>
-          <div class="chat-typing" *ngIf="loading">
-            <div class="msg-avatar"><span class="material-symbols-outlined">smart_toy</span></div>
-            <div class="msg-bubble typing">
-              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <div class="chat-typing" *ngIf="loading && thinkingStatus">
+            <div class="msg-avatar"><span class="material-symbols-outlined">psychology</span></div>
+            <div class="msg-bubble thinking">
+              <span class="thinking-spinner material-symbols-outlined">sync</span>
+              <em>{{ thinkingStatus }}</em>
             </div>
           </div>
         </div>
@@ -167,16 +233,27 @@
 
         <!-- Chat Input Bar (pinned bottom) -->
         <div class="chat-input-bar">
-          <textarea
-            #promptInput
-            id="blogPrompt"
-            [(ngModel)]="prompt"
-            [disabled]="loading"
-            (keydown)="onPromptKeydown($event)"
-            placeholder="Type a keyword, topic, or editing instruction..."
-            rows="2"
-          ></textarea>
-          <button class="btn-send" (click)="sendPrompt()" [disabled]="loading || !prompt.trim()" title="Send">
+          <input type="file" #fileUploadInput style="display: none" (change)="onFileSelected($event)" accept=".pdf,.docx,.txt" />
+          <button class="btn-attach" (click)="fileUploadInput.click()" [disabled]="loading || isUploading" title="Attach Document (PDF/DOCX)">
+            <span class="material-symbols-outlined">{{ isUploading ? 'sync' : 'attach_file' }}</span>
+          </button>
+          <div class="input-wrapper" style="flex: 1; display: flex; flex-direction: column;">
+            <div class="attachment-preview" *ngIf="attachedFile">
+              <span class="material-symbols-outlined">description</span>
+              <span>{{ attachedFile }}</span>
+              <button class="btn-remove-attachment" (click)="attachedFile = null; attachedFileContent = null; fileUploadInput.value = ''">×</button>
+            </div>
+            <textarea
+              #promptInput
+              id="blogPrompt"
+              [(ngModel)]="prompt"
+              [disabled]="loading"
+              (keydown)="onPromptKeydown($event)"
+              placeholder="Type a keyword, topic, or editing instruction..."
+              rows="2"
+            ></textarea>
+          </div>
+          <button class="btn-send" (click)="sendPrompt()" [disabled]="loading || (!prompt.trim() && !attachedFileContent)" title="Send">
             <span class="material-symbols-outlined">{{ loading ? 'hourglass_top' : 'send' }}</span>
           </button>
         </div>
@@ -228,7 +305,7 @@
                 <span class="material-symbols-outlined">content_copy</span>
                 Copy
               </button>
-              <button class="btn icon" type="button" *ngIf="latestResponse as result" (click)="exportDraft(result)">
+              <button class="btn icon" type="button" *ngIf="latestResponse as result" (click)="exportDraft(result.generated.draft, 'docx')">
                 <span class="material-symbols-outlined">upload</span>
                 Export
               </button>
@@ -303,8 +380,15 @@
       <ng-template #analyticsView>
         <section class="analytics-page">
           <div class="analytics-head">
-            <h2>Runtime Analytics</h2>
+            <h2>Runtime Analytics & Admin</h2>
             <p>Live observability for retrieval, generation, quality gate, and latency.</p>
+            <div style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: center;">
+              <input type="password" [(ngModel)]="adminKey" placeholder="Admin API Key" style="padding: 6px; border-radius: 4px; border: 1px solid #ccc; background: transparent; color: inherit;">
+              <button class="btn primary" (click)="triggerIngest()" [disabled]="isIngesting" style="padding: 6px 12px;">
+                {{ isIngesting ? 'Ingesting...' : 'Ingest Knowledge' }}
+              </button>
+            </div>
+            <p *ngIf="ingestResult" style="color: var(--success); margin-top: 0.5rem;">{{ ingestResult }}</p>
           </div>
 
           <div class="analytics-grid">

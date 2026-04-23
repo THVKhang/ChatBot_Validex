@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 
 
@@ -10,6 +10,8 @@ class ParsedPrompt:
     tone: str
     audience: str
     length: str
+    custom_instructions: str = ""
+    modifiers: dict = field(default_factory=dict)
 
 
 DEFAULT_INTENT = "create_blog"
@@ -165,6 +167,37 @@ def _clean_topic_text(topic: str) -> str:
     return cleaned or "current draft"
 
 
+_URL_PATTERN = re.compile(r"https?://[^\s,\"'<>]+", re.IGNORECASE)
+_IMAGE_EXT_PATTERN = re.compile(r"\.(jpe?g|png|webp|gif|bmp|svg)(\?[^\s]*)?$", re.IGNORECASE)
+
+
+def _extract_modifiers(prompt: str) -> dict:
+    """Extract structured modifiers from the prompt text."""
+    modifiers: dict = {}
+
+    # Detect all URLs
+    urls = _URL_PATTERN.findall(prompt)
+    web_urls = []
+    image_urls = []
+    for url in urls:
+        if _IMAGE_EXT_PATTERN.search(url):
+            image_urls.append(url)
+        else:
+            web_urls.append(url)
+
+    if web_urls:
+        modifiers["scrape_urls"] = web_urls
+    if image_urls:
+        modifiers["ocr_urls"] = image_urls
+
+    # Detect explicit image count: "3 images", "2 ảnh"
+    img_count_match = re.search(r"(\d+)\s*(?:images?|ảnh|anh|hình|hinh|pictures?|photos?)", prompt, re.IGNORECASE)
+    if img_count_match:
+        modifiers["image_count"] = int(img_count_match.group(1))
+
+    return modifiers
+
+
 def parse_prompt(prompt: str) -> ParsedPrompt:
     prompt_lower = prompt.lower()
 
@@ -173,6 +206,7 @@ def parse_prompt(prompt: str) -> ParsedPrompt:
     audience = _detect_audience(prompt_lower)
     length = _detect_length(prompt_lower)
     topic = _clean_topic_text(_extract_topic(prompt, prompt_lower, intent))
+    modifiers = _extract_modifiers(prompt)
 
     return ParsedPrompt(
         raw_prompt=prompt,
@@ -181,6 +215,7 @@ def parse_prompt(prompt: str) -> ParsedPrompt:
         tone=tone,
         audience=audience,
         length=length,
+        modifiers=modifiers,
     )
 
 

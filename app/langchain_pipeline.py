@@ -26,6 +26,7 @@ from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableLambda
 
+from app.cache import response_cache
 from app.config import settings
 from app.generator import build_section_image_url
 from app.generator import build_sections
@@ -98,6 +99,7 @@ class PromptParseSchema(BaseModel):
     tone: str = Field(default="clear_professional")
     audience: str = Field(default="general audience")
     length: str = Field(default="medium")
+    custom_instructions: str = Field(default="")
 
 
 class LangChainRAGPipeline:
@@ -109,6 +111,9 @@ class LangChainRAGPipeline:
         self._vector_store = self._build_vector_store()
         self._agent_executor = self._build_agent_executor()
         self._last_generation_mode = "fallback"
+        # Circuit breaker state
+        self._cb_consecutive_failures = 0
+        self._cb_open_until: float = 0.0  # timestamp until which the breaker stays open
         self._parse_chain = RunnableLambda(self._parse)
         self._retrieve_chain = RunnableLambda(self._retrieve)
         system_prompt = """
@@ -130,12 +135,15 @@ class LangChainRAGPipeline:
             - Văn phong: chuyên nghiệp, trung tính, đáng tin cậy.
             - Độc giả: nhà tuyển dụng, HR và người lao động tại Úc.
 
-            ### 📋 CẤU TRÚC BÀI BLOG ĐẦU RA:
+            ### 📋 CẤU TRÚC ĐẦU RA:
+            Nếu người dùng KHÔNG yêu cầu định dạng đặc biệt, tuân thủ cấu trúc mặc định:
             1. Tiêu đề (H1) chuẩn SEO.
             2. Tóm tắt (Intro) ngắn gọn 1-2 câu.
-            3. Các mục chính (H2, H3), ưu tiên phân loại theo bang/vùng lãnh thổ nếu context có dữ liệu.
-            4. Kết luận nêu giá trị Validex hỗ trợ doanh nghiệp.
-            5. Danh mục nguồn tham khảo ở cuối bài.
+            3. Các mục chính (H2, H3), phân loại theo bang/vùng lãnh thổ nếu có.
+            4. Kết luận.
+            5. Danh mục nguồn.
+            
+            🚨 [ĐẶC BIỆT]: Nếu có `{custom_instructions}`, BẠN PHẢI BỎ QUA cấu trúc mặc định bên trên và TUYỆT ĐỐI tuân thủ theo yêu cầu tuỳ chỉnh (Ví dụ: viết thơ, viết code, listicle, v.v.).
 
             ### 🔍 CHAIN OF VERIFICATION (CoVe):
             - Trước khi trả lời, rà soát lại toàn bài và xóa các câu không có bằng chứng trong context.
@@ -147,6 +155,7 @@ class LangChainRAGPipeline:
             - Audience: {audience}
             - Tone: {tone}
             - Length: {length}
+            - Custom Instructions: {custom_instructions}
 
             Dữ liệu nội bộ đã truy xuất:
             {context}
@@ -482,6 +491,7 @@ class LangChainRAGPipeline:
         tone: str,
         audience: str,
         length: str,
+        custom_instructions: str = "",
     ) -> ParsedPrompt:
         intent_value = re.sub(r"\s+", "_", str(intent or "").strip().lower())
         if intent_value in {"rewrite", "edit", "revise", "update", "modify"}:
@@ -502,6 +512,8 @@ class LangChainRAGPipeline:
         if length_value not in {"short", "medium", "long"}:
             length_value = "medium"
 
+        custom_instructions_value = str(custom_instructions or "").strip()
+
         return ParsedPrompt(
             raw_prompt=prompt,
             intent=intent_value,
@@ -509,6 +521,7 @@ class LangChainRAGPipeline:
             tone=tone_value,
             audience=audience_value,
             length=length_value,
+            custom_instructions=custom_instructions_value,
         )
 
     def _classify_llm_error(self, error_text: str) -> str:
@@ -542,6 +555,35 @@ class LangChainRAGPipeline:
         )
         if len(failures) > MAX_LLM_FAILURE_RECORDS:
             del failures[0 : len(failures) - MAX_LLM_FAILURE_RECORDS]
+        self._cb_record_failure()
+
+    def _cb_is_open(self) -> bool:
+        """Return True if the circuit breaker is open (LLM should be skipped)."""
+        import time as _time
+        if self._cb_open_until > 0 and _time.time() < self._cb_open_until:
+            logger.warning("circuit_breaker.open — skipping LLM call for cooldown")
+            return True
+        if self._cb_open_until > 0 and _time.time() >= self._cb_open_until:
+            # Cooldown expired, half-open: allow one attempt
+            self._cb_open_until = 0.0
+            self._cb_consecutive_failures = 0
+        return False
+
+    def _cb_record_success(self) -> None:
+        self._cb_consecutive_failures = 0
+        self._cb_open_until = 0.0
+
+    def _cb_record_failure(self) -> None:
+        import time as _time
+        self._cb_consecutive_failures += 1
+        threshold = max(1, settings.circuit_breaker_threshold)
+        if self._cb_consecutive_failures >= threshold:
+            cooldown = max(10, settings.circuit_breaker_cooldown_seconds)
+            self._cb_open_until = _time.time() + cooldown
+            logger.warning(
+                "circuit_breaker.tripped — LLM disabled for %ds after %d consecutive failures",
+                cooldown, self._cb_consecutive_failures,
+            )
 
     def _parse_with_llm(self, prompt: str, llm_trace: dict[str, Any] | None = None) -> ParsedPrompt | None:
         if self._llm is None:
@@ -554,7 +596,7 @@ class LangChainRAGPipeline:
 
         instruction = (
             "Extract prompt metadata for a blog system.\n"
-            "Return fields: intent, topic, tone, audience, length.\n"
+            "Return fields: intent, topic, tone, audience, length, custom_instructions.\n"
             "Rules:\n"
             "- intent must be one of: create_blog, rewrite, shorten.\n"
             "- If the user prompt is just a keyword, short phrase, or question WITHOUT a clear edit/rewrite/shorten command, "
@@ -565,6 +607,9 @@ class LangChainRAGPipeline:
             "- length must be one of: short, medium, long. Infer from explicit word targets when possible.\n"
             "- audience should capture explicit target audience if present, otherwise general audience.\n"
             "- tone should be concise and normalized (for example: professional, friendly, casual, clear_professional).\n"
+            "- custom_instructions: Extract ANY special structural, stylistic, formatting rules or non-standard requests "
+            "(e.g., 'viết 1 bài thơ', 'không dùng markdown', 'chỉ trả lời 1 câu', 'dạng danh sách', 'thêm icon'). "
+            "Leave empty if it's a standard blog request.\n"
             f"User prompt:\n{prompt}"
         )
 
@@ -595,6 +640,7 @@ class LangChainRAGPipeline:
             tone=parsed_payload.tone,
             audience=parsed_payload.audience,
             length=parsed_payload.length,
+            custom_instructions=getattr(parsed_payload, "custom_instructions", ""),
         )
 
     @staticmethod
@@ -1060,18 +1106,75 @@ class LangChainRAGPipeline:
         topic = payload["effective_topic"]
         retrieval_top_k = int(payload.get("retrieval_top_k") or settings.top_k)
         retrieval_top_k = max(1, min(20, retrieval_top_k))
-        logger.info("pipeline.retrieve_start", extra={"topic": topic, "top_k": retrieval_top_k})
+        
+        # Increase initial top_k for reranking buffer
+        initial_top_k = retrieval_top_k * 3
+
+        logger.info("pipeline.retrieve_start", extra={"topic": topic, "top_k": retrieval_top_k, "initial_top_k": initial_top_k})
         if settings.use_pgvector_retrieval and self._pgvector_connection_dsn() is not None:
-            bundle = self._retrieve_from_pgvector(topic, retrieval_top_k)
+            bundle = self._retrieve_from_pgvector(topic, initial_top_k)
             if bundle.decision.status in {"low_confidence", "no_match"} and not bundle.documents:
                 if not settings.pgvector_require_non_fake_embeddings:
-                    local_bundle = self._retrieve_from_local_guard(topic, retrieval_top_k)
+                    local_bundle = self._retrieve_from_local_guard(topic, initial_top_k)
                     if local_bundle.decision.status == "ok" and local_bundle.documents:
                         bundle = local_bundle
         elif settings.use_pinecone_retrieval:
-            bundle = self._retrieve_from_pinecone(topic, retrieval_top_k)
+            bundle = self._retrieve_from_pinecone(topic, initial_top_k)
         else:
-            bundle = self._retrieve_from_local_guard(topic, retrieval_top_k)
+            bundle = self._retrieve_from_local_guard(topic, initial_top_k)
+            
+        # Rerank with FlashRank
+        if len(bundle.documents) > retrieval_top_k:
+            try:
+                from flashrank import Ranker, RerankRequest
+                ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir="data/models")
+                passages = []
+                for i, doc in enumerate(bundle.documents):
+                    passages.append({
+                        "id": i,
+                        "text": doc.page_content,
+                        "meta": doc.metadata
+                    })
+                rerankrequest = RerankRequest(query=topic, passages=passages)
+                results = ranker.rerank(rerankrequest)
+                
+                reranked_docs = []
+                for res in results[:retrieval_top_k]:
+                    reranked_docs.append(bundle.documents[res["id"]])
+                
+                bundle.documents = reranked_docs
+            except Exception as exc:
+                logger.warning("Reranking failed: %s, falling back to top_k slicing", exc)
+                bundle.documents = bundle.documents[:retrieval_top_k]
+                
+        # Autonomous Web Search Fallback
+        if len(bundle.documents) == 0 or bundle.decision.status in {"no_match", "low_confidence", "out_of_domain"}:
+            logger.info("pipeline.autonomous_web_search", extra={"topic": topic})
+            try:
+                from duckduckgo_search import DDGS
+                with DDGS() as ddgs:
+                    ddg_results = list(ddgs.text(topic, max_results=3))
+                
+                if ddg_results:
+                    bundle.documents = [
+                        Document(
+                            page_content=r.get("body", ""),
+                            metadata={
+                                "doc_id": f"web_{i}",
+                                "title": r.get("title", ""),
+                                "source_url": r.get("href", ""),
+                                "score": 100,
+                                "semantic_score": 1.0,
+                            }
+                        )
+                        for i, r in enumerate(ddg_results)
+                    ]
+                    bundle.decision.status = "web_search"
+                    bundle.decision.message = "Fallback to Web Search successful"
+                    logger.info("pipeline.autonomous_web_search_success", extra={"results": len(ddg_results)})
+            except Exception as exc:
+                logger.error("DuckDuckGo search failed: %s", exc)
+
         logger.info(
             "pipeline.retrieve_done",
             extra={
@@ -1471,6 +1574,7 @@ class LangChainRAGPipeline:
             tone=parsed.tone,
             length=parsed.length,
             context=self._format_context(docs),
+            custom_instructions=parsed.custom_instructions,
         )
 
         previous_note = ""
@@ -1536,6 +1640,7 @@ class LangChainRAGPipeline:
             tone=parsed.tone,
             length=parsed.length,
             context=self._format_context(docs),
+            custom_instructions=parsed.custom_instructions,
         )
 
         previous_note = ""
@@ -1628,9 +1733,13 @@ class LangChainRAGPipeline:
         if self._llm is None:
             return None
 
-        direct_markdown_result = self._generate_markdown_directly_with_llm(parsed, docs, previous_draft, llm_trace=llm_trace)
-        if direct_markdown_result is not None:
-            return direct_markdown_result
+        # Bypass structured output if the user demands custom formatting
+        bypass_structured = not settings.use_structured_output or len(parsed.custom_instructions) > 2
+
+        if bypass_structured:
+            direct_markdown_result = self._generate_markdown_directly_with_llm(parsed, docs, previous_draft, llm_trace=llm_trace)
+            if direct_markdown_result is not None:
+                return direct_markdown_result
 
         structured_result = self._generate_with_structured_output(parsed, docs, previous_draft, llm_trace=llm_trace)
         if structured_result is not None:
@@ -1646,6 +1755,7 @@ class LangChainRAGPipeline:
             tone=parsed.tone,
             length=parsed.length,
             context=self._format_context(docs),
+            custom_instructions=parsed.custom_instructions,
         )
 
         follow_up_note = ""
@@ -1840,18 +1950,24 @@ class LangChainRAGPipeline:
         previous_draft: str | None = payload.get("previous_draft")
         docs: list[Document] = payload["documents"]
         llm_trace = payload.get("llm_trace")
+        conversation_history = payload.get("conversation_history")
 
-        agent_result = self._generate_with_agent(parsed, docs, previous_draft)
-        if agent_result is not None:
-            self._last_generation_mode = "agentic"
-            logger.info("pipeline.generate_mode", extra={"mode": "agentic"})
-            return self._enforce_grounding_and_citations(agent_result, docs)
+        # Circuit breaker: skip LLM entirely when tripped
+        if not self._cb_is_open():
+            agent_result = self._generate_with_agent(parsed, docs, previous_draft)
+            if agent_result is not None:
+                self._last_generation_mode = "agentic"
+                self._cb_record_success()
+                logger.info("pipeline.generate_mode", extra={"mode": "agentic"})
+                return self._enforce_grounding_and_citations(agent_result, docs)
 
-        live_result = self._generate_with_llm(parsed, docs, previous_draft, llm_trace=llm_trace)
-        if live_result is not None:
-            self._last_generation_mode = "llm"
-            logger.info("pipeline.generate_mode", extra={"mode": "llm"})
-            return self._enforce_grounding_and_citations(live_result, docs)
+            live_result = self._generate_with_llm(parsed, docs, previous_draft, llm_trace=llm_trace)
+            if live_result is not None:
+                self._last_generation_mode = "llm"
+                self._cb_record_success()
+                logger.info("pipeline.generate_mode", extra={"mode": "llm"})
+                return self._enforce_grounding_and_citations(live_result, docs)
+
         self._last_generation_mode = "fallback"
         logger.info("pipeline.generate_mode", extra={"mode": "fallback"})
         fallback_result = self._generate_with_fallback(parsed, docs, previous_draft)
@@ -1863,12 +1979,21 @@ class LangChainRAGPipeline:
         *,
         previous_turn_topic: str | None = None,
         previous_draft: str | None = None,
+        session: Any | None = None,
+        request_id: str | None = None,
     ) -> dict:
         llm_trace: dict[str, Any] = {
             "attempted": False,
             "parse_mode": "heuristic",
             "failures": [],
+            "request_id": request_id,
         }
+        if request_id:
+            logger.info("pipeline.run", extra={"request_id": request_id, "prompt_len": len(prompt)})
+        # Build conversation history from session
+        conversation_history = ""
+        if session is not None and hasattr(session, "conversation_summary"):
+            conversation_history = session.conversation_summary(max_turns=settings.max_conversation_turns)
 
         parsed = self._parse_chain.invoke({"prompt": prompt, "llm_trace": llm_trace})
 
@@ -1915,6 +2040,19 @@ class LangChainRAGPipeline:
                         "retrieved_docs": len(documents),
                     },
                 )
+            # On-the-fly scraping: if user provided URLs, scrape them and append to context.
+            scrape_urls = effective_parsed.modifiers.get("scrape_urls", [])
+            for url in scrape_urls:
+                scraped_text = self._tool_universal_web_scraper(url)
+                if scraped_text and not scraped_text.startswith("Invalid URL") and not scraped_text.startswith("Scraping succeeded but no readable"):
+                    external_knowledge_used = True
+                    from langchain_core.documents import Document
+                    synthetic_doc = Document(
+                        page_content=scraped_text,
+                        metadata={"source": "User Provided URL", "url": url, "doc_id": f"synthetic_url_{url}"}
+                    )
+                    context_documents.insert(0, synthetic_doc)
+                    documents.insert(0, synthetic_doc)
 
             context_text = self._format_context(
                 context_documents,
@@ -1927,48 +2065,72 @@ class LangChainRAGPipeline:
                 tone=parsed.tone,
                 length=parsed.length,
                 context=context_text,
+                custom_instructions=effective_parsed.custom_instructions,
             )
 
-            generated = self._generate_chain.invoke(
-                {
-                    "effective_parsed": effective_parsed,
-                    "previous_draft": previous_draft,
-                    "documents": context_documents,
-                    "llm_trace": llm_trace,
-                }
-            )
-            generation_mode = self._last_generation_mode
-
-            quality_ok, quality_reason = self._quality_gate_result(generated)
-            if not quality_ok:
-                quality_gate_blocked = True
-                logger.warning(
-                    "pipeline.quality_gate_blocked",
-                    extra={
-                        "topic": effective_parsed.topic,
-                        "reason": quality_reason,
-                        "sections": len(generated.sections),
-                        "sources": len(generated.sources_used),
-                    },
+            # Check cache before generating (skip for rewrite/shorten)
+            cache_key = None
+            _skip_cache_intents = {"rewrite", "shorten"}
+            if effective_parsed.intent not in _skip_cache_intents:
+                from app.cache import ResponseCache
+                cache_key = ResponseCache.make_key(
+                    effective_parsed.topic, effective_parsed.intent, effective_parsed.length,
                 )
-                generated_payload = {
-                    "title": "Need More Context",
-                    "outline": [
-                        "Bo sung them nguon tai lieu lien quan",
-                        "Lam ro pham vi blog can tao",
-                        "Thu lai prompt voi yeu cau cu the hon",
-                    ],
-                    "draft": (
-                        "Ban nhap hien tai chua dat quality gate de xuat ban. "
-                        f"Ly do: {quality_reason}. "
-                        "Hay bo sung du lieu va thu lai prompt."
-                    ),
-                    "sources_used": generated.sources_used,
-                    "sections": [],
-                }
-            else:
-                generated_payload = self._generated_to_payload(generated)
-                generated_payload = self._apply_prompt_edit_constraints(parsed.raw_prompt, generated_payload)
+                cached = response_cache.get(cache_key)
+                if cached is not None:
+                    generation_mode = "cached"
+                    generated_payload = cached
+                    # Skip generation entirely — jump to return
+                    quality_gate_blocked = False
+                    estimated_output_tokens = self._estimate_token_count(str(generated_payload.get("draft", "")))
+                    # (jump past the generation block below)
+                    cache_key = None  # prevent re-caching
+
+            if generation_mode == "fallback":  # not yet generated (no cache hit)
+                generated = self._generate_chain.invoke(
+                    {
+                        "effective_parsed": effective_parsed,
+                        "previous_draft": previous_draft,
+                        "documents": context_documents,
+                        "llm_trace": llm_trace,
+                        "conversation_history": conversation_history,
+                    }
+                )
+                generation_mode = self._last_generation_mode
+
+                quality_ok, quality_reason = self._quality_gate_result(generated)
+                if not quality_ok:
+                    quality_gate_blocked = True
+                    logger.warning(
+                        "pipeline.quality_gate_blocked",
+                        extra={
+                            "topic": effective_parsed.topic,
+                            "reason": quality_reason,
+                            "sections": len(generated.sections),
+                            "sources": len(generated.sources_used),
+                        },
+                    )
+                    generated_payload = {
+                        "title": "Need More Context",
+                        "outline": [
+                            "Bo sung them nguon tai lieu lien quan",
+                            "Lam ro pham vi blog can tao",
+                            "Thu lai prompt voi yeu cau cu the hon",
+                        ],
+                        "draft": (
+                            "Ban nhap hien tai chua dat quality gate de xuat ban. "
+                            f"Ly do: {quality_reason}. "
+                            "Hay bo sung du lieu va thu lai prompt."
+                        ),
+                        "sources_used": generated.sources_used,
+                        "sections": [],
+                    }
+                else:
+                    generated_payload = self._generated_to_payload(generated)
+                    generated_payload = self._apply_prompt_edit_constraints(parsed.raw_prompt, generated_payload)
+                    # Store in cache for future identical queries
+                    if cache_key:
+                        response_cache.put(cache_key, generated_payload)
         else:
             if settings.allow_hybrid_fallback:
                 external_knowledge_used = True

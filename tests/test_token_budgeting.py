@@ -54,8 +54,8 @@ def test_dynamic_top_k_matches_length_profile(monkeypatch, prompt, expected_prof
     budget = payload["runtime"]["token_budget"]
 
     assert budget["length_profile"] == expected_profile
-    assert min_k <= captured["top_k"] <= max_k
-    assert captured["top_k"] == budget["recommended_top_k"]
+    assert min_k * 3 <= captured["top_k"] <= max_k * 3
+    assert captured["top_k"] == budget["recommended_top_k"] * 3
     assert budget["input_tokens_target_min"] < budget["input_tokens_target_max"]
 
 

@@ -13,6 +13,12 @@ import { SaveReportResponse } from './chat.models';
 import { KnowledgeHealthResponse } from './chat.models';
 import { SourceAnalyticsResponse } from './chat.models';
 import { ReportStatus } from './chat.models';
+import { ChatSessionSummary, ChatSessionHistory } from './chat.models';
+
+export interface StreamEvent {
+  type: 'meta' | 'done' | 'error' | 'thinking';
+  data: any;
+}
 
 @Injectable({ providedIn: 'root' })
 export class ChatService {
@@ -25,6 +31,54 @@ export class ChatService {
       prompt,
       session_id: sessionId,
     });
+  }
+
+  /**
+   * Stream chat via SSE — returns a callback-based approach using fetch + ReadableStream.
+   */
+  async sendMessageStream(
+    prompt: string,
+    sessionId: string | null,
+    onEvent: (event: StreamEvent) => void,
+  ): Promise<void> {
+    const response = await fetch(`${this.apiBase}/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, session_id: sessionId }),
+    });
+
+    if (!response.ok || !response.body) {
+      onEvent({ type: 'error', data: { error: `HTTP ${response.status}` } });
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      let currentEvent = '';
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7).trim();
+        } else if (line.startsWith('data: ') && currentEvent) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            onEvent({ type: currentEvent as StreamEvent['type'], data });
+          } catch {
+            // ignore parse errors
+          }
+          currentEvent = '';
+        }
+      }
+    }
   }
 
   healthCheck(): Observable<HealthResponse> {
@@ -66,4 +120,37 @@ export class ChatService {
   deleteReport(reportId: string): Observable<DeleteReportResponse> {
     return this.http.delete<DeleteReportResponse>(`${this.apiBase}/reports/${reportId}`);
   }
+
+  getChatSessions(limit = 50): Observable<ChatSessionSummary[]> {
+    return this.http.get<ChatSessionSummary[]>(`${this.apiBase}/chat/sessions`, {
+      params: { limit },
+    });
+  }
+
+  getChatSession(sessionId: string): Observable<ChatSessionHistory> {
+    return this.http.get<ChatSessionHistory>(`${this.apiBase}/chat/sessions/${sessionId}`);
+  }
+
+  exportChat(markdown: string, format: 'docx' | 'html' = 'docx'): Observable<Blob> {
+    return this.http.post(
+      `${this.apiBase}/chat/export`,
+      { markdown, format },
+      { responseType: 'blob' }
+    );
+  }
+
+  triggerIngest(adminKey: string): Observable<any> {
+    return this.http.post(
+      `${this.apiBase}/admin/ingest`,
+      {},
+      { headers: { 'Authorization': `Bearer ${adminKey}` } }
+    );
+  }
+
+  uploadFile(file: File): Observable<{filename: string, extracted_text: string}> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.http.post<{filename: string, extracted_text: string}>(`${this.apiBase}/chat/upload`, formData);
+  }
 }
+

@@ -43,3 +43,38 @@ class SessionManager:
             lines.append(f"[{idx}] USER: {turn.user_prompt}")
             lines.append(f"[{idx}] BOT: {turn.assistant_output[:120]}")
         return "\n".join(lines)
+
+    def to_langchain_messages(self, max_turns: int = 5) -> list:
+        """Convert recent chat history to LangChain message objects.
+
+        Returns a list of HumanMessage/AIMessage pairs from the most
+        recent ``max_turns`` turns, suitable for injecting into an LLM
+        prompt as conversation context.
+        """
+        try:
+            from langchain_core.messages import HumanMessage, AIMessage
+        except ImportError:  # pragma: no cover
+            return []
+
+        recent = self.turns[-max_turns:] if max_turns > 0 else self.turns
+        messages: list = []
+        for turn in recent:
+            messages.append(HumanMessage(content=turn.user_prompt))
+            # Use a concise summary rather than the full draft to save tokens
+            summary = turn.generated_draft[:300] if turn.generated_draft else turn.assistant_output[:300]
+            if summary:
+                messages.append(AIMessage(content=summary))
+        return messages
+
+    def conversation_summary(self, max_turns: int = 5) -> str:
+        """Return a compact text summary of recent conversation for prompt injection."""
+        recent = self.turns[-max_turns:] if max_turns > 0 else self.turns
+        if not recent:
+            return ""
+        lines: list[str] = ["=== Conversation History ==="]
+        for idx, turn in enumerate(recent, start=1):
+            lines.append(f"User [{idx}]: {turn.user_prompt[:200]}")
+            draft_preview = turn.generated_draft[:200] if turn.generated_draft else turn.assistant_output[:200]
+            if draft_preview:
+                lines.append(f"Assistant [{idx}]: {draft_preview}")
+        return "\n".join(lines)
