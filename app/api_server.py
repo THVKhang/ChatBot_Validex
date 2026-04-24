@@ -13,6 +13,7 @@ from fastapi import Header
 from fastapi import HTTPException
 from fastapi import Request
 from fastapi import Depends
+from fastapi import BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse
@@ -593,23 +594,13 @@ _ingestion_state: dict[str, Any] = {
     "last_error": None,
 }
 
-
-def _require_admin_key(x_admin_key: str = Header(default="")) -> None:
-    """Verify admin API key. Raises 403 if invalid."""
-    expected = settings.admin_api_key.strip()
-    if not expected:
-        raise HTTPException(status_code=403, detail="Admin API key not configured on server.")
-    if x_admin_key != expected:
-        raise HTTPException(status_code=403, detail="Invalid admin API key.")
-
+from app.auth import get_current_admin_user
 
 @app.post("/api/admin/ingest")
 async def admin_trigger_ingestion(
-    x_admin_key: str = Header(default=""),
+    admin_user: dict = Depends(get_current_admin_user),
 ) -> dict:
     """Trigger a knowledge base re-ingestion job in the background."""
-    _require_admin_key(x_admin_key)
-
     if _ingestion_state["running"]:
         raise HTTPException(status_code=409, detail="Ingestion job is already running.")
 
@@ -633,13 +624,112 @@ async def admin_trigger_ingestion(
 
 @app.get("/api/admin/ingest/status")
 def admin_ingestion_status(
-    x_admin_key: str = Header(default=""),
+    admin_user: dict = Depends(get_current_admin_user),
 ) -> dict:
     """Get the status of the last ingestion job."""
-    _require_admin_key(x_admin_key)
     return {
         "running": _ingestion_state["running"],
-        "last_run_at": _ingestion_state["last_run_at"],
         "last_result": _ingestion_state["last_result"],
+        "last_run_at": _ingestion_state["last_run_at"],
         "last_error": _ingestion_state["last_error"],
+    }
+
+@app.get("/api/admin/users")
+def admin_list_users(admin_user: dict = Depends(get_current_admin_user)) -> dict:
+    """List all registered users (admin only)."""
+    from app.session_store import _connection_dsn, _ensure_table
+    import psycopg
+    
+    dsn = _connection_dsn()
+    if not dsn:
+        return {"users": []}
+    
+    _ensure_table(dsn)
+    users = []
+    try:
+        with psycopg.connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, username, is_admin, created_at FROM users ORDER BY id ASC")
+                for row in cur.fetchall():
+                    users.append({
+                        "id": row[0],
+                        "username": row[1],
+                        "is_admin": row[2],
+                        "created_at": row[3].isoformat() if row[3] else None
+                    })
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+        
+    return {"users": users}
+
+
+@app.get("/api/admin/crawl-history")
+def admin_crawl_history(
+    admin_user: dict = Depends(get_current_admin_user),
+    limit: int = 20,
+) -> dict:
+    """Return recent crawl job logs from the database."""
+    import os
+    db_url = os.getenv("DATABASE_URL", "").strip()
+    if not db_url:
+        return {"logs": [], "message": "DATABASE_URL not configured"}
+    
+    logs = []
+    try:
+        import psycopg
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS crawl_logs (
+                        id SERIAL PRIMARY KEY,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        discovery_approved INT DEFAULT 0,
+                        chunks_total INT DEFAULT 0,
+                        chunks_new INT DEFAULT 0,
+                        errors_total INT DEFAULT 0,
+                        summary JSONB
+                    )
+                """)
+                cur.execute(
+                    "SELECT id, created_at, discovery_approved, chunks_total, chunks_new, errors_total "
+                    "FROM crawl_logs ORDER BY created_at DESC LIMIT %s",
+                    (min(limit, 100),),
+                )
+                for row in cur.fetchall():
+                    logs.append({
+                        "id": row[0],
+                        "created_at": row[1].isoformat() if row[1] else None,
+                        "discovery_approved": row[2],
+                        "chunks_total": row[3],
+                        "chunks_new": row[4],
+                        "errors_total": row[5],
+                    })
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {"logs": logs}
+
+
+@app.post("/api/admin/discover")
+async def admin_trigger_discovery(
+    admin_user: dict = Depends(get_current_admin_user),
+    background_tasks: BackgroundTasks = None,
+) -> dict:
+    """Trigger AI Discovery Agent to find new data sources."""
+    try:
+        from app.agents.discovery_agent import discover_new_sources
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Discovery agent not available")
+
+    if not settings.google_search_api_key or not settings.google_search_cx:
+        raise HTTPException(
+            status_code=400,
+            detail="Google Custom Search API not configured. Set GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX.",
+        )
+
+    result = discover_new_sources()
+    return {
+        "message": f"Discovery completed. {result.get('approved_count', 0)} new sources found.",
+        "approved": result.get("approved_urls", []),
+        "rejected_count": result.get("rejected_count", 0),
     }

@@ -17,6 +17,7 @@ export class AuthService {
   
   private authStatus = new BehaviorSubject<boolean>(this.hasToken());
   private currentUser = new BehaviorSubject<string | null>(localStorage.getItem(this.usernameKey));
+  private isAdmin = new BehaviorSubject<boolean>(this.checkIfAdmin());
 
   constructor(private http: HttpClient) {}
 
@@ -27,6 +28,10 @@ export class AuthService {
   get currentUser$(): Observable<string | null> {
     return this.currentUser.asObservable();
   }
+  
+  get isAdmin$(): Observable<boolean> {
+    return this.isAdmin.asObservable();
+  }
 
   getToken(): string | null {
     return localStorage.getItem(this.tokenKey);
@@ -34,6 +39,17 @@ export class AuthService {
 
   hasToken(): boolean {
     return !!this.getToken();
+  }
+  
+  private checkIfAdmin(): boolean {
+    const token = this.getToken();
+    if (!token) return false;
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      return !!payload.is_admin;
+    } catch (e) {
+      return false;
+    }
   }
 
   login(username: string, password: string): Observable<AuthResponse> {
@@ -47,6 +63,7 @@ export class AuthService {
         localStorage.setItem(this.usernameKey, username);
         this.authStatus.next(true);
         this.currentUser.next(username);
+        this.isAdmin.next(this.checkIfAdmin());
       })
     );
   }
@@ -60,5 +77,6 @@ export class AuthService {
     localStorage.removeItem(this.usernameKey);
     this.authStatus.next(false);
     this.currentUser.next(null);
+    this.isAdmin.next(false);
   }
 }

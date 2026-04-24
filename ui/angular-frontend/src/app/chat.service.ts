@@ -139,11 +139,24 @@ export class ChatService {
     );
   }
 
-  triggerIngest(adminKey: string): Observable<any> {
+  getAdminMetrics(): Observable<any> {
+    return this.http.get<any>(`${this.apiBase}/admin/metrics`);
+  }
+
+  getAdminUsers(): Observable<any> {
+    return this.http.get<any>(`${this.apiBase}/admin/users`);
+  }
+
+  triggerIngest(): Observable<any> {
     return this.http.post(
       `${this.apiBase}/admin/ingest`,
-      {},
-      { headers: { 'Authorization': `Bearer ${adminKey}` } }
+      {}
+    );
+  }
+
+  getIngestStatus(): Observable<any> {
+    return this.http.get(
+      `${this.apiBase}/admin/ingest/status`
     );
   }
 
@@ -151,6 +164,14 @@ export class ChatService {
     const formData = new FormData();
     formData.append('file', file);
     return this.http.post<{filename: string, extracted_text: string}>(`${this.apiBase}/chat/upload`, formData);
+  }
+
+  getCrawlHistory(limit = 20): Observable<any> {
+    return this.http.get<any>(`${this.apiBase}/admin/crawl-history`, { params: { limit } });
+  }
+
+  triggerDiscovery(): Observable<any> {
+    return this.http.post<any>(`${this.apiBase}/admin/discover`, {});
   }
 }
 

@@ -18,7 +18,7 @@ class Settings:
     model_name: str = os.getenv("MODEL_NAME", "gpt-4o-mini")
     google_model_name: str = os.getenv("GOOGLE_MODEL_NAME", "models/gemini-2.5-flash")
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-    google_embedding_model: str = os.getenv("GOOGLE_EMBEDDING_MODEL", "models/gemini-embedding-001")
+    google_embedding_model: str = os.getenv("GOOGLE_EMBEDDING_MODEL", "models/text-embedding-004")
     llm_provider: str = os.getenv("LLM_PROVIDER", "auto")
     embedding_provider: str = os.getenv("EMBEDDING_PROVIDER", "auto")
     top_k: int = int(os.getenv("TOP_K", "3"))
@@ -97,6 +97,14 @@ class Settings:
     cache_ttl_seconds: int = int(os.getenv("CACHE_TTL_SECONDS", "900"))
     # Admin API
     admin_api_key: str = os.getenv("ADMIN_API_KEY", "")
+    # AI Discovery Agent
+    google_search_api_key: str = os.getenv("GOOGLE_SEARCH_API_KEY", "")
+    google_search_cx: str = os.getenv("GOOGLE_SEARCH_CX", "")
+    discovery_max_new_urls: int = int(os.getenv("DISCOVERY_MAX_NEW_URLS", "20"))
+    discovery_min_relevance_score: int = int(os.getenv("DISCOVERY_MIN_RELEVANCE_SCORE", "7"))
+    # AI Content Evaluator
+    ai_evaluator_enabled: bool = os.getenv("AI_EVALUATOR_ENABLED", "0") == "1"
+    ai_evaluator_min_score: int = int(os.getenv("AI_EVALUATOR_MIN_SCORE", "6"))
 
 
 settings = Settings()

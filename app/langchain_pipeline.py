@@ -58,9 +58,9 @@ except Exception:  # pragma: no cover - optional dependency
 
 logger = logging.getLogger(__name__)
 
-MISSING_INTERNAL_DATA_TEXT = "Dữ liệu nội bộ hiện tại không đề cập đến vấn đề này."
-SOURCE_LINE_PREFIX = "Nguồn:"
-SOURCES_SECTION_HEADING = "## Danh mục nguồn tham khảo"
+MISSING_INTERNAL_DATA_TEXT = "Internal data does not currently address this topic."
+SOURCE_LINE_PREFIX = "Source:"
+SOURCES_SECTION_HEADING = "## References"
 MAX_LLM_FAILURE_RECORDS = 8
 
 @dataclass
@@ -82,7 +82,11 @@ class TokenBudgetPlan:
 class BlogSectionSchema(BaseModel):
     header: str = Field(min_length=3, max_length=120)
     content: str = Field(min_length=40)
-    image_search_keyword: str = Field(min_length=2, max_length=80)
+    image_search_keyword: str = Field(
+        min_length=2, 
+        max_length=80, 
+        description="A highly specific, literal English image prompt (e.g., 'professional HR manager checking documents in modern office'). Do NOT use abstract concepts or random words. Must directly represent the section's topic."
+    )
 
 
 class BlogStructuredOutput(BaseModel):
@@ -117,39 +121,47 @@ class LangChainRAGPipeline:
         self._parse_chain = RunnableLambda(self._parse)
         self._retrieve_chain = RunnableLambda(self._retrieve)
         system_prompt = """
-            Bạn là "Chuyên gia Pháp lý và Nội dung" tại Validex (Australia). Nhiệm vụ của bạn là soạn thảo các bài blog chuyên nghiệp,
-            chính xác về background checks, compliance và an toàn tại nơi làm việc theo tiêu chuẩn Úc.
+            You are a "Senior Legal Research Scholar and Editorial Analyst" at Validex (Australia).
+            Your mission is to compose in-depth analytical essays and editorial blogs on background checks, compliance, and workplace safety under Australian standards.
+            You must think like an academic essayist: apply logical analysis, sharp argumentation, intellectual depth, and connect dry legal regulations into a holistic picture of enterprise risk management.
 
-            ### 🛡 NGUYÊN TẮC CỐT LÕI (GROUNDING RULES):
-            1. CHỈ sử dụng thông tin từ dữ liệu nội bộ được cung cấp trong context.
-            2. Tuyệt đối KHÔNG tự ý suy diễn hoặc dùng kiến thức bên ngoài nếu dữ liệu nội bộ không đề cập.
-            3. Nếu context không có đủ thông tin để trả lời yêu cầu, phải ghi chính xác: "__MISSING_DATA_TEXT__".
+            ### 🛡 GROUNDING RULES:
+            1. Use ONLY information from the internal data provided in the context below.
+            2. NEVER fabricate legal regulations or use external knowledge not present in the context.
+            3. If the context lacks sufficient information, write exactly: "__MISSING_DATA_TEXT__".
 
-            ### 🔗 QUY ĐỊNH TRÍCH DẪN (CITATION):
-            - Mọi thông tin quan trọng (con số, quy định bang, tên thẻ, thời hạn) phải có trích dẫn.
-            - Định dạng trích dẫn bắt buộc: [Nguồn: Tiêu đề tài liệu | URL: đường_dẫn_nếu_có].
-            - Ưu tiên dùng URL trong metadata của context.
+            ### 🔗 CITATION RULES:
+            - All critical information (statistics, state regulations, card names, deadlines) MUST include an academic citation or clear reference.
+            - Required citation format: [Source: Document Title | URL: url_if_available].
+            - Prefer URLs found in the context metadata.
 
-            ### ✍️ PHONG CÁCH VĂN BẢN:
-            - Ngôn ngữ mặc định: tiếng Việt (chỉ dùng tiếng Anh khi người dùng yêu cầu).
-            - Văn phong: chuyên nghiệp, trung tính, đáng tin cậy.
-            - Độc giả: nhà tuyển dụng, HR và người lao động tại Úc.
+            ### 🧠 ACADEMIC FRAMEWORK (IRAC):
+            When analysing laws and regulations, apply Critical Thinking and the IRAC structure (Issue, Rule, Application, Conclusion):
+            - Issue: Clearly identify the legal or operational risk being discussed.
+            - Rule: Cite the relevant law, policy, or regulation from the context.
+            - Application: Assess real-world impact on businesses and consequences of non-compliance.
+            - Conclusion: Provide an overarching risk-management strategy.
 
-            ### 📋 CẤU TRÚC ĐẦU RA:
-            Nếu người dùng KHÔNG yêu cầu định dạng đặc biệt, tuân thủ cấu trúc mặc định:
-            1. Tiêu đề (H1) chuẩn SEO.
-            2. Tóm tắt (Intro) ngắn gọn 1-2 câu.
-            3. Các mục chính (H2, H3), phân loại theo bang/vùng lãnh thổ nếu có.
-            4. Kết luận.
-            5. Danh mục nguồn.
-            
-            🚨 [ĐẶC BIỆT]: Nếu có `{custom_instructions}`, BẠN PHẢI BỎ QUA cấu trúc mặc định bên trên và TUYỆT ĐỐI tuân thủ theo yêu cầu tuỳ chỉnh (Ví dụ: viết thơ, viết code, listicle, v.v.).
+            ### ✍️ WRITING STYLE (ESSAYIST TONE):
+            - Default language: English.
+            - Tone: Academic, sharp, objective, and authoritative. Use tightly structured argumentative sentences (e.g., "However, it is critical to note that...", "From a compliance standpoint...").
+            - Target audience: HR professionals, corporate lawyers, policy makers, and senior management in Australia.
+
+            ### 📋 OUTPUT STRUCTURE (ACADEMIC ESSAY / BLOG):
+            Unless the user explicitly requests a different format, follow this essay structure:
+            1. Title (H1): Compelling yet deeply professional.
+            2. Introduction (Abstract/Intro): Frame the problem, legal context, and state the thesis.
+            3. Body (H2, H3): Analyse each aspect using the IRAC model. Support every claim with evidence. Each section MUST include an `image_search_keyword` — a HIGHLY SPECIFIC, literal English phrase (e.g., 'professional corporate lawyer reading documents in a modern office'). Do NOT use abstract or random words.
+            4. Conclusion: Summarise significance and provide risk-management recommendations.
+            5. References.
+
+            🚨 [OVERRIDE]: If `{custom_instructions}` is provided, you MUST IGNORE the default structure above and STRICTLY follow the custom instructions (e.g., write poetry, write code, create a listicle, etc.).
 
             ### 🔍 CHAIN OF VERIFICATION (CoVe):
-            - Trước khi trả lời, rà soát lại toàn bài và xóa các câu không có bằng chứng trong context.
-            - Nếu thiếu dữ liệu cho một ý bắt buộc, thay bằng: "__MISSING_DATA_TEXT__".
+            - Before responding, review the entire essay and remove any sentence not supported by the context.
+            - If data is missing for a required point, replace it with: "__MISSING_DATA_TEXT__".
 
-            Thông tin yêu cầu:
+            Request parameters:
             - Topic: {topic}
             - Intent: {intent}
             - Audience: {audience}
@@ -157,7 +169,7 @@ class LangChainRAGPipeline:
             - Length: {length}
             - Custom Instructions: {custom_instructions}
 
-            Dữ liệu nội bộ đã truy xuất:
+            Retrieved internal data:
             {context}
             """.strip().replace("__MISSING_DATA_TEXT__", MISSING_INTERNAL_DATA_TEXT)
         self._prompt_template = PromptTemplate.from_template(system_prompt)
@@ -746,7 +758,7 @@ class LangChainRAGPipeline:
             if fallback_google_embedding.startswith("models/"):
                 preferred_google_embedding = fallback_google_embedding
         if not preferred_google_embedding:
-            preferred_google_embedding = "models/gemini-embedding-001"
+            preferred_google_embedding = "models/text-embedding-004"
         if not preferred_google_embedding.startswith("models/"):
             preferred_google_embedding = f"models/{preferred_google_embedding}"
 
@@ -1380,7 +1392,7 @@ class LangChainRAGPipeline:
             line
             for line in text.splitlines()
             if not line.strip().lower().startswith(prefix)
-            and not line.strip().lower().startswith("[nguồn:")
+            and not line.strip().lower().startswith("[source:")
         ]
         return "\n".join(lines).strip()
 
@@ -1390,7 +1402,7 @@ class LangChainRAGPipeline:
         docs: list[Document],
     ) -> GeneratedBlog:
         references = self._build_source_reference_list(docs)
-        citation_tokens = [f"[Nguồn: {reference}]" for reference in references]
+        citation_tokens = [f"[Source: {reference}]" for reference in references]
         citation_line = " ".join(citation_tokens) if citation_tokens else ""
 
         normalized_sections: list[GeneratedBlog.Section] = []
@@ -1420,7 +1432,7 @@ class LangChainRAGPipeline:
             draft = render_markdown_blog(generated.title, normalized_sections)
 
         if references:
-            sources_block = SOURCES_SECTION_HEADING + "\n" + "\n".join(f"- [Nguồn: {reference}]" for reference in references)
+            sources_block = SOURCES_SECTION_HEADING + "\n" + "\n".join(f"- [Source: {reference}]" for reference in references)
             if SOURCES_SECTION_HEADING not in draft and "## Sources" not in draft:
                 draft = f"{draft}\n\n{sources_block}".strip()
         elif MISSING_INTERNAL_DATA_TEXT not in draft:
@@ -1652,10 +1664,10 @@ class LangChainRAGPipeline:
             + previous_note
             + "\n\nReturn structured data for an SEO blog with this schema: "
             + "title, introduction, sections[{header, content, image_search_keyword}], conclusion, meta_tags. "
-            + "Use Vietnamese unless the user explicitly requests English. "
+            + "Write in English by default. "
             + "Follow Chain-of-Verification internally before final output: verify every claim against retrieved context. "
             + f"If a required fact is missing, include exactly: \"{MISSING_INTERNAL_DATA_TEXT}\" "
-            + "Append citations in this format: [Nguồn: Tiêu đề tài liệu | URL: đường_dẫn_nếu_có].\n"
+            + "Append citations in this format: [Source: Document Title | URL: url_if_available].\n"
             + "IMAGE REMOVAL: If the user asks to remove/delete an image from a specific section, "
             + "set image_search_keyword to exactly \"REMOVE_IMAGE\" for that section. "
             + "Keep all other sections' image_search_keyword as normal descriptive keywords."
@@ -1769,11 +1781,12 @@ class LangChainRAGPipeline:
             prompt_text
             + follow_up_note
             + "\n\nReturn valid JSON with keys: title, introduction, sections, conclusion, meta_tags, and optional draft/outline."
-            + " Each section must include header, content, image_search_keyword."
-            + " Keep content grounded in retrieved context and use Vietnamese unless user requests English."
+            + " Each section must include header, content, and image_search_keyword."
+            + " IMPORTANT for image_search_keyword: Must be a highly specific, literal English phrase (e.g., 'professional corporate lawyer reading documents'). Do NOT use random words. It must perfectly match the visual theme of the section."
+            + " Keep content grounded in retrieved context. Write in English by default."
             + " Apply Chain-of-Verification internally to check each factual claim before responding."
             + f" If evidence is missing, write exactly: \"{MISSING_INTERNAL_DATA_TEXT}\""
-            + " Include citations in this format: [Nguồn: Tiêu đề tài liệu | URL: đường_dẫn_nếu_có]."
+            + " Include citations in this format: [Source: Document Title | URL: url_if_available]."
         )
 
         try:
@@ -1880,7 +1893,7 @@ class LangChainRAGPipeline:
             "- Follow Chain-of-Verification internally: draft claims then verify each claim with retrieved/tool evidence.\n"
             "- Do not output unsupported facts.\n"
             + f"- If a requested fact is not present in evidence, use exactly: \"{MISSING_INTERNAL_DATA_TEXT}\"\n"
-            "- Citations must follow: [Nguồn: Tiêu đề tài liệu | URL: đường_dẫn_nếu_có].\n"
+            "- Citations must follow: [Source: Document Title | URL: url_if_available].\n"
             "Return ONLY JSON with keys: title, introduction, sections, conclusion, meta_tags.\n"
             "sections must be an array of objects: header, content, image_search_keyword.\n"
             f"Topic: {parsed.topic}\nAudience: {parsed.audience}\nTone: {parsed.tone}\nLength: {parsed.length}\n"
@@ -2113,14 +2126,14 @@ class LangChainRAGPipeline:
                     generated_payload = {
                         "title": "Need More Context",
                         "outline": [
-                            "Bo sung them nguon tai lieu lien quan",
-                            "Lam ro pham vi blog can tao",
-                            "Thu lai prompt voi yeu cau cu the hon",
+                            "Add more relevant source documents",
+                            "Clarify the scope of the blog to be generated",
+                            "Retry with a more specific prompt",
                         ],
                         "draft": (
-                            "Ban nhap hien tai chua dat quality gate de xuat ban. "
-                            f"Ly do: {quality_reason}. "
-                            "Hay bo sung du lieu va thu lai prompt."
+                            "The current draft did not pass the quality gate for publication. "
+                            f"Reason: {quality_reason}. "
+                            "Please add more data and retry your prompt."
                         ),
                         "sources_used": generated.sources_used,
                         "sections": [],

@@ -56,7 +56,35 @@ def run_ingestion_job(logger: logging.Logger | None = None) -> dict[str, Any]:
     active_logger = logger or _build_logger()
     active_logger.info("ingestion job started")
 
-    collect_summary = collect_sources(incremental=True)
+    # Phase 1: AI Discovery Agent — find new URLs
+    discovery_summary: dict[str, Any] = {}
+    try:
+        from app.agents.discovery_agent import discover_new_sources
+        if settings.google_search_api_key and settings.google_search_cx:
+            active_logger.info("Running AI Discovery Agent...")
+            discovery_summary = discover_new_sources()
+            approved = discovery_summary.get("approved_urls", [])
+            active_logger.info("Discovery completed: %d new sources approved", len(approved))
+
+            # Inject approved URLs into collect_sources targets
+            if approved:
+                new_urls = [item["url"] for item in approved if item.get("url")]
+                from app.collect_au_sources import DEFAULT_TARGETS
+                combined_targets = list(DEFAULT_TARGETS) + new_urls
+            else:
+                combined_targets = None
+        else:
+            active_logger.info("Google Search API not configured, skipping discovery.")
+            combined_targets = None
+    except Exception as exc:
+        active_logger.warning("Discovery Agent failed (non-fatal): %s", exc)
+        combined_targets = None
+
+    # Phase 2: Collect sources (with expanded targets if discovery found new ones)
+    collect_summary = collect_sources(
+        target_urls=combined_targets,
+        incremental=True,
+    )
     active_logger.info(
         "collect_sources completed: chunks_total=%s changed_urls=%s unchanged_urls=%s errors_total=%s",
         collect_summary.get("chunks_total", 0),
@@ -75,6 +103,7 @@ def run_ingestion_job(logger: logging.Logger | None = None) -> dict[str, Any]:
         else:
             active_logger.error("source collection error: source=%s error=%s", source, message)
 
+    # Phase 3: Ingest into pgvector
     ingest_summary = ingest_jsonl_to_pgvector(table_name=settings.pgvector_table, incremental=True)
     active_logger.info(
         "ingest_pgvector completed: upserted=%s changed_records=%s deleted_records=%s status=%s",
@@ -84,10 +113,54 @@ def run_ingestion_job(logger: logging.Logger | None = None) -> dict[str, Any]:
         ingest_summary.get("status", "unknown"),
     )
 
-    return {
+    # Phase 4: Log crawl result to database
+    crawl_result = {
+        "discovery": discovery_summary,
         "collect": collect_summary,
         "ingest": ingest_summary,
     }
+    _save_crawl_log(crawl_result, active_logger)
+
+    return crawl_result
+
+
+def _save_crawl_log(result: dict[str, Any], logger: logging.Logger) -> None:
+    """Save crawl result to PostgreSQL crawl_logs table."""
+    import os
+    db_url = os.getenv("DATABASE_URL", "").strip()
+    if not db_url:
+        return
+    try:
+        import psycopg
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS crawl_logs (
+                        id SERIAL PRIMARY KEY,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        discovery_approved INT DEFAULT 0,
+                        chunks_total INT DEFAULT 0,
+                        chunks_new INT DEFAULT 0,
+                        errors_total INT DEFAULT 0,
+                        summary JSONB
+                    )
+                """)
+                import json
+                cur.execute(
+                    """INSERT INTO crawl_logs (discovery_approved, chunks_total, chunks_new, errors_total, summary)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    (
+                        len(result.get("discovery", {}).get("approved_urls", [])),
+                        result.get("collect", {}).get("chunks_total", 0),
+                        result.get("collect", {}).get("changed_urls", 0),
+                        result.get("collect", {}).get("errors_total", 0),
+                        json.dumps(result, default=str, ensure_ascii=False),
+                    ),
+                )
+            conn.commit()
+        logger.info("Crawl log saved to database.")
+    except Exception as exc:
+        logger.warning("Failed to save crawl log: %s", exc)
 
 
 def run_worker_loop(poll_seconds: int = 30) -> None:

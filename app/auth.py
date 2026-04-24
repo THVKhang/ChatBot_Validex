@@ -77,7 +77,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
     import psycopg
     with psycopg.connect(dsn) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, password_hash FROM users WHERE username = %s", (form_data.username,))
+            cur.execute("SELECT id, password_hash, is_admin FROM users WHERE username = %s", (form_data.username,))
             row = cur.fetchone()
             if not row or not verify_password(form_data.password, row[1]):
                 raise HTTPException(
@@ -86,7 +86,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
                     headers={"WWW-Authenticate": "Bearer"},
                 )
             
-            access_token = create_access_token(data={"sub": form_data.username, "user_id": row[0]})
+            access_token = create_access_token(data={"sub": form_data.username, "user_id": row[0], "is_admin": bool(row[2])})
             return {"access_token": access_token, "token_type": "bearer"}
 
 async def get_current_user_id(token: Optional[str] = Depends(oauth2_scheme)) -> Optional[int]:
@@ -99,3 +99,15 @@ async def get_current_user_id(token: Optional[str] = Depends(oauth2_scheme)) -> 
         return user_id
     except jwt.PyJWTError:
         return None
+
+async def get_current_admin_user(token: str = Depends(oauth2_scheme)) -> dict:
+    """Returns the user dict if admin, otherwise raises 403 Forbidden."""
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if not payload.get("is_admin"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requires admin privileges")
+        return payload
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")

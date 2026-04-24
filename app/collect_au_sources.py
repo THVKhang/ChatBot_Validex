@@ -23,29 +23,58 @@ except Exception:  # pragma: no cover - optional runtime dependency
     curl_requests = None
 
 DEFAULT_TARGETS = [
+    # Validex core
     "https://validex.com.au/faqs.html",
     "https://validex.com.au/how-it-works.html",
     "https://validex.com.au/webapp/#/core/blogs",
+    # Federal agencies
     "https://www.acic.gov.au/our-services/national-police-checking-service",
     "https://www.afp.gov.au/",
     "https://www.oaic.gov.au/privacy",
+    # State-level police checks
+    "https://www.police.nsw.gov.au/online_services/national_police_check",
+    "https://www.police.vic.gov.au/national-police-check",
+    "https://www.police.qld.gov.au/units/criminal-history-screening",
+    # WWCC (Working With Children Check)
+    "https://www.kidsguardian.nsw.gov.au/working-with-children",
+    "https://www.workingwithchildren.vic.gov.au/",
+    # Aged Care & NDIS
+    "https://www.ndiscommission.gov.au/workers/worker-screening",
+    "https://www.agedcarequality.gov.au/",
+    # Fair Work & Immigration
+    "https://www.fairwork.gov.au/",
+    "https://immi.homeaffairs.gov.au/visas/working-in-australia",
 ]
 
 ALLOWED_DOMAINS = {
+    # Validex
     "validex.com.au",
     "www.validex.com.au",
-    "acic.gov.au",
-    "www.acic.gov.au",
-    "afp.gov.au",
-    "www.afp.gov.au",
-    "oaic.gov.au",
-    "www.oaic.gov.au",
-    "nsw.gov.au",
-    "www.nsw.gov.au",
-    "vic.gov.au",
-    "www.vic.gov.au",
-    "qld.gov.au",
-    "www.qld.gov.au",
+    # Federal
+    "acic.gov.au", "www.acic.gov.au",
+    "afp.gov.au", "www.afp.gov.au",
+    "oaic.gov.au", "www.oaic.gov.au",
+    # State police
+    "police.nsw.gov.au", "www.police.nsw.gov.au",
+    "police.vic.gov.au", "www.police.vic.gov.au",
+    "police.qld.gov.au", "www.police.qld.gov.au",
+    "police.sa.gov.au", "www.police.sa.gov.au",
+    "police.wa.gov.au", "www.police.wa.gov.au",
+    # State gov portals
+    "nsw.gov.au", "www.nsw.gov.au",
+    "vic.gov.au", "www.vic.gov.au",
+    "qld.gov.au", "www.qld.gov.au",
+    "sa.gov.au", "www.sa.gov.au",
+    "wa.gov.au", "www.wa.gov.au",
+    # WWCC
+    "kidsguardian.nsw.gov.au", "www.kidsguardian.nsw.gov.au",
+    "workingwithchildren.vic.gov.au", "www.workingwithchildren.vic.gov.au",
+    # NDIS & Aged Care
+    "ndiscommission.gov.au", "www.ndiscommission.gov.au",
+    "agedcarequality.gov.au", "www.agedcarequality.gov.au",
+    # Fair Work & Immigration
+    "fairwork.gov.au", "www.fairwork.gov.au",
+    "homeaffairs.gov.au", "immi.homeaffairs.gov.au",
 }
 
 LEGAL_CORE_KEYWORDS = [
@@ -59,17 +88,21 @@ LEGAL_CORE_KEYWORDS = [
 ]
 
 AU_POLICE_CHECK_KEYWORDS = [
-    "afp",
-    "acic",
-    "check",
-    "applicant",
-    "identity",
-    "result",
-    "conviction",
+    # Original
+    "afp", "acic", "check", "applicant", "identity", "result", "conviction",
+    # Expanded — compliance & screening
+    "screening", "compliance", "clearance", "criminal", "history",
+    "verification", "employment", "disclosure", "legislation", "regulation",
+    # WWCC, NDIS, Aged Care
+    "wwcc", "children", "ndis", "aged care", "worker",
+    # Immigration & Fair Work
+    "visa", "right to work", "fair work", "workplace",
+    # Privacy
+    "privacy", "data protection", "spent conviction",
 ]
 
 MIN_CHUNK_WORDS = int(os.getenv("COLLECT_MIN_CHUNK_WORDS", "28"))
-MIN_KEYWORD_MATCHES = int(os.getenv("COLLECT_MIN_KEYWORD_MATCHES", "2"))
+MIN_KEYWORD_MATCHES = int(os.getenv("COLLECT_MIN_KEYWORD_MATCHES", "1"))
 COLLECT_REQUIRE_STEALTH = os.getenv("COLLECT_REQUIRE_STEALTH", "0") == "1"
 
 NOISE_PHRASES = [
@@ -80,6 +113,45 @@ NOISE_PHRASES = [
     "privacy statement",
     "last updated by admin",
 ]
+
+
+def _ai_evaluate_chunk(chunk: str) -> dict:
+    """Use LLM to score a chunk's relevance (1-10). Returns {"score": int, "reason": str}."""
+    try:
+        from app.config import settings as app_settings
+        if not app_settings.ai_evaluator_enabled:
+            return {"score": 10, "reason": "ai_evaluator_disabled"}
+    except Exception:
+        return {"score": 10, "reason": "config_unavailable"}
+
+    try:
+        from app.langchain_pipeline import pipeline
+        if pipeline._llm is None:
+            return {"score": 10, "reason": "llm_not_configured"}
+    except Exception:
+        return {"score": 10, "reason": "pipeline_unavailable"}
+
+    prompt = (
+        "You are a content quality evaluator for an Australian compliance knowledge base.\n"
+        "Rate this text chunk's relevance to Australian background checks, police checks, "
+        "worker screening, workplace compliance, privacy law, or HR legal requirements.\n\n"
+        f"Text: {chunk[:800]}\n\n"
+        "Return ONLY JSON: {\"score\": <1-10>, \"reason\": \"<brief>\"}\n"
+        "Score 10 = highly relevant, Score 1 = irrelevant."
+    )
+
+    try:
+        response = pipeline._llm.invoke(prompt)
+        raw = getattr(response, "content", str(response))
+        import json as _json
+        match = re.search(r"\{[^}]+\}", raw)
+        if match:
+            parsed = _json.loads(match.group(0))
+            return {"score": int(parsed.get("score", 5)), "reason": str(parsed.get("reason", ""))}
+    except Exception:
+        pass
+
+    return {"score": 5, "reason": "evaluation_fallback"}
 
 
 def _clean_text(text: str) -> str:
@@ -400,17 +472,28 @@ def _chunk_text(text: str, chunk_size: int = 1800, overlap: int = 220) -> list[s
     if len(text) <= chunk_size:
         return [text]
 
-    chunks: list[str] = []
-    start = 0
-    while start < len(text):
-        end = min(len(text), start + chunk_size)
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end >= len(text):
-            break
-        start = max(0, end - overlap)
-    return chunks
+    try:
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=overlap,
+            separators=["\n\n", "\n", ".", "?", "!", " ", ""],
+            is_separator_regex=False,
+        )
+        return splitter.split_text(text)
+    except ImportError:
+        # Fallback to naive string slicing if langchain is not installed
+        chunks: list[str] = []
+        start = 0
+        while start < len(text):
+            end = min(len(text), start + chunk_size)
+            chunk = text[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            if end >= len(text):
+                break
+            start = max(0, end - overlap)
+        return chunks
 
 
 def _fetch_url(url: str, timeout: int = 20) -> tuple[str, str, list[dict[str, str]], str]:
@@ -616,6 +699,25 @@ def collect_sources(
                     }
                 )
                 continue
+            # Tier 2: AI Content Evaluator (LLM scoring)
+            ai_eval = _ai_evaluate_chunk(chunk)
+            ai_score = ai_eval.get("score", 10)
+            try:
+                from app.config import settings as _cs
+                ai_min = _cs.ai_evaluator_min_score
+            except Exception:
+                ai_min = 6
+            if ai_score < ai_min:
+                filtered_chunks_total += 1
+                rejected_chunks.append(
+                    {
+                        "stage": "ai_evaluator",
+                        "source_url": url,
+                        "reason": f"ai_score={ai_score} < {ai_min}: {ai_eval.get('reason', '')}",
+                        "text": chunk[:320],
+                    }
+                )
+                continue
             hash_key = hashlib.sha1(f"{url}:{idx}:{chunk[:120]}".encode("utf-8")).hexdigest()[:16]
             records.append(
                 {
@@ -628,6 +730,7 @@ def collect_sources(
                     "region": "AU",
                     "title": title,
                     "authority_score": 0.95 if "gov.au" in url else 0.8,
+                    "ai_relevance_score": ai_score,
                     "approved": True,
                     "text": chunk,
                 }

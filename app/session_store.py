@@ -38,9 +38,14 @@ def _ensure_table(dsn: str) -> None:
                         id SERIAL PRIMARY KEY,
                         username TEXT UNIQUE NOT NULL,
                         password_hash TEXT NOT NULL,
+                        is_admin BOOLEAN NOT NULL DEFAULT FALSE,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     )
                 """)
+                try:
+                    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE")
+                except Exception:
+                    pass
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS chat_sessions (
                         session_id TEXT PRIMARY KEY,

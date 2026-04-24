@@ -41,7 +41,7 @@ export class App {
   savingReport = false;
   updatingReportStatus = false;
   deletingReportId: string | null = null;
-  activeMenu: 'new' | 'history' | 'saved' | 'settings' = 'new';
+  activeMenu: 'new' | 'history' | 'saved' | 'settings' | 'admin' = 'new';
   activeTopTab: 'dashboard' | 'templates' | 'analytics' = 'templates';
 
   sessionsLoading = false;
@@ -63,6 +63,11 @@ export class App {
 
   // Authentication State
   currentUser: string | null = null;
+  isAdmin: boolean = false;
+  adminUsers: any[] = [];
+  crawlHistory: any[] = [];
+  isDiscovering = false;
+  discoveryResult = '';
   showAuthModal = false;
   authMode: 'login' | 'register' = 'login';
   authUsername = '';
@@ -102,6 +107,9 @@ export class App {
     this.refreshRuntime();
     this.authService.currentUser$.subscribe(user => {
       this.currentUser = user;
+    });
+    this.authService.isAdmin$.subscribe(isAdmin => {
+      this.isAdmin = isAdmin;
     });
   }
 
@@ -192,13 +200,26 @@ export class App {
     this.prompt = prompt;
   }
 
-  setMenu(menu: 'new' | 'history' | 'saved' | 'settings'): void {
+  setMenu(menu: 'new' | 'history' | 'saved' | 'settings' | 'admin'): void {
     this.activeMenu = menu;
     if (menu === 'history') {
       this.loadSessions();
     } else if (menu === 'saved') {
       this.loadReports();
+    } else if (menu === 'admin') {
+      this.loadAdminData();
     }
+  }
+
+  loadAdminData(): void {
+    this.chatService.getAdminUsers().subscribe({
+      next: (res) => {
+        this.adminUsers = res.users || [];
+      },
+      error: (err) => {
+        console.error('Failed to load admin users', err);
+      }
+    });
   }
 
   setTopTab(tab: 'dashboard' | 'templates' | 'analytics'): void {
@@ -567,18 +588,27 @@ export class App {
     this.focusPrompt();
   }
 
-  adminKey = '';
   isIngesting = false;
   ingestResult = '';
 
+  checkIngestStatus(): void {
+    this.chatService.getIngestStatus().subscribe({
+      next: (res) => {
+        if (res.running) {
+          this.isIngesting = true;
+          this.ingestResult = 'Ingestion is running...';
+        } else {
+          this.isIngesting = false;
+        }
+      },
+      error: () => {}
+    });
+  }
+
   triggerIngest(): void {
-    if (!this.adminKey) {
-      this.ingestResult = 'API Key required.';
-      return;
-    }
     this.isIngesting = true;
     this.ingestResult = '';
-    this.chatService.triggerIngest(this.adminKey).subscribe({
+    this.chatService.triggerIngest().subscribe({
       next: (res) => {
         this.isIngesting = false;
         this.ingestResult = res.message || 'Ingestion started/completed.';
@@ -586,6 +616,29 @@ export class App {
       error: (err) => {
         this.isIngesting = false;
         this.ingestResult = 'Error: ' + (err?.error?.detail || 'Unauthorized or failed.');
+      }
+    });
+  }
+
+  loadCrawlHistory(): void {
+    this.chatService.getCrawlHistory().subscribe({
+      next: (res) => { this.crawlHistory = res.logs || []; },
+      error: () => { this.crawlHistory = []; }
+    });
+  }
+
+  triggerDiscovery(): void {
+    this.isDiscovering = true;
+    this.discoveryResult = '';
+    this.chatService.triggerDiscovery().subscribe({
+      next: (res) => {
+        this.isDiscovering = false;
+        this.discoveryResult = res.message || 'Discovery completed.';
+        this.loadCrawlHistory();
+      },
+      error: (err) => {
+        this.isDiscovering = false;
+        this.discoveryResult = 'Error: ' + (err?.error?.detail || 'Discovery failed.');
       }
     });
   }

@@ -18,6 +18,9 @@
       <a href="#" [class.active]="activeMenu === 'settings'" (click)="$event.preventDefault(); setMenu('settings')">
         <span class="material-symbols-outlined">settings</span> Settings
       </a>
+      <a href="#" *ngIf="isAdmin" [class.active]="activeMenu === 'admin'" (click)="$event.preventDefault(); setMenu('admin')">
+        <span class="material-symbols-outlined">admin_panel_settings</span> Admin Dashboard
+      </a>
     </nav>
 
     <section class="reports-list" *ngIf="activeMenu === 'saved'">
@@ -137,6 +140,89 @@
     </header>
 
     <main class="content-shell">
+      <!-- Admin Dashboard View -->
+      <ng-container *ngIf="activeMenu === 'admin' && isAdmin">
+        <section class="admin-dashboard" style="padding: 2rem; overflow-y: auto; width: 100%;">
+          <h2>Admin Dashboard</h2>
+          <p>System metrics and user management.</p>
+          
+          <div class="admin-grid" style="display: grid; grid-template-columns: 1fr; gap: 2rem; margin-top: 2rem;">
+            <div class="admin-card" style="background: var(--surface-2); padding: 1.5rem; border-radius: 8px;">
+              <h3>Users Directory</h3>
+              <table style="width: 100%; text-align: left; border-collapse: collapse; margin-top: 1rem;">
+                <thead>
+                  <tr style="border-bottom: 1px solid var(--border);">
+                    <th style="padding: 8px;">ID</th>
+                    <th style="padding: 8px;">Username</th>
+                    <th style="padding: 8px;">Role</th>
+                    <th style="padding: 8px;">Created At</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr *ngFor="let u of adminUsers" style="border-bottom: 1px solid var(--border);">
+                    <td style="padding: 8px;">{{ u.id }}</td>
+                    <td style="padding: 8px;">{{ u.username }}</td>
+                    <td style="padding: 8px;">
+                      <span class="status-pill" [class.ok]="u.is_admin">{{ u.is_admin ? 'Admin' : 'User' }}</span>
+                    </td>
+                    <td style="padding: 8px;">{{ u.created_at | date:'short' }}</td>
+                  </tr>
+                  <tr *ngIf="!adminUsers.length">
+                    <td colspan="4" style="padding: 8px; text-align: center;">No users found.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="admin-card" style="background: var(--surface-2); padding: 1.5rem; border-radius: 8px;">
+              <h3>AI Source Discovery</h3>
+              <p style="margin: 0.5rem 0;">Use AI to automatically find new compliance data sources across Australia.</p>
+              <div style="display: flex; gap: 0.5rem; align-items: center; margin-top: 1rem;">
+                <button class="btn primary" (click)="triggerDiscovery()" [disabled]="isDiscovering" style="padding: 6px 16px;">
+                  {{ isDiscovering ? 'Discovering...' : 'Discover New Sources' }}
+                </button>
+                <button class="btn secondary" (click)="triggerIngest()" [disabled]="isIngesting" style="padding: 6px 16px;">
+                  {{ isIngesting ? 'Ingesting...' : 'Run Full Ingestion' }}
+                </button>
+              </div>
+              <p *ngIf="discoveryResult" style="color: var(--success); margin-top: 0.5rem;">{{ discoveryResult }}</p>
+              <p *ngIf="ingestResult" style="color: var(--success); margin-top: 0.5rem;">{{ ingestResult }}</p>
+            </div>
+
+            <div class="admin-card" style="background: var(--surface-2); padding: 1.5rem; border-radius: 8px;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3>Crawl History</h3>
+                <button class="btn ghost" (click)="loadCrawlHistory()" style="padding: 4px 10px; font-size: 0.85rem;">Refresh</button>
+              </div>
+              <table style="width: 100%; text-align: left; border-collapse: collapse; margin-top: 1rem;">
+                <thead>
+                  <tr style="border-bottom: 1px solid var(--border);">
+                    <th style="padding: 8px;">Date</th>
+                    <th style="padding: 8px;">Discovered</th>
+                    <th style="padding: 8px;">Total Chunks</th>
+                    <th style="padding: 8px;">New URLs</th>
+                    <th style="padding: 8px;">Errors</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr *ngFor="let log of crawlHistory" style="border-bottom: 1px solid var(--border);">
+                    <td style="padding: 8px;">{{ log.created_at | date:'short' }}</td>
+                    <td style="padding: 8px;">{{ log.discovery_approved }}</td>
+                    <td style="padding: 8px;">{{ log.chunks_total }}</td>
+                    <td style="padding: 8px;">{{ log.chunks_new }}</td>
+                    <td style="padding: 8px;">{{ log.errors_total }}</td>
+                  </tr>
+                  <tr *ngIf="!crawlHistory.length">
+                    <td colspan="5" style="padding: 8px; text-align: center;">No crawl history yet. Click "Refresh" to load.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </ng-container>
+
+      <ng-container *ngIf="activeMenu !== 'admin'">
       <ng-container *ngIf="activeTopTab !== 'analytics'; else analyticsView">
       <section class="config-panel">
         <!-- Chat History -->
@@ -383,7 +469,6 @@
             <h2>Runtime Analytics & Admin</h2>
             <p>Live observability for retrieval, generation, quality gate, and latency.</p>
             <div style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: center;">
-              <input type="password" [(ngModel)]="adminKey" placeholder="Admin API Key" style="padding: 6px; border-radius: 4px; border: 1px solid #ccc; background: transparent; color: inherit;">
               <button class="btn primary" (click)="triggerIngest()" [disabled]="isIngesting" style="padding: 6px 12px;">
                 {{ isIngesting ? 'Ingesting...' : 'Ingest Knowledge' }}
               </button>
@@ -505,6 +590,7 @@
           <p class="error" *ngIf="knowledgeHealthError">{{ knowledgeHealthError }}</p>
         </section>
       </ng-template>
+      </ng-container>
     </main>
   </div>
 </div>
