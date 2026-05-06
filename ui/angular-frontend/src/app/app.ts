@@ -25,12 +25,12 @@ import { AuthService } from './auth.service';
   styleUrl: './app.scss'
 })
 export class App {
-  title = 'Editorial Sentinel';
+  title = 'Validex AI';
   prompt = '';
   darkMode = false;
   selectedTone = 'Professional';
   selectedWordCount = '800 Words';
-  selectedAudience = 'HR Professionals';
+  selectedAudience = 'General Audience';
   sessionId: string | null = null;
   loading = false;
   apiReady = false;
@@ -88,11 +88,27 @@ export class App {
     this.thinkingStatus = '';
   }
 
-  readonly samplePrompts: string[] = [
-    'Generate an in-depth editorial regarding police check procedures and background verification policies in the modern workplace.',
-    'Create a concise version focused on executive readers.',
-    'Rewrite in a confident, informative tone for HR leaders.'
+  private readonly allPrompts: string[] = [
+    'How to apply for a police check in Australia — step by step guide',
+    'Police check requirements for employers hiring in aged care and childcare',
+    'What volunteers need to know about police checks in Australia',
+    'National Police Check vs. Working With Children Check — key differences explained',
+    'How long does a police check take in Australia? Processing times by state',
+    'Police check requirements for visa applications and immigration to Australia',
+    'Do police checks expire? Understanding validity periods for employers',
+    'How to get a police check in NSW, VIC, and QLD — state-by-state breakdown',
+    'Criminal history disclosure: What shows up on an Australian police check?',
+    'Why employers in healthcare and education must conduct police checks',
+    'Online vs. in-person police checks: Which option is right for you?',
+    'ACIC accreditation explained: How Validex delivers trusted police checks',
   ];
+
+  readonly samplePrompts: string[] = this.getRandomPrompts(3);
+
+  private getRandomPrompts(count: number): string[] {
+    const shuffled = [...this.allPrompts].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, count);
+  }
 
   readonly messages: ChatMessage[] = [];
   readonly reports: ReportSummary[] = [];
@@ -320,12 +336,21 @@ export class App {
               assistantMsg.latencyMs = Math.round(latency);
             }
           } else if (event.type === 'thinking') {
+            // Use rich status from backend
+            const status = event.data?.status || '';
+            const detail = event.data?.detail || '';
             const stepName = event.data?.step || 'Agent working';
-            if (stepName === 'Parser') this.thinkingStatus = 'Parsing prompt semantics...';
-            else if (stepName === 'Researcher') this.thinkingStatus = 'Data Collector AI retrieving knowledge...';
-            else if (stepName === 'Writer') this.thinkingStatus = 'Blog Writer AI generating draft...';
-            else if (stepName === 'Editor') this.thinkingStatus = 'Editor AI reviewing compliance...';
-            else this.thinkingStatus = `${stepName} is working...`;
+            
+            if (status) {
+              this.thinkingStatus = status;
+            } else {
+              // Fallback to step-based messages
+              if (stepName === 'Parser') this.thinkingStatus = '🎯 Analyzing your request with AI...';
+              else if (stepName === 'Researcher') this.thinkingStatus = '🔍 Searching knowledge sources...';
+              else if (stepName === 'Writer') this.thinkingStatus = '✍️ Generating content...';
+              else if (stepName === 'Editor') this.thinkingStatus = '🔬 Reviewing quality...';
+              else this.thinkingStatus = `${stepName} is working...`;
+            }
           } else if (event.type === 'done') {
             this.stopThinkingCycle();
             const response = event.data as ChatApiResponse;

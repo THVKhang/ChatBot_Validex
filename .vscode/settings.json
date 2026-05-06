@@ -1,5 +1,5 @@
 {
-  "python.defaultInterpreterPath": "C:\\Users\\Admin\\Documents\\GitHub\\ChatBot_Validex\\.venv\\Scripts\\python.exe",
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
   "python.terminal.activateEnvironment": true,
   "terminal.integrated.profiles.windows": {
     "PowerShell (venv)": {

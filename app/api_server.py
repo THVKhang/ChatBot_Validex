@@ -420,16 +420,57 @@ async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | 
                 "revision_count": 0
             }
             
-            final_state = None
+            # Detailed progress messages for each node
+            _PROGRESS_MAP = {
+                "Parser": {
+                    "status": "Analyzing your request with AI...",
+                    "detail": "Understanding intent, topic, and parameters",
+                },
+                "Researcher": {
+                    "status": "Searching knowledge sources...",
+                    "detail": "Multi-query retrieval + web search + deep scraping",
+                },
+                "Writer": {
+                    "status": "Generating content...",
+                    "detail": "Planning structure → Writing draft → Self-reviewing",
+                },
+                "Editor": {
+                    "status": "Reviewing quality...",
+                    "detail": "Evaluating accuracy, coherence, and completeness",
+                },
+            }
+            
+            final_state = dict(initial_state)
             async for event in multi_agent_graph.astream(initial_state):
                 for node_name, node_state in event.items():
-                    # Send thinking event for UI
-                    yield f"event: thinking\ndata: {json.dumps({'step': node_name}, ensure_ascii=False)}\n\n"
-                    final_state = node_state
+                    progress = _PROGRESS_MAP.get(node_name, {})
+                    # Send rich thinking event
+                    thinking_data = {
+                        "step": node_name,
+                        "status": progress.get("status", f"{node_name} is working..."),
+                        "detail": progress.get("detail", ""),
+                    }
+                    # Add retrieval info
+                    if node_name == "Researcher" and "retrieved_docs" in node_state:
+                        doc_count = len(node_state.get("retrieved_docs", []))
+                        thinking_data["status"] = f"Found {doc_count} relevant sources"
+                        thinking_data["detail"] = f"Retrieved {doc_count} documents from knowledge base and web"
+                    # Add writer info
+                    if node_name == "Writer" and "title" in node_state:
+                        thinking_data["status"] = f"Draft complete: {node_state.get('title', '')[:60]}"
+                    
+                    yield f"event: thinking\ndata: {json.dumps(thinking_data, ensure_ascii=False)}\n\n"
+                    final_state.update(node_state)
                     
             if not final_state:
                 raise Exception("Graph execution yielded no final state")
-                
+
+            # Calculate quality score from editor evaluation
+            revision_count = final_state.get("revision_count", 0)
+            quality_blocked = bool(final_state.get("quality_gate_blocked"))
+            # Estimate quality: if editor accepted first time = high quality
+            estimated_quality = max(5, 10 - (revision_count - 1) * 2) if not quality_blocked else 4
+
             payload = {
                 "parsed": final_state.get("parsed", {}),
                 "retrieved": final_state.get("retrieved_docs", []),
@@ -440,9 +481,12 @@ async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | 
                     "sources_used": final_state.get("sources_used", [])
                 },
                 "runtime": {
-                    "quality_gate_blocked": bool(final_state.get("editor_feedback")),
+                    "quality_gate_blocked": quality_blocked,
                     "generation_mode": "multi-agent",
-                    "retrieval_mode": "hybrid"
+                    "retrieval_mode": "hybrid",
+                    "quality_score": estimated_quality,
+                    "revision_count": revision_count,
+                    "sources_found": len(final_state.get("retrieved_docs", [])),
                 }
             }
             
@@ -733,3 +777,30 @@ async def admin_trigger_discovery(
         "approved": result.get("approved_urls", []),
         "rejected_count": result.get("rejected_count", 0),
     }
+
+
+# ── Serve Angular Frontend ─────────────────────────────────
+import os
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent / "ui" / "angular-frontend" / "dist" / "angular-frontend" / "browser"
+if not _FRONTEND_DIR.exists():
+    _FRONTEND_DIR = Path(__file__).resolve().parent.parent / "ui" / "angular-frontend" / "dist" / "angular-frontend"
+
+if _FRONTEND_DIR.exists():
+    # Serve static assets (JS, CSS, images, etc.)
+    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIR)), name="frontend-assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """Serve Angular SPA — fallback to index.html for client-side routing."""
+        file_path = _FRONTEND_DIR / full_path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        index = _FRONTEND_DIR / "index.html"
+        if index.exists():
+            return FileResponse(str(index))
+        raise HTTPException(status_code=404, detail="Frontend not found")
+

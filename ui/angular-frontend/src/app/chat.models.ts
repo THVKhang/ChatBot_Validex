@@ -48,6 +48,9 @@ export interface ChatApiResponse {
     quality_gate_blocked?: boolean;
     external_knowledge_used?: boolean;
     fallback_reason?: string | null;
+    quality_score?: number;
+    revision_count?: number;
+    sources_found?: number;
   };
 }
 

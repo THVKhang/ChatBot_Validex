@@ -255,15 +255,129 @@ def _section_plan(heading: str, topic: str, audience: str) -> tuple[str, str, li
             ],
         )
 
+    if "key factors" in heading_lower or "considerations" in heading_lower:
+        return (
+            f"Several important factors influence how {topic} works in practice.",
+            f"For {audience}, understanding these factors helps you make well-informed decisions and avoid common pitfalls.",
+            [
+                f"Identify the specific regulations and requirements relevant to your situation.",
+                "Check whether your circumstances involve any special conditions or exemptions.",
+                "Keep records of all documents and correspondence related to the process.",
+            ],
+        )
+
+    if "summary" in heading_lower or "next steps" in heading_lower:
+        return (
+            f"Taking informed action on {topic} starts with understanding the key requirements.",
+            f"By following the practical guidance outlined above, {audience} can navigate this process efficiently and with confidence.",
+            [
+                f"Begin by gathering all necessary documentation for {topic}.",
+                "Consult an accredited provider or official source for the most current requirements.",
+                f"Visit validex.com.au for assistance with your police check needs.",
+            ],
+        )
+
+    if "how it works" in heading_lower:
+        return (
+            f"The process for {topic} follows established procedures designed for consistency and fairness.",
+            f"For {audience}, knowing these steps can significantly reduce delays and uncertainty.",
+            [
+                "Understand the end-to-end process before starting your application.",
+                "Prepare the required documents and identity verification materials in advance.",
+                "Allow sufficient processing time, especially during high-demand periods.",
+            ],
+        )
+
+    if "getting started" in heading_lower:
+        return (
+            f"Starting the process for {topic} is straightforward when you know what to expect.",
+            "Validex provides streamlined police check services with clear guidance at every step.",
+            [
+                "Begin your application online through an accredited provider like Validex.",
+                "Ensure you have current identification documents ready before starting.",
+                f"Visit validex.com.au to get started with your police check today.",
+            ],
+        )
+
+    if "what you need to know" in heading_lower:
+        return (
+            f"{topic.strip('.').capitalize()} involves specific requirements and processes that are important to understand.",
+            f"For {audience}, being well-informed about the process ensures a smooth experience and helps avoid unnecessary complications.",
+            [
+                "Familiarise yourself with the eligibility criteria and documentation requirements.",
+                "Understand the difference between various types of checks available.",
+                "Check current processing times and any fees that may apply.",
+            ],
+        )
+
     return (
-        f"{topic.title()} should be treated as a strategic hiring-risk control, not only an administrative step.",
-        f"For {audience}, the objective is balancing compliance, turnaround speed, and candidate experience.",
+        f"Understanding {topic} is essential for making informed decisions in this area.",
+        f"For {audience}, the key is knowing the requirements, processes, and practical implications.",
         [
-            "Clarify screening scope by role sensitivity and regulatory expectation.",
-            "Set measurable turnaround targets for each screening stage.",
-            "Document decision rules to reduce inconsistent hiring outcomes.",
+            f"Research the specific requirements that apply to your situation regarding {topic}.",
+            "Consult official sources or accredited providers for the most current information.",
+            "Take action early to avoid delays or complications.",
         ],
     )
+
+
+def _is_garbage_snippet(snippet: str) -> bool:
+    """Detect raw scraper garbage that should not appear in editorial content."""
+    lower = snippet.lower()
+    # Forum/search result noise
+    garbage_signals = [
+        "check that your question",
+        "tips to get helpful answers",
+        "ask a direct question",
+        "check your spelling",
+        "already been asked",
+        "showing results for",
+        "did you mean",
+        "related searches",
+        "people also ask",
+        # Non-Australian content that leaks from RAG
+        "nigeria police",
+        "jamb result",
+        "jamb updates",
+        "unified tertiary matriculation",
+        "nigerian",
+        "nscdc",
+        "india police",
+        "fbi background",
+        # Advertising / promotional noise
+        "advertisements",
+        "click here to",
+        "sign up for",
+        "subscribe to",
+        "download our app",
+        "cookie policy",
+        "privacy policy",
+        "terms of service",
+    ]
+    if any(signal in lower for signal in garbage_signals):
+        return True
+    # Truncated snippets ending with "..."
+    if snippet.rstrip().endswith("...") and len(snippet.split()) < 15:
+        return True
+    # Date-prefixed scraper noise like "Apr 29, 2025 ·"
+    if re.match(r"^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+[·\-]", snippet):
+        # Strip the date prefix but keep the content if it's substantial
+        cleaned = re.sub(r"^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+[·\-]\s*", "", snippet)
+        if len(cleaned.split()) < 10:
+            return True
+    # Too short to be useful
+    if len(snippet.split()) < 8:
+        return True
+    return False
+
+
+def _clean_evidence_snippet(snippet: str) -> str:
+    """Clean up a retrieved snippet for editorial use."""
+    # Strip date prefixes
+    snippet = re.sub(r"^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+[·\-]\s*", "", snippet)
+    # Strip trailing ellipsis
+    snippet = re.sub(r"\.\.\.$", ".", snippet.rstrip())
+    return snippet.strip()
 
 
 def _supporting_facts(docs: list[RetrievedDoc], limit: int = 6) -> list[str]:
@@ -278,6 +392,12 @@ def _supporting_facts(docs: list[RetrievedDoc], limit: int = 6) -> list[str]:
 
         if snippet.lower().startswith("faq:"):
             snippet = snippet.split(":", 1)[1].strip()
+
+        # Filter out garbage scraper snippets
+        if _is_garbage_snippet(snippet):
+            continue
+
+        snippet = _clean_evidence_snippet(snippet)
 
         if snippet in facts:
             continue
@@ -298,11 +418,19 @@ def _section_body(parsed: ParsedPrompt, heading: str, evidence_fact: str | None)
     if evidence_fact:
         evidence_block = f"Current guidance indicates: {evidence_fact}\n\n"
 
-    if is_police_topic and heading_lower == "introduction":
+    if heading_lower == "introduction":
+        if is_police_topic and _prefers_step_structure(parsed):
+            return (
+                "Applying for a police check in Australia follows a defined, nationally coordinated process. "
+                "While most applications are completed online, the same legal and identity verification requirements apply regardless of channel.\n\n"
+                f"This guide outlines a practical path for {audience}, from preparing documents through to receiving results."
+            )
+        # Generic topic-aware introduction
         return (
-            "Applying for a police check in Australia follows a defined, nationally coordinated process. "
-            "While most applications are completed online, the same legal and identity verification requirements apply regardless of channel.\n\n"
-            f"This guide outlines a practical path for {audience}, from preparing documents through to receiving results."
+            f"{topic.strip().rstrip('.').capitalize()} is a topic that affects many Australians, "
+            f"whether they are individuals, employers, or organisations navigating compliance requirements.\n\n"
+            f"This article provides a clear, practical overview of {topic} for {audience}, "
+            f"covering key considerations, processes, and actionable guidance."
         )
 
     if is_police_topic and "overview of the application process" in heading_lower:
@@ -453,14 +581,23 @@ def _section_body(parsed: ParsedPrompt, heading: str, evidence_fact: str | None)
         )
 
     lead, context, actions = _section_plan(heading, topic, audience)
-    action_lines = _join_bullets(actions)
+    # Format bullets with bold lead-ins for editorial style
+    bold_actions = []
+    for action in actions:
+        # Bold the first phrase before a comma or period
+        parts = re.split(r'(?<=\w)(?:\s*[-\u2014]\s*|\.\s+)', action, maxsplit=1)
+        if len(parts) > 1:
+            bold_actions.append(f"**{parts[0].strip()}** \u2014 {parts[1].strip()}")
+        else:
+            bold_actions.append(f"**{action.rstrip('.')}**")
+    action_lines = _join_bullets(bold_actions)
     blocks = [
         f"{lead}\n\n",
         f"{context}\n\n",
     ]
     if evidence_fact:
-        blocks.append(f"A practical data point: {evidence_fact}\n\n")
-    blocks.append("Recommended actions:\n")
+        blocks.append(f"{evidence_fact}\n\n")
+    blocks.append("Key considerations:\n")
     blocks.append(action_lines)
     return "".join(blocks)
 
@@ -487,13 +624,19 @@ def build_sections(parsed: ParsedPrompt, outline: list[str], docs: list[Retrieve
 
 def render_markdown_blog(title: str, sections: list[GeneratedBlog.Section]) -> str:
     blocks: list[str] = [f"# {title}"]
+
+    # Validex editorial format: only one hero image after the title
+    if sections and sections[0].image_url:
+        blocks.extend([
+            "",
+            f"![{sections[0].image_alt}]({sections[0].image_url})",
+        ])
+
     for section in sections:
         blocks.extend(
             [
                 "",
                 f"## {section.heading}",
-                "",
-                f"![{section.image_alt}]({section.image_url})",
                 "",
                 section.body,
             ]
@@ -519,6 +662,73 @@ def format_title(topic: str) -> str:
         else:
             titled.append(word.capitalize())
     return " ".join(titled)
+
+
+def _build_topic_aware_outline(parsed: ParsedPrompt) -> list[str]:
+    """Build an outline that reflects the user's actual topic using dynamic frameworks.
+
+    Framework A: Compliance / Background Check / Identity Verification topics
+    Framework B: General Technology / Cybersecurity / Digital Infrastructure topics
+    """
+    topic = re.sub(r"\s+", " ", parsed.topic).strip()
+    topic_title = format_title(topic)
+
+    # Shorten topic for headings — max 8 words
+    topic_words = topic_title.split()
+    short_topic = " ".join(topic_words[:8]) if len(topic_words) > 8 else topic_title
+
+    topic_lower = topic.lower()
+
+    # Strip question prefixes for cleaner headings
+    # e.g., "How Is My Police Check Result Determined" → "Police Check Result Determination"
+    question_prefixes = [
+        "how is ", "how are ", "how does ", "how do ", "how can ", "how to ",
+        "what is ", "what are ", "what does ", "what do ",
+        "why is ", "why are ", "why does ", "why do ",
+        "when is ", "when are ", "when does ", "when do ",
+        "does ", "do ", "can ", "is ", "are ",
+    ]
+    heading_topic = short_topic
+    for prefix in question_prefixes:
+        if heading_topic.lower().startswith(prefix):
+            heading_topic = heading_topic[len(prefix):].strip()
+            heading_topic = format_title(heading_topic)
+            break
+
+    # Detect if this is a compliance/background-check topic (Framework A)
+    compliance_keywords = [
+        "police check", "background check", "criminal record", "identity verification",
+        "spent conviction", "acic", "npc", "compliance", "vetting", "screening",
+        "criminal history", "disclosure", "working with children", "wwcc",
+    ]
+    is_compliance = any(kw in topic_lower for kw in compliance_keywords)
+
+    if is_compliance:
+        # Framework A — Compliance / Background Check
+        outline = [
+            f"System Architecture Behind {heading_topic}",
+            f"How {heading_topic} Results Are Determined",
+            "Data Flow and Processing Pipeline",
+            "Legislative and Regulatory Framework",
+            "Practical Implications and Outcomes",
+            "Conclusion and Strategic Next Steps",
+        ]
+    else:
+        # Framework B — General Technology / Cybersecurity
+        outline = [
+            f"Protocol Architecture and Standards Governing {heading_topic}",
+            f"Core Mechanisms and Algorithms",
+            "Implementation Landscape and Real-World Deployments",
+            "Threat Model Analysis and Security Considerations",
+            "Strategic Impact and Future Trajectory",
+            "Conclusion and Strategic Next Steps",
+        ]
+
+    if parsed.length == "long":
+        # Insert an extra depth section before the conclusion
+        outline.insert(-1, "Common Questions and Expert Insights")
+
+    return outline
 
 
 def generate_outline(parsed: ParsedPrompt) -> list[str]:
@@ -549,33 +759,10 @@ def generate_outline(parsed: ParsedPrompt) -> list[str]:
                 outline.insert(2, "What to Expect")
             return outline
 
-        if parsed.length == "short":
-            return [
-                "Introduction",
-                "Understanding the National Police Check",
-                "Risk, Compliance, and Candidate Experience",
-                "Operational Priorities for Employers",
-            ]
+        # Build a topic-aware outline from the user's actual question
+        return _build_topic_aware_outline(parsed)
 
-        outline = [
-            "Introduction",
-            "Understanding the National Police Check",
-            "Role-Based Screening and Risk Governance",
-            "Operational Delivery and Candidate Experience",
-            "Employer Responsibilities and Compliance Controls",
-            "Conclusion and Next Actions",
-        ]
-
-        if parsed.length == "long":
-            outline.insert(4, "Building a Scalable Verification Program")
-        return outline
-
-    return [
-        "Introduction",
-        "Core concepts, context, and business value",
-        "Practical implementation steps and compliance notes",
-        "Conclusion and call to action",
-    ]
+    return _build_topic_aware_outline(parsed)
 
 
 def generate_draft(parsed: ParsedPrompt, docs: list[RetrievedDoc]) -> str:

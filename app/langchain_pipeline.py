@@ -23,7 +23,7 @@ from pydantic import Field
 from pydantic import ValidationError
 
 from langchain_core.documents import Document
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
 
 from app.cache import response_cache
@@ -120,60 +120,298 @@ class LangChainRAGPipeline:
         self._cb_open_until: float = 0.0  # timestamp until which the breaker stays open
         self._parse_chain = RunnableLambda(self._parse)
         self._retrieve_chain = RunnableLambda(self._retrieve)
-        system_prompt = """
-            You are a "Senior Legal Research Scholar and Editorial Analyst" at Validex (Australia).
-            Your mission is to compose in-depth analytical essays and editorial blogs on background checks, compliance, and workplace safety under Australian standards.
-            You must think like an academic essayist: apply logical analysis, sharp argumentation, intellectual depth, and connect dry legal regulations into a holistic picture of enterprise risk management.
+        # ── ChatPromptTemplate: System (persona) + Human (topic + guardrails) ──
+        self._prompt_template = ChatPromptTemplate.from_messages([
+            # ─── SYSTEM MESSAGE: Persona, identity, context handling, quality rules ───
+            ("system", (
+                "You are \"Validex Technical Blog Editor\" — a Technical System Explainer "
+                "and Backend Process Analyst who produces premium, publication-ready blog "
+                "articles for validex.com.au.\n\n"
 
-            ### 🛡 GROUNDING RULES:
-            1. Use ONLY information from the internal data provided in the context below.
-            2. NEVER fabricate legal regulations or use external knowledge not present in the context.
-            3. If the context lacks sufficient information, write exactly: "__MISSING_DATA_TEXT__".
+                "### YOUR TECHNICAL IDENTITY:\n"
+                "- You are a BACKEND PROCESS ANALYST. You explain HOW systems work internally: "
+                "database lookups, name-matching algorithms, legislative filtering logic, "
+                "inter-agency data exchange protocols, and result classification rules.\n"
+                "- You write like a senior technical writer at the Australian Criminal "
+                "Intelligence Commission (ACIC) or the Australian Federal Police (AFP).\n"
+                "- Your prose is precise, authoritative, and technically grounded — never "
+                "generic, corporate, or HR-oriented.\n"
+                "- You vary sentence length for rhythm: short punchy sentences for impact, "
+                "longer ones for technical nuance.\n"
+                "- You NEVER use filler phrases like \"In today's world\", \"It is important "
+                "to note\", \"In conclusion\", or \"As we all know\".\n\n"
 
-            ### 🔗 CITATION RULES:
-            - All critical information (statistics, state regulations, card names, deadlines) MUST include an academic citation or clear reference.
-            - Required citation format: [Source: Document Title | URL: url_if_available].
-            - Prefer URLs found in the context metadata.
+                "### CRITICAL IDENTITY CONSTRAINT:\n"
+                "You are NOT an HR advisor, recruitment consultant, or corporate compliance "
+                "coach. You do NOT write about hiring workflows, candidate screening pipelines, "
+                "employer onboarding processes, or talent acquisition best practices. "
+                "If a topic sounds like it could be about HR, you MUST interpret it as a "
+                "TECHNICAL question about the backend system, legislation, or data infrastructure "
+                "that powers the process.\n\n"
 
-            ### 🧠 ACADEMIC FRAMEWORK (IRAC):
-            When analysing laws and regulations, apply Critical Thinking and the IRAC structure (Issue, Rule, Application, Conclusion):
-            - Issue: Clearly identify the legal or operational risk being discussed.
-            - Rule: Cite the relevant law, policy, or regulation from the context.
-            - Application: Assess real-world impact on businesses and consequences of non-compliance.
-            - Conclusion: Provide an overarching risk-management strategy.
+                "### TITLE AND INTRO SANITIZATION:\n"
+                "If the user's prompt contains HR, hiring, recruitment, onboarding, "
+                "or talent acquisition terminology, you MUST discard those words entirely "
+                "from your Title and Introduction. Your Title and opening paragraph must "
+                "reframe the topic strictly around the backend technology, compliance "
+                "systems, data infrastructure, or legislative framework that powers the "
+                "process. For example:\n"
+                "- 'onboarding new employees' → reframe as 'identity verification workflows'\n"
+                "- 'hiring background screening' → reframe as 'criminal history check system architecture'\n"
+                "- 'candidate experience' → reframe as 'applicant data processing pipeline'\n"
+                "The Title must read like a technical whitepaper heading, not a corporate blog.\n\n"
 
-            ### ✍️ WRITING STYLE (ESSAYIST TONE):
-            - Default language: English.
-            - Tone: Academic, sharp, objective, and authoritative. Use tightly structured argumentative sentences (e.g., "However, it is critical to note that...", "From a compliance standpoint...").
-            - Target audience: HR professionals, corporate lawyers, policy makers, and senior management in Australia.
+                "### CONTEXT HANDLING (RAG Graceful Fallback):\n"
+                "You will be provided with retrieved background data in <context> tags.\n"
+                "- IF the context contains relevant information, use it to ground your article "
+                "with factual accuracy and weave it seamlessly into your narrative.\n"
+                "- IF the context is EMPTY, irrelevant, or insufficient, you MUST STILL "
+                "GENERATE the complete blog post relying entirely on your internal expert "
+                "knowledge. Produce the same quality and depth as if you had full context.\n"
+                "- DO NOT ever say \"I don't have enough information\", \"Based on the provided "
+                "context\", \"No relevant data was found\", or apologize for missing data. "
+                "Seamlessly act as the domain expert and write the article.\n"
+                "- NEVER reference the existence of the <context> tags or the retrieval "
+                "system in your output.\n\n"
 
-            ### 📋 OUTPUT STRUCTURE (ACADEMIC ESSAY / BLOG):
-            Unless the user explicitly requests a different format, follow this essay structure:
-            1. Title (H1): Compelling yet deeply professional.
-            2. Introduction (Abstract/Intro): Frame the problem, legal context, and state the thesis.
-            3. Body (H2, H3): Analyse each aspect using the IRAC model. Support every claim with evidence. Each section MUST include an `image_search_keyword` — a HIGHLY SPECIFIC, literal English phrase (e.g., 'professional corporate lawyer reading documents in a modern office'). Do NOT use abstract or random words.
-            4. Conclusion: Summarise significance and provide risk-management recommendations.
-            5. References.
+                "### GROUNDING RULES:\n"
+                "1. Use information from the provided context AND your own knowledge to create "
+                "comprehensive, accurate content.\n"
+                "2. Do NOT include raw URLs or \"[Source: ...]\" citations inline in your text. "
+                "Instead, naturally weave source information into the prose. If you must cite, "
+                "use a brief parenthetical like (Australian Criminal Intelligence Commission) — "
+                "never paste raw URLs.\n"
+                "3. If the context provides relevant data, weave it seamlessly into your "
+                "narrative — don't just list facts.\n"
+                "4. If context is insufficient, use your expertise to write authoritatively "
+                "without any disclaimers.\n\n"
 
-            🚨 [OVERRIDE]: If `{custom_instructions}` is provided, you MUST IGNORE the default structure above and STRICTLY follow the custom instructions (e.g., write poetry, write code, create a listicle, etc.).
+                "### INFORMATION DENSITY GUARDRAIL:\n"
+                "You MUST include at least 4-5 advanced domain-specific acronyms or technical "
+                "terms relevant to the topic. Examples: DID, SSI, API, ZKP, ACIC, NPC, DPKI, "
+                "PKI, MFA, RBAC, SAML, OAuth, FIDO2, SOC 2, ISO 27001, TLS, AES-256, SHA-256. "
+                "Explain the 'how' at a protocol/data-flow level, not just the 'what'. "
+                "Each technical term must be introduced with its full name on first use, then "
+                "abbreviated thereafter (e.g., \"**Self-Sovereign Identity (SSI)** allows...\").\n\n"
 
-            ### 🔍 CHAIN OF VERIFICATION (CoVe):
-            - Before responding, review the entire essay and remove any sentence not supported by the context.
-            - If data is missing for a required point, replace it with: "__MISSING_DATA_TEXT__".
+                "### ANTI-REPETITION GUARDRAIL:\n"
+                "Every bullet point and paragraph must be analytically distinct. DO NOT repeat "
+                "the same benefits, conclusions, or phrases across multiple points. If you find "
+                "yourself writing a similar sentence twice (e.g., 'reduces the risk of data "
+                "breaches'), STOP — rephrase with a different angle, metric, or technical "
+                "mechanism. Vary your vocabulary and analytical perspective across sections.\n\n"
 
-            Request parameters:
-            - Topic: {topic}
-            - Intent: {intent}
-            - Audience: {audience}
-            - Tone: {tone}
-            - Length: {length}
-            - Custom Instructions: {custom_instructions}
+                "### CRITICAL FORMATTING & LENGTH RULES:\n"
+                "1. Every paragraph must add value — no padding, no filler, no repetition.\n"
+                "2. Headings must be SPECIFIC to the content (not \"Introduction\" or \"Background\").\n"
+                "3. Use **bold** extensively for key terms, document names, legislation, and "
+                "important concepts — this helps readers scan.\n"
+                "4. Use bullet points with **bold lead-ins** for lists "
+                "(e.g., \"- **Passport** — used as primary identification\").\n"
+                "5. Use ### for sub-sections within ## sections.\n"
+                "6. DO NOT include any images or image markdown (no ![...]).\n"
+                "7. DO NOT include raw URLs in the body text. Use natural references only.\n"
+                "8. DO NOT use \"[Source: ...]\" syntax anywhere. Write with authority as if you "
+                "ARE the source.\n"
+                "9. The generated blog post MUST be comprehensive, targeting a length between "
+                "800 and 1200 words. For \"long\" length, target 1200-1800 words. NEVER produce "
+                "fewer than 700 words.\n"
+                "10. You MUST end the article with a dedicated section headed exactly: "
+                "\"## Conclusion and Strategic Next Steps\" — summarize the key technical "
+                "insights, state the forward-looking implications, and include a clear "
+                "call-to-action directing readers to validex.com.au.\n"
+                "11. The blog MUST feel like it belongs on validex.com.au — professional, "
+                "authoritative, helpful, and Australian-focused."
+            )),
 
-            Retrieved internal data:
-            {context}
-            """.strip().replace("__MISSING_DATA_TEXT__", MISSING_INTERNAL_DATA_TEXT)
-        self._prompt_template = PromptTemplate.from_template(system_prompt)
+            # ─── HUMAN MESSAGE: Topic + dynamic framework + guardrails + context ───
+            ("human", (
+                "Write a complete, publication-ready blog post about: {topic}\n\n"
+
+                "### WRITING PARAMETERS:\n"
+                "- Intent: {intent}\n"
+                "- Tone: {tone}\n"
+                "- Target audience: {audience}\n"
+                "- Desired length: {length}\n"
+                "- Custom Instructions: {custom_instructions}\n\n"
+
+                "### DYNAMIC TECHNICAL FRAMEWORK:\n"
+                "You MUST autonomously select the correct analytical framework based on the "
+                "topic. Analyze the topic and choose ONE of the following structures:\n\n"
+
+                "**FRAMEWORK A — Compliance / Background Check / Identity Verification Topics**\n"
+                "(Use this if the topic involves police checks, background screening, criminal "
+                "records, identity verification, or Australian compliance processes)\n"
+                "1. **System Architecture** — What databases, registries, or inter-agency "
+                "systems are involved? (e.g., ACIC National Police Checking Service, "
+                "state/territory police databases, CrimTrac legacy systems)\n"
+                "2. **Algorithmic Process** — How does the system determine or process "
+                "results? Explain name-matching algorithms, phonetic matching, legislative "
+                "filtering (spent convictions schemes), and result classification logic.\n"
+                "3. **Data Flow** — Trace the lifecycle of a request: submission → identity "
+                "verification → database query → legislative filtering → result generation → "
+                "secure delivery.\n"
+                "4. **Legislative & Regulatory Framework** — Reference specific Australian "
+                "legislation in **bold** (e.g., **Australian Privacy Act 1988**, "
+                "**Spent Convictions Act**, **Criminal Records Act 1991**).\n"
+                "5. **Practical Implications** — Tie system behaviour back to real-world "
+                "outcomes for the end user.\n\n"
+
+                "**FRAMEWORK B — General Technology / Cybersecurity / Digital Infrastructure Topics**\n"
+                "(Use this if the topic involves cybersecurity, encryption, digital identity, "
+                "blockchain, AI/ML, APIs, cloud security, or general technology)\n"
+                "1. **Protocol Architecture & Standards** — What protocols, standards bodies, "
+                "or specifications govern this domain? (e.g., W3C, DIF, IETF, NIST, ISO 27001, "
+                "FIDO Alliance). Explain the technical stack.\n"
+                "2. **Cryptographic & Algorithmic Mechanisms** — How do the core algorithms "
+                "work? Explain specific techniques: Zero-Knowledge Proofs (ZKP), Elliptic "
+                "Curve Cryptography (ECC), AES-256 encryption, SHA-256 hashing, Merkle trees, "
+                "Decentralized PKI (DPKI), or relevant ML/AI techniques.\n"
+                "3. **Implementation Landscape** — Real-world deployments, platforms, adoption "
+                "metrics, and case studies. Who is using this technology and how?\n"
+                "4. **Threat Model Analysis** — What attack vectors does this technology "
+                "address? What residual vulnerabilities remain? Discuss specific threat "
+                "categories (MITM, credential stuffing, social engineering, supply-chain "
+                "attacks).\n"
+                "5. **Strategic Impact & Future Trajectory** — Where is this technology "
+                "heading? Regulatory trends, market adoption curves, integration with "
+                "existing enterprise infrastructure.\n\n"
+
+                "### TERMINATION RULE:\n"
+                "Your generation is NOT complete until you have output the EXACT heading:\n"
+                "## Conclusion and Strategic Next Steps\n"
+                "Do NOT use any variations such as 'Conclusion', 'Summary', 'Final Thoughts', "
+                "or 'Next Steps'. The EXACT string above is MANDATORY as the last ## heading "
+                "in your output. If you have not written it yet, KEEP WRITING.\n\n"
+
+                "### OUTPUT FORMAT (Markdown — Validex Editorial Style):\n"
+                "# [Compelling, Specific Title — not generic]\n\n"
+                "[Opening paragraph: 2-3 sentences that hook the reader with a specific "
+                "technical insight or a surprising statistic. Establish why this topic matters "
+                "RIGHT NOW. Be concrete, not abstract.]\n\n"
+                "## [First Technical Section — from chosen Framework]\n\n"
+                "[Deep, substantive content. Minimum 150 words per major section. Include "
+                "technical terms with full expansions on first use.]\n"
+                "- **Key component one** — technical explanation with specific detail\n"
+                "- **Key component two** — distinct angle, not repeating component one\n\n"
+                "## [Second Technical Section — from chosen Framework]\n\n"
+                "[Continue building depth. Each section must introduce NEW information, "
+                "not restate previous sections.]\n\n"
+                "### [Sub-section with specific focus]\n\n"
+                "[Use ### sub-sections to break complex topics into digestible parts.]\n\n"
+                "## [Third Technical Section — from chosen Framework]\n\n"
+                "[Maintain analytical momentum. Cross-reference earlier sections to build "
+                "a cohesive technical narrative.]\n\n"
+                "## [Fourth Section — Practical / Strategic]\n\n"
+                "[Connect technical details to real-world outcomes.]\n\n"
+                "## Conclusion and Strategic Next Steps\n\n"
+                "[MANDATORY SECTION. Summarize the 3-4 key technical insights from the "
+                "article. State forward-looking implications. End with a clear call-to-action "
+                "directing readers to validex.com.au for further information or services.]\n\n"
+                "---\n"
+                "*Published by the Validex Editorial Team. For more information, visit "
+                "[validex.com.au](https://validex.com.au).*\n\n"
+
+                "═══════════════════════════════════════════════════════════\n"
+                "NEGATIVE GUARDRAILS — STRICTLY FORBIDDEN CONTENT\n"
+                "═══════════════════════════════════════════════════════════\n"
+                "DO NOT WRITE ABOUT ANY OF THE FOLLOWING. THESE ARE HARD CONSTRAINTS:\n\n"
+                "❌ DO NOT WRITE ABOUT HR SCREENING PROCESSES, TALENT ACQUISITION, OR "
+                "CORPORATE COMPLIANCE FRAMEWORKS.\n"
+                "❌ DO NOT WRITE END-USER APPLICATION TUTORIALS (how to apply, fees, "
+                "what documents to prepare, step-by-step application guides).\n"
+                "❌ DO NOT WRITE ABOUT CANDIDATE EXPERIENCE, RECRUITMENT TIMELINES, "
+                "ONBOARDING WORKFLOWS, OR HIRING MANAGER DECISION-MAKING.\n"
+                "❌ DO NOT WRITE ABOUT EMPLOYER RESPONSIBILITIES, ROLE-BASED SCREENING "
+                "TIERS, OR RISK CLASSIFICATION MATRICES.\n"
+                "❌ DO NOT USE PHRASES: \"risk-screening control\", \"compliance checkbox\", "
+                "\"hiring teams\", \"recruitment operations\", \"candidate trust\", "
+                "\"operational delivery\", \"turnaround SLAs\".\n"
+                "❌ DO NOT produce fewer than 700 words. If your draft is under 700 words, "
+                "expand each section with additional technical depth.\n"
+                "❌ DO NOT repeat the same phrase or benefit across multiple bullet points. "
+                "Every point must offer a DISTINCT analytical insight.\n\n"
+                "IF YOU CATCH YOURSELF DRIFTING INTO HR/RECRUITMENT LANGUAGE, STOP AND "
+                "REDIRECT TO THE TECHNICAL BACKEND SYSTEM EXPLANATION.\n"
+                "═══════════════════════════════════════════════════════════\n\n"
+
+                "🚨 [OVERRIDE]: If Custom Instructions are provided above, STRICTLY follow "
+                "those instructions instead of the default structure.\n\n"
+
+                "<context>\n{context}\n</context>"
+            )),
+        ])
         self._generate_chain = RunnableLambda(self._generate)
+
+    def _format_prompt_messages(
+        self,
+        parsed: ParsedPrompt,
+        docs: list[Document],
+        *,
+        extra_human_suffix: str = "",
+        previous_draft: str | None = None,
+    ) -> list:
+        """Format the ChatPromptTemplate into a list of messages for LLM invocation.
+
+        Returns a list of BaseMessage objects with proper System/Human role
+        separation. Any `extra_human_suffix` is appended to the human message.
+        """
+        from langchain_core.messages import HumanMessage
+
+        messages = self._prompt_template.format_messages(
+            topic=parsed.topic,
+            intent=parsed.intent,
+            audience=parsed.audience,
+            tone=parsed.tone,
+            length=parsed.length,
+            context=self._format_context(docs),
+            custom_instructions=parsed.custom_instructions,
+        )
+
+        # Append extra instructions and previous draft context to the human message
+        suffix_parts: list[str] = []
+        if previous_draft:
+            draft_limit = min(len(previous_draft), 4000)
+            suffix_parts.append(
+                "\n\n=== EXISTING BLOG DRAFT (to be refined/edited) ===\n"
+                f"{previous_draft[:draft_limit]}\n"
+                "=== END OF EXISTING DRAFT ===\n"
+                "\nIMPORTANT: You must refine and improve this existing draft based on "
+                "the user's instructions above. Keep the same topic and overall structure "
+                "unless the user specifically asks to change it."
+            )
+        if extra_human_suffix:
+            suffix_parts.append(extra_human_suffix)
+
+        if suffix_parts:
+            extra_text = "\n".join(suffix_parts)
+            # Append to the last human message
+            if messages and hasattr(messages[-1], "content"):
+                messages[-1] = HumanMessage(
+                    content=str(messages[-1].content) + extra_text
+                )
+
+        return messages
+
+    def _format_prompt_as_text(
+        self,
+        parsed: ParsedPrompt,
+        docs: list[Document],
+    ) -> str:
+        """Format the prompt template as a flat string (legacy compatibility).
+
+        Used by call sites that need a string representation (e.g. logging,
+        agent executor).
+        """
+        return self._prompt_template.format(
+            topic=parsed.topic,
+            intent=parsed.intent,
+            audience=parsed.audience,
+            tone=parsed.tone,
+            length=parsed.length,
+            context=self._format_context(docs),
+            custom_instructions=parsed.custom_instructions,
+        )
 
     def runtime_status(self) -> dict[str, Any]:
         if settings.use_pgvector_retrieval and self._pgvector_connection_dsn() is not None:
@@ -1123,6 +1361,15 @@ class LangChainRAGPipeline:
         initial_top_k = retrieval_top_k * 3
 
         logger.info("pipeline.retrieve_start", extra={"topic": topic, "top_k": retrieval_top_k, "initial_top_k": initial_top_k})
+        
+        if topic.lower() == "current draft":
+            logger.info("pipeline.retrieve_bypass", extra={"reason": "rewrite intent detected"})
+            from app.graph_state import RetrievalDecision, RetrievalBundle
+            return RetrievalBundle(
+                decision=RetrievalDecision([], "ok", 1.0, 0, "bypassed for rewrite/shorten"),
+                documents=[]
+            )
+
         if settings.use_pgvector_retrieval and self._pgvector_connection_dsn() is not None:
             bundle = self._retrieve_from_pgvector(topic, initial_top_k)
             if bundle.decision.status in {"low_confidence", "no_match"} and not bundle.documents:
@@ -1163,7 +1410,7 @@ class LangChainRAGPipeline:
         if len(bundle.documents) == 0 or bundle.decision.status in {"no_match", "low_confidence", "out_of_domain"}:
             logger.info("pipeline.autonomous_web_search", extra={"topic": topic})
             try:
-                from duckduckgo_search import DDGS
+                from ddgs import DDGS
                 with DDGS() as ddgs:
                     ddg_results = list(ddgs.text(topic, max_results=3))
                 
@@ -1254,27 +1501,18 @@ class LangChainRAGPipeline:
     ) -> GeneratedBlog:
         warning = settings.hybrid_warning_text.strip()
 
-        # Try structured output first so the blog gets full sections + Unsplash images
-        # even when RAG context is unavailable.
+        # Try to route through the primary generation engine, which will now use
+        # chunked section generation (the 700+ word path) as long as it's a blog post
+        # and there are no conflicting custom formats. We pass empty docs [].
         if self._llm is not None and settings.use_live_llm:
-            structured_result = self._generate_with_structured_output(
+            result = self._generate_with_llm(
                 parsed, docs=[], previous_draft=previous_draft,
             )
-            if structured_result is not None:
-                structured_result.sources_used = []
-                if not structured_result.draft.startswith(warning):
-                    structured_result.draft = f"{warning}\n\n{structured_result.draft}"
-                return structured_result
-
-            # Fallback: try markdown-direct generation.
-            md_result = self._generate_markdown_directly_with_llm(
-                parsed, docs=[], previous_draft=previous_draft,
-            )
-            if md_result is not None:
-                md_result.sources_used = []
-                if not md_result.draft.startswith(warning):
-                    md_result.draft = f"{warning}\n\n{md_result.draft}"
-                return md_result
+            if result is not None:
+                result.sources_used = []
+                if not result.draft.startswith(warning):
+                    result.draft = f"{warning}\n\n{result.draft}"
+                return result
 
         # Final fallback: static template.
         generated = self._generate_with_fallback(parsed, [], previous_draft)
@@ -1450,6 +1688,302 @@ class LangChainRAGPipeline:
             sections=normalized_sections,
         )
 
+    # ── Chunked Generation Support Methods ──────────────────────────────
+
+    @staticmethod
+    def _ensure_conclusion_heading(draft: str, topic: str) -> str:
+        """Guarantee the mandatory conclusion heading exists in the draft.
+
+        Three-tier approach:
+        1. If exact heading present → return unchanged.
+        2. If a variant heading found → replace with exact heading.
+        3. If no conclusion at all → append a stub section.
+        """
+        CONCLUSION_HEADING = "## Conclusion and Strategic Next Steps"
+        if CONCLUSION_HEADING in draft:
+            return draft
+
+        # Check for close variants and replace them
+        variant_pattern = re.compile(
+            r"^##\s*(Conclusion|Summary|Final Thoughts|Next Steps|"
+            r"Strategic Next Steps|Conclusion and Next Steps|"
+            r"Concluding Remarks|Key Takeaways)"
+            r"[^\n]*$",
+            re.MULTILINE | re.IGNORECASE,
+        )
+        match = variant_pattern.search(draft)
+        if match:
+            return draft[:match.start()] + CONCLUSION_HEADING + draft[match.end():]
+
+        # No conclusion at all — append a stub
+        clean_topic = re.sub(r"\s+", " ", topic).strip()
+        stub = (
+            f"\n\n{CONCLUSION_HEADING}\n\n"
+            f"The technical analysis above highlights the critical infrastructure "
+            f"underpinning {clean_topic}. As regulatory frameworks evolve and digital "
+            f"systems mature, organisations must invest in robust, auditable "
+            f"processes that align with both legislative requirements and "
+            f"operational best practices. For further guidance on compliance-ready "
+            f"solutions, visit [validex.com.au](https://validex.com.au)."
+        )
+        return draft.rstrip() + stub
+
+    @staticmethod
+    def _build_section_scope_map(outline: list[str], topic: str) -> dict[str, dict]:
+        """Assign each section its exclusive concept territory.
+
+        This enables fully parallel generation without cross-section
+        repetition — each section prompt knows what is OFF-LIMITS because
+        other sections cover it.
+        """
+        scope_map: dict[str, dict] = {}
+        for i, heading in enumerate(outline):
+            other_headings = [h for j, h in enumerate(outline) if j != i]
+            scope_map[heading] = {
+                "focus": heading,
+                "forbidden_overlap": other_headings,
+                "position": f"Section {i + 1} of {len(outline)}",
+            }
+        return scope_map
+
+    def _build_section_prompt(
+        self,
+        parsed: ParsedPrompt,
+        heading: str,
+        scope: dict,
+        context_text: str,
+    ) -> str:
+        """Build a scoped prompt for generating a single blog section."""
+        other_sections = ", ".join(scope["forbidden_overlap"])
+        is_conclusion = "conclusion" in heading.lower()
+
+        domain_pivot = ""
+        if not context_text.strip():
+            domain_pivot = (
+                "\nDOMAIN PIVOT RULE: If the user's topic is completely unrelated to technology, "
+                "backend systems, cybersecurity, or compliance (e.g., recipes, creative writing, entertainment), "
+                "you MUST creatively pivot the topic back to our core domain. For example, if asked about 'cooking steak', "
+                "write about 'How IoT sensors and Blockchain ensure compliance and food safety in the meat supply chain'. "
+                "Never refuse the prompt, just pivot it.\n"
+            )
+
+        if is_conclusion:
+            return (
+                f"You are the Validex Technical Blog Editor.\n"
+                f"Write ONLY the content for: ## {heading}\n"
+                f"Blog topic: {parsed.topic}\n\n"
+                f"This is the FINAL section. Synthesize the 3-4 key technical insights "
+                f"from the blog. State forward-looking implications. End with a clear "
+                f"call-to-action directing readers to validex.com.au.\n\n"
+                f"RULES:\n"
+                f"- Write 2-3 paragraphs (80-120 words each).\n"
+                f"- Do NOT introduce new technical detail — only synthesize.\n"
+                f"- Do NOT include HR, hiring, recruitment, or onboarding language.\n"
+                f"- Do NOT include the ## heading — just write the body paragraphs.\n"
+                f"- Write in English, in a clear professional technical tone.\n"
+                f"{domain_pivot}"
+            )
+
+        return (
+            f"You are the Validex Technical Blog Editor.\n"
+            f"Write ONLY the content for: ## {heading}\n"
+            f"Blog topic: {parsed.topic}\n\n"
+            f"YOUR EXCLUSIVE SCOPE for this section:\n"
+            f"- Focus ONLY on: {scope['focus']}\n"
+            f"- These topics are covered in OTHER sections and are OFF-LIMITS: "
+            f"{other_sections}\n"
+            f"- If you find yourself writing about a concept that belongs to "
+            f"another section, STOP and pivot to your assigned scope.\n\n"
+            f"WRITING RULES:\n"
+            f"- Write 3 substantive paragraphs (100-150 words each, totaling "
+            f"300-450 words).\n"
+            f"- Use **bold** for technical terms and legislation names.\n"
+            f"- Include 2+ domain-specific acronyms relevant to THIS section.\n"
+            f"- Use bullet points with **bold lead-ins** for lists.\n"
+            f"- Do NOT include HR, hiring, recruitment, or onboarding language.\n"
+            f"- Do NOT include the ## heading — just write the body paragraphs.\n"
+            f"- Write in English, in a clear professional technical tone.\n"
+            f"{domain_pivot}\n"
+            f"<context>\n{context_text}\n</context>"
+        )
+
+    @staticmethod
+    def _dedup_cross_section_phrases(
+        sections: list[GeneratedBlog.Section],
+    ) -> list[GeneratedBlog.Section]:
+        """Remove sentences that appear verbatim across multiple sections.
+
+        Lightweight Python safety-net that runs after parallel generation
+        to catch any repetition that escaped scope partitioning.
+        """
+        seen_sentences: set[str] = set()
+        cleaned: list[GeneratedBlog.Section] = []
+        for section in sections:
+            sentences = re.split(r"(?<=[.!?])\s+", section.body)
+            unique_sentences: list[str] = []
+            for sentence in sentences:
+                normalized = re.sub(r"\s+", " ", sentence.strip().lower())
+                if len(normalized) < 25:
+                    # Too short to be a meaningful duplicate
+                    unique_sentences.append(sentence)
+                    continue
+                if normalized not in seen_sentences:
+                    seen_sentences.add(normalized)
+                    unique_sentences.append(sentence)
+                # else: skip — duplicate sentence from another section
+            cleaned.append(
+                GeneratedBlog.Section(
+                    heading=section.heading,
+                    body=" ".join(unique_sentences),
+                    image_url=section.image_url,
+                    image_alt=section.image_alt,
+                )
+            )
+        return cleaned
+
+    def _generate_with_chunked_sections(
+        self,
+        parsed: ParsedPrompt,
+        docs: list[Document],
+        previous_draft: str | None,
+        llm_trace: dict[str, Any] | None = None,
+    ) -> GeneratedBlog | None:
+        """Multi-pass generation: outline → parallel per-section LLM calls → assembly.
+
+        Uses ThreadPoolExecutor for parallel section generation with scope
+        partitioning to eliminate cross-section repetition. Only falls back
+        to None on catastrophic API failures (≥50% of sections fail with
+        hard errors), NEVER on word count.
+        """
+        import concurrent.futures
+        import time as _time
+
+        if self._llm is None:
+            return None
+
+        if isinstance(llm_trace, dict):
+            llm_trace["attempted"] = True
+
+        # Phase 1: Build outline
+        from app.generator import _build_topic_aware_outline, format_title
+        outline = _build_topic_aware_outline(parsed)
+        title = format_title(parsed.topic)
+        context_text = self._format_context(docs)
+
+        # Phase 1.5: Build scope partition map
+        scope_map = self._build_section_scope_map(outline, parsed.topic)
+
+        # Phase 2: Parallel section generation
+        MAX_WORKERS = min(4, len(outline))
+        SECTION_TIMEOUT = 30  # seconds per section
+
+        def _generate_single_section(heading: str) -> tuple[str, str | None]:
+            """Generate one section. Returns (heading, body_or_None)."""
+            prompt_text = self._build_section_prompt(
+                parsed, heading, scope_map[heading], context_text,
+            )
+            for attempt in range(3):
+                try:
+                    response = self._llm.invoke(prompt_text)
+                    body = str(getattr(response, "content", "") or "").strip()
+                    if body and len(body.split()) >= 25:
+                        return (heading, body)
+                    if attempt < 2:
+                        _time.sleep(1.5)
+                except Exception:
+                    if attempt < 2:
+                        _time.sleep(1.5)
+            return (heading, None)
+
+        t_start = _time.time()
+        hard_failure_count = 0
+        results: dict[str, str] = {}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            future_map = {
+                pool.submit(_generate_single_section, heading): heading
+                for heading in outline
+            }
+            for future in concurrent.futures.as_completed(future_map):
+                heading = future_map[future]
+                try:
+                    _, body = future.result(timeout=SECTION_TIMEOUT)
+                    if body is not None:
+                        results[heading] = body
+                    else:
+                        hard_failure_count += 1
+                        results[heading] = (
+                            f"This section examines the technical dimensions of "
+                            f"{heading.lower()} within the context of {parsed.topic}."
+                        )
+                except (concurrent.futures.TimeoutError, Exception) as exc:
+                    hard_failure_count += 1
+                    self._record_llm_failure(
+                        llm_trace, "chunked_section",
+                        f"{heading}: {exc}",
+                    )
+                    results[heading] = (
+                        f"This section examines the technical dimensions of "
+                        f"{heading.lower()} within the context of {parsed.topic}."
+                    )
+
+        elapsed = _time.time() - t_start
+        logger.info(
+            "pipeline.chunked_generation_complete",
+            extra={
+                "sections": len(outline),
+                "failures": hard_failure_count,
+                "elapsed_seconds": round(elapsed, 2),
+            },
+        )
+
+        # ONLY fall back on catastrophic failure (majority of sections failed)
+        if hard_failure_count >= max(1, len(outline) // 2):
+            logger.warning(
+                "pipeline.chunked_catastrophic_failure — "
+                "%d/%d sections failed, falling back to single-pass",
+                hard_failure_count, len(outline),
+            )
+            return None
+
+        # Phase 3: Assembly — maintain outline order
+        sections: list[GeneratedBlog.Section] = []
+        for heading in outline:
+            body = results.get(heading, "")
+            image_url, image_alt = self._resolve_section_image(
+                parsed.topic, heading, heading,
+            )
+            sections.append(
+                GeneratedBlog.Section(
+                    heading=heading,
+                    body=body,
+                    image_url=image_url,
+                    image_alt=image_alt,
+                )
+            )
+
+        # Phase 3.5: Cross-section deduplication
+        sections = self._dedup_cross_section_phrases(sections)
+
+        # Phase 4: Post-processing
+        draft = render_markdown_blog(title, sections)
+        draft = self._ensure_conclusion_heading(draft, parsed.topic)
+        draft = self._inject_images_into_markdown(draft, parsed)
+
+        sources_used = [
+            str(doc.metadata.get("doc_id", "unknown_doc")) for doc in docs
+        ]
+
+        return GeneratedBlog(
+            title=title,
+            outline=outline,
+            draft=draft,
+            sources_used=sources_used,
+            sections=sections,
+        )
+
+    # ── End Chunked Generation Support ──────────────────────────────────
+
     @staticmethod
     def _extract_json_block(raw_text: str) -> dict[str, Any] | None:
         raw_text = raw_text.strip()
@@ -1479,6 +2013,13 @@ class LangChainRAGPipeline:
     ) -> str:
         blocks: list[str] = [f"# {title}"]
 
+        # Validex editorial format: only one hero image after the title
+        if sections and sections[0].image_url:
+            blocks.extend([
+                "",
+                f"![{sections[0].image_alt}]({sections[0].image_url})",
+            ])
+
         intro_text = introduction.strip()
         if intro_text:
             blocks.extend(["", "## Introduction", "", intro_text])
@@ -1488,8 +2029,6 @@ class LangChainRAGPipeline:
                 [
                     "",
                     f"## {section.heading}",
-                    "",
-                    f"![{section.image_alt}]({section.image_url})",
                     "",
                     section.body,
                 ]
@@ -1504,6 +2043,44 @@ class LangChainRAGPipeline:
             blocks.extend(["", f"<!-- meta_tags: {tags_text} -->"])
 
         return "\n".join(blocks).strip()
+
+    def _inject_images_into_markdown(self, markdown: str, parsed: ParsedPrompt) -> str:
+        """Post-process markdown to inject a single hero image after the # title.
+
+        Validex editorial format: only one hero image at the top of the post,
+        no per-section inline images.
+        """
+        from app.generator import extract_requested_image_limit
+
+        # Determine how many images to inject
+        image_limit = extract_requested_image_limit(parsed.raw_prompt)
+        if image_limit is not None and image_limit == 0:
+            return markdown  # User explicitly asked for no images
+
+        # Check if there's already an image in the document
+        if re.search(r"!\[.*?\]\(https?://", markdown):
+            return markdown  # Already has an image
+
+        # Find the # title heading
+        title_match = re.search(r"(?m)^(\s*#\s+.+)$", markdown)
+        if not title_match:
+            return markdown
+
+        # Search for one hero image using the topic
+        search_keyword = parsed.topic
+        image_url, alt_text = self._search_unsplash_image(search_keyword)
+        if not image_url:
+            # Fallback to picsum
+            from app.generator import build_section_image_url
+            image_url = build_section_image_url(parsed.topic, "hero")
+            alt_text = f"{parsed.topic} hero image"
+
+        # Insert hero image right after the title
+        image_md = f"\n\n![{alt_text or parsed.topic}]({image_url})\n"
+        insert_pos = title_match.end()
+        markdown = markdown[:insert_pos] + image_md + markdown[insert_pos:]
+
+        return markdown
 
     @staticmethod
     def _generated_from_markdown(
@@ -1579,35 +2156,23 @@ class LangChainRAGPipeline:
         if isinstance(llm_trace, dict):
             llm_trace["attempted"] = True
 
-        prompt_text = self._prompt_template.format(
-            topic=parsed.topic,
-            intent=parsed.intent,
-            audience=parsed.audience,
-            tone=parsed.tone,
-            length=parsed.length,
-            context=self._format_context(docs),
-            custom_instructions=parsed.custom_instructions,
+        extra_suffix = (
+            "\n\nCRITICAL REQUIREMENT: You MUST write the entire blog/response STRICTLY in English."
+            " Do NOT output in Vietnamese or any other language, even if the prompt is in Vietnamese."
+            " Return ONLY a complete Markdown blog post. Do not return JSON. Do not add any conversational filler."
+            " Respect all user constraints provided in the prompt."
+            " If there is insufficient data for a required point, you MUST output exactly this sentence: "
+            f"\"{MISSING_INTERNAL_DATA_TEXT}\"."
         )
-
-        previous_note = ""
-        if previous_draft:
-            previous_note = (
-                "\n\nPrevious draft context (truncated):\n"
-                f"{previous_draft[:500]}"
-            )
-
-        llm_instruction = (
-            prompt_text
-            + previous_note
-            + "\n\nYêu cầu bắt buộc: Trả về DUY NHẤT một bài blog Markdown hoàn chỉnh."
-            + " Không trả JSON, không trả giải thích ngoài bài viết."
-            + " Tôn trọng mọi ràng buộc của người dùng trong prompt (ví dụ cụm từ bắt buộc)."
-            + " Nếu thiếu dữ liệu cho một ý bắt buộc, ghi đúng câu: "
-            + f"\"{MISSING_INTERNAL_DATA_TEXT}\"."
+        messages = self._format_prompt_messages(
+            parsed, docs,
+            extra_human_suffix=extra_suffix,
+            previous_draft=previous_draft,
         )
+        llm_instruction = self._format_prompt_as_text(parsed, docs)  # for logging
 
         try:
-            response = self._llm.invoke(llm_instruction)
+            response = self._llm.invoke(messages)
         except Exception as exc:
             self._record_llm_failure(llm_trace, "markdown_direct", str(exc))
             self._log_raw_llm_exchange("markdown_direct_error", llm_instruction, f"ERROR: {exc}")
@@ -1623,6 +2188,12 @@ class LangChainRAGPipeline:
         if "##" not in raw and len(raw.split()) < 120:
             self._record_llm_failure(llm_trace, "markdown_direct", "insufficient_markdown_structure")
             return None
+
+        # --- Post-process: Inject Unsplash images into sections ---
+        raw = self._inject_images_into_markdown(raw, parsed)
+
+        # --- Post-process: Ensure mandatory conclusion heading ---
+        raw = self._ensure_conclusion_heading(raw, parsed.topic)
 
         try:
             return self._generated_from_markdown(raw, parsed, docs)
@@ -1645,37 +2216,28 @@ class LangChainRAGPipeline:
         if isinstance(llm_trace, dict):
             llm_trace["attempted"] = True
 
-        prompt_text = self._prompt_template.format(
-            topic=parsed.topic,
-            intent=parsed.intent,
-            audience=parsed.audience,
-            tone=parsed.tone,
-            length=parsed.length,
-            context=self._format_context(docs),
-            custom_instructions=parsed.custom_instructions,
+        extra_suffix = (
+            "\n\nCRITICAL REQUIREMENT: You MUST write the entire blog/response STRICTLY in English."
+            "\nReturn structured data for an SEO blog with this schema: "
+            "title, introduction, sections[{header, content, image_search_keyword}], conclusion, meta_tags. "
+            "Follow Chain-of-Verification internally before final output: verify every claim against retrieved context. "
+            "Respect all user constraints provided in the prompt."
+            f"If a required fact is missing, include exactly: \"{MISSING_INTERNAL_DATA_TEXT}\" "
+            "Append citations in this format: [Source: Document Title | URL: url_if_available].\n"
+            "IMAGE REMOVAL: If the user asks to remove/delete an image from a specific section, "
+            "set image_search_keyword to exactly \"REMOVE_IMAGE\" for that section. "
+            "Keep all other sections' image_search_keyword as normal descriptive keywords."
         )
-
-        previous_note = ""
-        if previous_draft:
-            previous_note = f"\n\nPrevious draft context (truncated):\n{previous_draft[:500]}"
-
-        instruction = (
-            prompt_text
-            + previous_note
-            + "\n\nReturn structured data for an SEO blog with this schema: "
-            + "title, introduction, sections[{header, content, image_search_keyword}], conclusion, meta_tags. "
-            + "Write in English by default. "
-            + "Follow Chain-of-Verification internally before final output: verify every claim against retrieved context. "
-            + f"If a required fact is missing, include exactly: \"{MISSING_INTERNAL_DATA_TEXT}\" "
-            + "Append citations in this format: [Source: Document Title | URL: url_if_available].\n"
-            + "IMAGE REMOVAL: If the user asks to remove/delete an image from a specific section, "
-            + "set image_search_keyword to exactly \"REMOVE_IMAGE\" for that section. "
-            + "Keep all other sections' image_search_keyword as normal descriptive keywords."
+        messages = self._format_prompt_messages(
+            parsed, docs,
+            extra_human_suffix=extra_suffix,
+            previous_draft=previous_draft,
         )
+        instruction = self._format_prompt_as_text(parsed, docs)  # for logging
 
         try:
             structured_llm = self._llm.with_structured_output(BlogStructuredOutput)
-            result = structured_llm.invoke(instruction)
+            result = structured_llm.invoke(messages)
         except Exception as exc:
             self._record_llm_failure(llm_trace, "structured_output", str(exc))
             self._log_raw_llm_exchange("structured_output_error", instruction, f"ERROR: {exc}")
@@ -1725,6 +2287,8 @@ class LangChainRAGPipeline:
             payload.conclusion,
             payload.meta_tags,
         )
+        # Ensure mandatory conclusion heading
+        draft = self._ensure_conclusion_heading(draft, parsed.topic)
         sources_used = [str(doc.metadata.get("doc_id", "unknown_doc")) for doc in docs]
 
         return GeneratedBlog(
@@ -1745,8 +2309,25 @@ class LangChainRAGPipeline:
         if self._llm is None:
             return None
 
-        # Bypass structured output if the user demands custom formatting
-        bypass_structured = not settings.use_structured_output or len(parsed.custom_instructions) > 2
+        # Bypass chunked generation if user demands custom formatting
+        # (poems, lists, non-standard structures don't fit the blog template)
+        has_custom_format = len(parsed.custom_instructions) > 2
+
+        # PRIMARY PATH: Chunked parallel generation for standard blog posts
+        if parsed.intent == "create_blog" and not has_custom_format:
+            chunked_result = self._generate_with_chunked_sections(
+                parsed, docs, previous_draft, llm_trace=llm_trace,
+            )
+            if chunked_result is not None:
+                return chunked_result
+            # chunked_result is None ONLY on catastrophic API failure
+            logger.warning(
+                "pipeline.chunked_failed_catastrophic, "
+                "falling_back_to_single_pass"
+            )
+
+        # FALLBACK: Single-pass generation (catastrophic failure or custom format)
+        bypass_structured = not settings.use_structured_output or has_custom_format
 
         if bypass_structured:
             direct_markdown_result = self._generate_markdown_directly_with_llm(parsed, docs, previous_draft, llm_trace=llm_trace)
@@ -1760,37 +2341,24 @@ class LangChainRAGPipeline:
         if isinstance(llm_trace, dict):
             llm_trace["attempted"] = True
 
-        prompt_text = self._prompt_template.format(
-            topic=parsed.topic,
-            intent=parsed.intent,
-            audience=parsed.audience,
-            tone=parsed.tone,
-            length=parsed.length,
-            context=self._format_context(docs),
-            custom_instructions=parsed.custom_instructions,
+        extra_suffix = (
+            "\n\nReturn valid JSON with keys: title, introduction, sections, conclusion, meta_tags, and optional draft/outline."
+            " Each section must include header, content, and image_search_keyword."
+            " IMPORTANT for image_search_keyword: Must be a highly specific, literal English phrase (e.g., 'professional corporate lawyer reading documents'). Do NOT use random words. It must perfectly match the visual theme of the section."
+            " Keep content grounded in retrieved context. Write in English by default."
+            " Apply Chain-of-Verification internally to check each factual claim before responding."
+            f" If evidence is missing, write exactly: \"{MISSING_INTERNAL_DATA_TEXT}\""
+            " Include citations in this format: [Source: Document Title | URL: url_if_available]."
         )
-
-        follow_up_note = ""
-        if previous_draft:
-            follow_up_note = (
-                "\n\nPrevious draft context (truncated):\n"
-                f"{previous_draft[:500]}"
-            )
-
-        llm_instruction = (
-            prompt_text
-            + follow_up_note
-            + "\n\nReturn valid JSON with keys: title, introduction, sections, conclusion, meta_tags, and optional draft/outline."
-            + " Each section must include header, content, and image_search_keyword."
-            + " IMPORTANT for image_search_keyword: Must be a highly specific, literal English phrase (e.g., 'professional corporate lawyer reading documents'). Do NOT use random words. It must perfectly match the visual theme of the section."
-            + " Keep content grounded in retrieved context. Write in English by default."
-            + " Apply Chain-of-Verification internally to check each factual claim before responding."
-            + f" If evidence is missing, write exactly: \"{MISSING_INTERNAL_DATA_TEXT}\""
-            + " Include citations in this format: [Source: Document Title | URL: url_if_available]."
+        messages = self._format_prompt_messages(
+            parsed, docs,
+            extra_human_suffix=extra_suffix,
+            previous_draft=previous_draft,
         )
+        llm_instruction = self._format_prompt_as_text(parsed, docs)  # for logging
 
         try:
-            response = self._llm.invoke(llm_instruction)
+            response = self._llm.invoke(messages)
         except Exception as exc:
             self._record_llm_failure(llm_trace, "json_output", str(exc))
             self._log_raw_llm_exchange("json_output_error", llm_instruction, f"ERROR: {exc}")
@@ -1961,6 +2529,8 @@ class LangChainRAGPipeline:
     def _generate(self, payload: dict) -> GeneratedBlog:
         parsed: ParsedPrompt = payload["effective_parsed"]
         previous_draft: str | None = payload.get("previous_draft")
+        if parsed.intent == "create_blog":
+            previous_draft = None
         docs: list[Document] = payload["documents"]
         llm_trace = payload.get("llm_trace")
         conversation_history = payload.get("conversation_history")
@@ -2071,15 +2641,8 @@ class LangChainRAGPipeline:
                 context_documents,
                 snippet_chars=max(220, settings.chunk_token_estimate * 4),
             )
-            self._prompt_template.format(
-                topic=effective_parsed.topic,
-                intent=parsed.intent,
-                audience=parsed.audience,
-                tone=parsed.tone,
-                length=parsed.length,
-                context=context_text,
-                custom_instructions=effective_parsed.custom_instructions,
-            )
+            # Validate template variables are resolvable (result intentionally discarded)
+            self._format_prompt_as_text(effective_parsed, context_documents)
 
             # Check cache before generating (skip for rewrite/shorten)
             cache_key = None
@@ -2255,7 +2818,7 @@ class LangChainRAGPipeline:
     @staticmethod
     def _format_context(documents: list[Document], snippet_chars: int = 220) -> str:
         if not documents:
-            return "Content: (không có dữ liệu)\nMetadata: title=không có; url=không có; region=không rõ"
+            return "Content: (no data available)\nMetadata: title=none; url=none; region=unknown"
         lines: list[str] = []
         max_chars = max(120, snippet_chars)
         for index, doc in enumerate(documents, start=1):
@@ -2265,7 +2828,7 @@ class LangChainRAGPipeline:
             region = str(doc.metadata.get("region", "")).strip() or "AU"
             page_ref = str(doc.metadata.get("page") or doc.metadata.get("page_number") or doc.metadata.get("chunk_id") or "n/a")
             snippet = re.sub(r"\s+", " ", doc.page_content).strip()[:max_chars]
-            lines.append(f"[Tài liệu {index}]")
+            lines.append(f"[Document {index}]")
             lines.append(f"Content: {snippet}")
             lines.append(
                 f"Metadata: title={title}; url={source_url}; region={region}; doc_id={doc_id}; page={page_ref}"

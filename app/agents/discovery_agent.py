@@ -53,7 +53,7 @@ def _duckduckgo_search(query: str, num: int = 5) -> list[dict[str, str]]:
         from ddgs import DDGS
     except ImportError:
         try:
-            from duckduckgo_search import DDGS
+            from duckduckgo_search import DDGS  # type: ignore[import-not-found]
         except ImportError:
             logger.error("ddgs not installed. Run: pip install ddgs")
             return []

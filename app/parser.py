@@ -21,14 +21,17 @@ DEFAULT_LENGTH = "medium"
 
 
 def _detect_intent(prompt_lower: str) -> str:
-    if any(kw in prompt_lower for kw in ["edit", "revise", "update", "adjust", "fix", "sua", "chinh sua", "chỉnh sửa"]):
+    # Use word-boundary regex to avoid 'editorial' matching 'edit'
+    edit_keywords = [r"\bedit\b", r"\brevise\b", r"\bupdate\b", r"\badjust\b", r"\bfix\b", r"\bsua\b", r"\bchinh sua\b", r"\bchỉnh sửa\b"]
+    if any(re.search(kw, prompt_lower) for kw in edit_keywords):
         return "rewrite"
 
     image_edit_patterns = [
-        r"\b(?:keep|remove|reduce|limit|retain|only|show|use|make|set|change)\b.*\b(?:image|images|picture|pictures|photo|photos)\b",
-        r"\b(?:image|images|picture|pictures|photo|photos)\b.*\b(?:keep|remove|reduce|limit|retain|only|show|use|make|set|change)\b",
-        r"\b(?:chi|chỉ|giu|giữ|bo|bỏ|xoa|xóa|giam|giảm)\b.*\b(?:anh|ảnh|hinh|hình)\b",
+        r"\b(?:keep|remove|reduce|limit|retain|only|show|use|make|set|change|add)\b.*\b(?:image|images|picture|pictures|photo|photos)\b",
+        r"\b(?:image|images|picture|pictures|photo|photos)\b.*\b(?:keep|remove|reduce|limit|retain|only|show|use|make|set|change|add)\b",
+        r"\b(?:chi|chỉ|giu|giữ|bo|bỏ|xoa|xóa|giam|giảm|them|thêm)\b.*\b(?:anh|ảnh|hinh|hình)\b",
         r"\bmake\s+it\s+(?:\d+|one|two|three)\s+(?:image|images|picture|pictures|photo|photos)\b",
+        r"\badd\s+\d+\s+(?:image|images|picture|pictures|photo|photos)\b",
     ]
     if any(re.search(pattern, prompt_lower) for pattern in image_edit_patterns):
         return "rewrite"
@@ -97,6 +100,13 @@ def _detect_audience(prompt_lower: str) -> str:
     return DEFAULT_AUDIENCE
 
 
+# Pronoun/reference patterns that indicate the user is referring to the previous topic
+_REFERENCE_PATTERNS = re.compile(
+    r"^(this\s+topic|this|it|the\s+topic|the\s+blog|the\s+draft|the\s+article|bai\s+nay|bài\s+này|no|nó)$",
+    re.IGNORECASE,
+)
+
+
 def _extract_topic(prompt: str, prompt_lower: str, intent: str) -> str:
     markers = ["about", "regarding", "ve", "về"]
 
@@ -107,6 +117,9 @@ def _extract_topic(prompt: str, prompt_lower: str, intent: str) -> str:
         match = re.search(pattern, prompt, flags=re.IGNORECASE)
         if match:
             topic = match.group(1).strip(" .,!?:;\n\t")
+            # Resolve pronoun references like "this topic", "it", "this"
+            if topic and _REFERENCE_PATTERNS.match(topic):
+                return "current draft"
             if topic:
                 return topic
 

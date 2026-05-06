@@ -2,12 +2,12 @@
   <aside class="side-nav">
     <div class="brand-block">
       <h2>{{ title }}</h2>
-      <p>Intelligence Briefing</p>
+      <p>Blog Intelligence Platform</p>
     </div>
 
     <nav class="menu-links">
-      <a href="#" [class.active]="activeMenu === 'new'" (click)="$event.preventDefault(); setMenu('new')">
-        <span class="material-symbols-outlined">edit_note</span> New Brief
+      <a href="#" [class.active]="activeMenu === 'new'" (click)="$event.preventDefault(); clearSession(); setMenu('new')">
+        <span class="material-symbols-outlined">add_circle</span> New Chat
       </a>
       <a href="#" [class.active]="activeMenu === 'history'" (click)="$event.preventDefault(); setMenu('history')">
         <span class="material-symbols-outlined">history</span> History
@@ -18,9 +18,6 @@
       <a href="#" [class.active]="activeMenu === 'settings'" (click)="$event.preventDefault(); setMenu('settings')">
         <span class="material-symbols-outlined">settings</span> Settings
       </a>
-      <a href="#" *ngIf="isAdmin" [class.active]="activeMenu === 'admin'" (click)="$event.preventDefault(); setMenu('admin')">
-        <span class="material-symbols-outlined">admin_panel_settings</span> Admin Dashboard
-      </a>
     </nav>
 
     <section class="reports-list" *ngIf="activeMenu === 'saved'">
@@ -29,16 +26,9 @@
       <div class="report-row" *ngFor="let report of reports">
         <button class="report-item" type="button" (click)="openReport(report.id)">
           <strong>{{ report.title || 'Untitled report' }}</strong>
-          <small>Status: {{ report.status }}</small>
           <span>{{ report.draft_preview }}</span>
         </button>
-        <button
-          class="report-delete"
-          type="button"
-          title="Delete report"
-          [disabled]="deletingReportId === report.id"
-          (click)="deleteReport(report.id)"
-        >
+        <button class="report-delete" type="button" title="Delete report" [disabled]="deletingReportId === report.id" (click)="deleteReport(report.id)">
           <span class="material-symbols-outlined">delete</span>
         </button>
       </div>
@@ -51,8 +41,7 @@
       <div class="report-row" *ngFor="let session of sessions">
         <button class="report-item" type="button" (click)="openSession(session.session_id)">
           <strong>{{ session.title }}</strong>
-          <small>{{ session.turn_count }} message(s)</small>
-          <span *ngIf="session.updated_at">{{ session.updated_at | date:'short' }}</span>
+          <span>{{ session.turn_count }} message(s)</span>
         </button>
       </div>
       <div class="reports-empty" *ngIf="!sessionsLoading && !sessions.length">No chat history.</div>
@@ -60,12 +49,13 @@
 
     <div class="side-actions">
       <div class="user-profile">
-        <span *ngIf="currentUser" class="user-greeting">Hi, {{ currentUser }}</span>
+        <span *ngIf="currentUser" class="user-greeting">{{ currentUser }}</span>
         <button class="btn secondary" type="button" *ngIf="!currentUser" (click)="openAuthModal('login')">Log In</button>
         <button class="btn secondary" type="button" *ngIf="currentUser" (click)="logout()">Log Out</button>
       </div>
-      <button class="btn primary" type="button" (click)="clearSession()">New Production</button>
-      <a href="#"><span class="material-symbols-outlined">menu_book</span> Documentation</a>
+      <button class="icon-btn" type="button" (click)="toggleDarkMode()" [title]="darkMode ? 'Light mode' : 'Dark mode'">
+        <span class="material-symbols-outlined">{{ darkMode ? 'light_mode' : 'dark_mode' }}</span>
+      </button>
     </div>
   </aside>
 
@@ -99,498 +89,91 @@
   </div>
 
   <div class="workspace-shell">
-    <header class="top-nav">
-      <div class="top-nav-left">
-        <h1>Editorial Sentinel</h1>
-        <p>AI Blog Generator</p>
+    <!-- Chat Area (full width, scrollable) -->
+    <div class="chat-main" #chatHistory>
+      <!-- Empty State -->
+      <div class="chat-welcome" *ngIf="!messages.length">
+        <h1>Validex AI</h1>
+        <p>What would you like to write about today?</p>
+
+        <div class="prompt-suggestions">
+          <button class="suggestion-card" *ngFor="let sample of samplePrompts" (click)="usePromptTemplate(sample)">
+            <span class="material-symbols-outlined">edit_note</span>
+            <span>{{ sample }}</span>
+          </button>
+        </div>
       </div>
 
-      <nav class="top-links">
-        <a href="#" [class.active]="activeTopTab === 'dashboard'" (click)="$event.preventDefault(); setTopTab('dashboard')">Dashboard</a>
-        <a href="#" [class.active]="activeTopTab === 'templates'" (click)="$event.preventDefault(); setTopTab('templates')">Templates</a>
-        <a href="#" [class.active]="activeTopTab === 'analytics'" (click)="$event.preventDefault(); setTopTab('analytics')">Analytics</a>
-      </nav>
+      <!-- Messages -->
+      <div class="chat-messages" *ngIf="messages.length">
+        <div
+          class="chat-message"
+          *ngFor="let msg of messages; let i = index"
+          [class.user]="msg.role === 'user'"
+          [class.assistant]="msg.role === 'assistant'"
+        >
+          <div class="msg-avatar">
+            <span class="material-symbols-outlined">{{ msg.role === 'user' ? 'person' : 'smart_toy' }}</span>
+          </div>
+          <div class="msg-bubble">
+            <div *ngIf="msg.role === 'assistant' && msg.text" class="msg-markdown" [innerHTML]="msg.text | markdown"></div>
+            <p *ngIf="msg.role === 'user'" class="msg-text">{{ msg.text }}</p>
+            <div class="msg-footer" *ngIf="msg.role === 'assistant' && msg.text">
+              <button class="btn-regenerate" type="button" (click)="exportDraft(msg.text, 'docx')" [disabled]="loading || !msg.text" title="Export to Word">
+                <span class="material-symbols-outlined">description</span>
+              </button>
+              <button class="btn-regenerate" type="button" (click)="exportDraft(msg.text, 'html')" [disabled]="loading || !msg.text" title="Export to HTML">
+                <span class="material-symbols-outlined">html</span>
+              </button>
+              <button class="btn-regenerate" type="button" (click)="regenerateMessage(i)" [disabled]="loading" title="Regenerate">
+                <span class="material-symbols-outlined">refresh</span>
+              </button>
+              <button class="btn-regenerate" type="button" *ngIf="latestResponse" (click)="saveLatestReport()" [disabled]="savingReport" title="Save">
+                <span class="material-symbols-outlined">bookmark</span>
+              </button>
+            </div>
+          </div>
+        </div>
 
-      <div class="top-actions">
-        <div class="runtime-chip">
-          <span>{{ runtimeRetrievalMode }}</span>
-          <small>retrieval</small>
-        </div>
-        <div class="runtime-chip">
-          <span>{{ runtimeGenerationMode }}</span>
-          <small>generation</small>
-        </div>
-        <button class="btn ghost top-btn" type="button">Upgrade</button>
-        <button class="icon-btn" type="button" title="Refresh Runtime" (click)="refreshRuntime()">
-          <span class="material-symbols-outlined">sync</span>
-        </button>
-        <button class="icon-btn" type="button" (click)="toggleDarkMode()" [title]="darkMode ? 'Switch to light mode' : 'Switch to dark mode'">
-          <span class="material-symbols-outlined">{{ darkMode ? 'light_mode' : 'dark_mode' }}</span>
-        </button>
-        <button class="icon-btn" type="button" title="Notifications">
-          <span class="material-symbols-outlined">notifications</span>
-        </button>
-        <button class="icon-btn" type="button" title="Help">
-          <span class="material-symbols-outlined">help</span>
-        </button>
-        <div class="status-pill" [class.ok]="apiReady" [class.bad]="!apiReady">
-          API {{ apiReady ? 'Connected' : 'Disconnected' }}
+        <!-- Thinking indicator -->
+        <div class="chat-message assistant" *ngIf="loading && thinkingStatus">
+          <div class="msg-avatar"><span class="material-symbols-outlined">psychology</span></div>
+          <div class="msg-bubble thinking">
+            <span class="thinking-spinner material-symbols-outlined">sync</span>
+            <em>{{ thinkingStatus }}</em>
+          </div>
         </div>
       </div>
-    </header>
+    </div>
 
-    <main class="content-shell">
-      <!-- Admin Dashboard View -->
-      <ng-container *ngIf="activeMenu === 'admin' && isAdmin">
-        <section class="admin-dashboard" style="padding: 2rem; overflow-y: auto; width: 100%;">
-          <h2>Admin Dashboard</h2>
-          <p>System metrics and user management.</p>
-          
-          <div class="admin-grid" style="display: grid; grid-template-columns: 1fr; gap: 2rem; margin-top: 2rem;">
-            <div class="admin-card" style="background: var(--surface-2); padding: 1.5rem; border-radius: 8px;">
-              <h3>Users Directory</h3>
-              <table style="width: 100%; text-align: left; border-collapse: collapse; margin-top: 1rem;">
-                <thead>
-                  <tr style="border-bottom: 1px solid var(--border);">
-                    <th style="padding: 8px;">ID</th>
-                    <th style="padding: 8px;">Username</th>
-                    <th style="padding: 8px;">Role</th>
-                    <th style="padding: 8px;">Created At</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr *ngFor="let u of adminUsers" style="border-bottom: 1px solid var(--border);">
-                    <td style="padding: 8px;">{{ u.id }}</td>
-                    <td style="padding: 8px;">{{ u.username }}</td>
-                    <td style="padding: 8px;">
-                      <span class="status-pill" [class.ok]="u.is_admin">{{ u.is_admin ? 'Admin' : 'User' }}</span>
-                    </td>
-                    <td style="padding: 8px;">{{ u.created_at | date:'short' }}</td>
-                  </tr>
-                  <tr *ngIf="!adminUsers.length">
-                    <td colspan="4" style="padding: 8px; text-align: center;">No users found.</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div class="admin-card" style="background: var(--surface-2); padding: 1.5rem; border-radius: 8px;">
-              <h3>AI Source Discovery</h3>
-              <p style="margin: 0.5rem 0;">Use AI to automatically find new compliance data sources across Australia.</p>
-              <div style="display: flex; gap: 0.5rem; align-items: center; margin-top: 1rem;">
-                <button class="btn primary" (click)="triggerDiscovery()" [disabled]="isDiscovering" style="padding: 6px 16px;">
-                  {{ isDiscovering ? 'Discovering...' : 'Discover New Sources' }}
-                </button>
-                <button class="btn secondary" (click)="triggerIngest()" [disabled]="isIngesting" style="padding: 6px 16px;">
-                  {{ isIngesting ? 'Ingesting...' : 'Run Full Ingestion' }}
-                </button>
-              </div>
-              <p *ngIf="discoveryResult" style="color: var(--success); margin-top: 0.5rem;">{{ discoveryResult }}</p>
-              <p *ngIf="ingestResult" style="color: var(--success); margin-top: 0.5rem;">{{ ingestResult }}</p>
-            </div>
-
-            <div class="admin-card" style="background: var(--surface-2); padding: 1.5rem; border-radius: 8px;">
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <h3>Crawl History</h3>
-                <button class="btn ghost" (click)="loadCrawlHistory()" style="padding: 4px 10px; font-size: 0.85rem;">Refresh</button>
-              </div>
-              <table style="width: 100%; text-align: left; border-collapse: collapse; margin-top: 1rem;">
-                <thead>
-                  <tr style="border-bottom: 1px solid var(--border);">
-                    <th style="padding: 8px;">Date</th>
-                    <th style="padding: 8px;">Discovered</th>
-                    <th style="padding: 8px;">Total Chunks</th>
-                    <th style="padding: 8px;">New URLs</th>
-                    <th style="padding: 8px;">Errors</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr *ngFor="let log of crawlHistory" style="border-bottom: 1px solid var(--border);">
-                    <td style="padding: 8px;">{{ log.created_at | date:'short' }}</td>
-                    <td style="padding: 8px;">{{ log.discovery_approved }}</td>
-                    <td style="padding: 8px;">{{ log.chunks_total }}</td>
-                    <td style="padding: 8px;">{{ log.chunks_new }}</td>
-                    <td style="padding: 8px;">{{ log.errors_total }}</td>
-                  </tr>
-                  <tr *ngIf="!crawlHistory.length">
-                    <td colspan="5" style="padding: 8px; text-align: center;">No crawl history yet. Click "Refresh" to load.</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-      </ng-container>
-
-      <ng-container *ngIf="activeMenu !== 'admin'">
-      <ng-container *ngIf="activeTopTab !== 'analytics'; else analyticsView">
-      <section class="config-panel">
-        <!-- Chat History -->
-        <div class="chat-history" #chatHistory>
-          <div class="chat-empty" *ngIf="!messages.length">
-            <span class="material-symbols-outlined chat-empty-icon">chat_bubble</span>
-            <h4>Start a conversation</h4>
-            <p>Type a keyword or topic below to generate your first blog.</p>
-          </div>
-          <div
-            class="chat-message"
-            *ngFor="let msg of messages; let i = index"
-            [class.user]="msg.role === 'user'"
-            [class.assistant]="msg.role === 'assistant'"
-          >
-            <div class="msg-avatar">
-              <span class="material-symbols-outlined">{{ msg.role === 'user' ? 'person' : 'smart_toy' }}</span>
-            </div>
-            <div class="msg-bubble">
-              <div *ngIf="msg.role === 'assistant' && msg.text" class="msg-markdown" [innerHTML]="msg.text | markdown"></div>
-              <p *ngIf="msg.role === 'user'" class="msg-text">{{ msg.text }}</p>
-              <div class="msg-footer" *ngIf="msg.role === 'assistant' && (msg.payload || msg.latencyMs)">
-                <span class="msg-latency" *ngIf="msg.latencyMs">
-                  <span class="material-symbols-outlined">timer</span>
-                  {{ msg.latencyMs }}ms
-                </span>
-                <span class="msg-mode" *ngIf="msg.payload?.runtime?.generation_mode as mode">
-                  {{ mode }}
-                </span>
-                <button class="btn-regenerate" type="button" (click)="exportDraft(msg.text, 'docx')" [disabled]="loading || !msg.text" title="Export to Word">
-                  <span class="material-symbols-outlined">description</span> Word
-                </button>
-                <button class="btn-regenerate" type="button" (click)="exportDraft(msg.text, 'html')" [disabled]="loading || !msg.text" title="Export to HTML">
-                  <span class="material-symbols-outlined">html</span> HTML
-                </button>
-                <button class="btn-regenerate" type="button" (click)="regenerateMessage(i)" [disabled]="loading" title="Regenerate">
-                  <span class="material-symbols-outlined">refresh</span>
-                </button>
-              </div>
-            </div>
-          </div>
-          <div class="chat-typing" *ngIf="loading && thinkingStatus">
-            <div class="msg-avatar"><span class="material-symbols-outlined">psychology</span></div>
-            <div class="msg-bubble thinking">
-              <span class="thinking-spinner material-symbols-outlined">sync</span>
-              <em>{{ thinkingStatus }}</em>
-            </div>
-          </div>
+    <!-- Input Bar (pinned to bottom, horizontal, like ChatGPT) -->
+    <div class="chat-input-bar">
+      <div class="input-container">
+        <input type="file" #fileUploadInput style="display: none" (change)="onFileSelected($event)" accept=".pdf,.docx,.txt" />
+        <button class="btn-attach" (click)="fileUploadInput.click()" [disabled]="loading || isUploading" title="Attach document">
+          <span class="material-symbols-outlined">{{ isUploading ? 'sync' : 'attach_file' }}</span>
+        </button>
+        <div class="attachment-preview" *ngIf="attachedFile">
+          <span class="material-symbols-outlined">description</span>
+          <span>{{ attachedFile }}</span>
+          <button class="btn-remove-attachment" (click)="attachedFile = null; attachedFileContent = null; fileUploadInput.value = ''">×</button>
         </div>
+        <textarea
+          #promptInput
+          id="blogPrompt"
+          [(ngModel)]="prompt"
+          [disabled]="loading"
+          (keydown)="onPromptKeydown($event)"
+          placeholder="Write a blog about..."
+          rows="1"
+        ></textarea>
+        <button class="btn-send" (click)="sendPrompt()" [disabled]="loading || (!prompt.trim() && !attachedFileContent)" title="Send">
+          <span class="material-symbols-outlined">{{ loading ? 'hourglass_top' : 'arrow_upward' }}</span>
+        </button>
+      </div>
+      <p class="input-hint">Validex AI can make mistakes. Review important content before publishing.</p>
+    </div>
 
-        <!-- Collapsible Config -->
-        <details class="config-details" [open]="!messages.length">
-          <summary class="config-summary">
-            <span class="material-symbols-outlined">tune</span> Configuration
-          </summary>
-          <div class="config-body">
-            <div class="field-grid">
-              <div class="field-group">
-                <label for="tone">Tone</label>
-                <select id="tone" [(ngModel)]="selectedTone" [disabled]="loading">
-                  <option>Professional</option>
-                  <option>Informative</option>
-                  <option>Technical</option>
-                </select>
-              </div>
-              <div class="field-group">
-                <label for="wordCount">Word Count</label>
-                <select id="wordCount" [(ngModel)]="selectedWordCount" [disabled]="loading">
-                  <option>800 Words</option>
-                  <option>1200 Words</option>
-                  <option>2000 Words</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="field-group">
-              <label for="audience">Target Audience</label>
-              <select id="audience" [(ngModel)]="selectedAudience" [disabled]="loading">
-                <option>HR Professionals</option>
-                <option>Legal Compliance Teams</option>
-                <option>Business Owners</option>
-              </select>
-            </div>
-          </div>
-        </details>
-
-        <!-- Sample Prompts (only show when no messages) -->
-        <div class="sample-prompts" *ngIf="!messages.length">
-          <p>Quick start</p>
-          <button class="btn sample" *ngFor="let sample of samplePrompts" (click)="usePromptTemplate(sample)">
-            {{ sample }}
-          </button>
-        </div>
-
-        <!-- Chat Input Bar (pinned bottom) -->
-        <div class="chat-input-bar">
-          <input type="file" #fileUploadInput style="display: none" (change)="onFileSelected($event)" accept=".pdf,.docx,.txt" />
-          <button class="btn-attach" (click)="fileUploadInput.click()" [disabled]="loading || isUploading" title="Attach Document (PDF/DOCX)">
-            <span class="material-symbols-outlined">{{ isUploading ? 'sync' : 'attach_file' }}</span>
-          </button>
-          <div class="input-wrapper" style="flex: 1; display: flex; flex-direction: column;">
-            <div class="attachment-preview" *ngIf="attachedFile">
-              <span class="material-symbols-outlined">description</span>
-              <span>{{ attachedFile }}</span>
-              <button class="btn-remove-attachment" (click)="attachedFile = null; attachedFileContent = null; fileUploadInput.value = ''">×</button>
-            </div>
-            <textarea
-              #promptInput
-              id="blogPrompt"
-              [(ngModel)]="prompt"
-              [disabled]="loading"
-              (keydown)="onPromptKeydown($event)"
-              placeholder="Type a keyword, topic, or editing instruction..."
-              rows="2"
-            ></textarea>
-          </div>
-          <button class="btn-send" (click)="sendPrompt()" [disabled]="loading || (!prompt.trim() && !attachedFileContent)" title="Send">
-            <span class="material-symbols-outlined">{{ loading ? 'hourglass_top' : 'send' }}</span>
-          </button>
-        </div>
-
-        <section class="runtime-panel" *ngIf="apiReady">
-          <div class="runtime-head">
-            <h4>Runtime Metrics</h4>
-            <span>{{ runtimeQualityGateEnabled ? 'Quality Gate ON' : 'Quality Gate OFF' }}</span>
-          </div>
-          <div class="runtime-grid">
-            <div class="runtime-metric">
-              <strong>{{ metricsData?.chat_requests_total || 0 }}</strong>
-              <span>Total Requests</span>
-            </div>
-            <div class="runtime-metric">
-              <strong>{{ metricsData?.chat_errors_total || 0 }}</strong>
-              <span>Total Errors</span>
-            </div>
-            <div class="runtime-metric">
-              <strong>{{ metricsAvgLatencyMs }}</strong>
-              <span>Latency Avg (ms)</span>
-            </div>
-            <div class="runtime-metric">
-              <strong>{{ metricsP95LatencyMs }}</strong>
-              <span>Latency P95 (ms)</span>
-            </div>
-            <div class="runtime-metric">
-              <strong>{{ qualityGateBlockedRate }}</strong>
-              <span>Quality Gate Blocked</span>
-            </div>
-          </div>
-          <p class="error" *ngIf="metricsError">{{ metricsError }}</p>
-        </section>
-
-        <p class="error" *ngIf="errorMessage">{{ errorMessage }}</p>
-        <p class="error" *ngIf="reportsError">{{ reportsError }}</p>
-      </section>
-
-      <section class="result-panel">
-        <ng-container *ngIf="hasResult; else emptyResult">
-          <div class="result-top">
-            <div class="result-meta">
-              <span class="success">Success</span>
-              <span *ngIf="selectedReport">Status: {{ activeReportStatus }}</span>
-              <span>{{ draftedTimeLabel }}</span>
-            </div>
-            <div class="result-actions">
-              <button class="btn icon" type="button" *ngIf="latestResponse as result" (click)="copyDraft(result)">
-                <span class="material-symbols-outlined">content_copy</span>
-                Copy
-              </button>
-              <button class="btn icon" type="button" *ngIf="latestResponse as result" (click)="exportDraft(result.generated.draft, 'docx')">
-                <span class="material-symbols-outlined">upload</span>
-                Export
-              </button>
-              <button class="btn icon" type="button" *ngIf="latestResponse" (click)="saveLatestReport()" [disabled]="savingReport">
-                <span class="material-symbols-outlined">save</span>
-                {{ savingReport ? 'Saving...' : 'Save Draft' }}
-              </button>
-              <button
-                class="btn icon"
-                type="button"
-                *ngIf="selectedReport && canMarkReviewed"
-                (click)="updateSelectedReportStatus('Reviewed')"
-                [disabled]="updatingReportStatus"
-              >
-                <span class="material-symbols-outlined">fact_check</span>
-                {{ updatingReportStatus ? 'Updating...' : 'Mark Reviewed' }}
-              </button>
-              <button
-                class="btn icon"
-                type="button"
-                *ngIf="selectedReport && canMarkApproved"
-                (click)="updateSelectedReportStatus('Approved')"
-                [disabled]="updatingReportStatus"
-              >
-                <span class="material-symbols-outlined">verified</span>
-                {{ updatingReportStatus ? 'Updating...' : 'Approve' }}
-              </button>
-            </div>
-          </div>
-
-          <article class="blog-result">
-            <h2>{{ activeResultTitle }}</h2>
-
-            <section class="result-block">
-              <h3>Outline</h3>
-              <ul>
-                <li *ngFor="let item of activeResultOutline">{{ item }}</li>
-              </ul>
-            </section>
-
-            <section class="result-block section-list" *ngIf="activeResultSections.length; else fallbackDraftOnly">
-              <h3>Blog Sections</h3>
-              <article class="blog-section" *ngFor="let section of activeResultSections">
-                <h4>{{ section.heading }}</h4>
-                <div class="section-image" *ngIf="section.image_url">
-                  <img [src]="section.image_url" [alt]="section.image_alt || section.heading" loading="lazy" decoding="async" />
-                </div>
-                <p *ngFor="let line of sectionParagraphs(section.body)">{{ line }}</p>
-              </article>
-            </section>
-
-            <ng-template #fallbackDraftOnly>
-              <section class="result-block draft-block">
-                <h3>Draft</h3>
-                <p>{{ activeResultDraft }}</p>
-              </section>
-            </ng-template>
-          </article>
-        </ng-container>
-
-        <ng-template #emptyResult>
-          <div class="empty-state">
-            <h2>Ready to Generate</h2>
-            <p>
-              Configure your briefing on the left and click Generate Blog to produce your first editorial draft.
-            </p>
-          </div>
-        </ng-template>
-      </section>
-      </ng-container>
-
-      <ng-template #analyticsView>
-        <section class="analytics-page">
-          <div class="analytics-head">
-            <h2>Runtime Analytics & Admin</h2>
-            <p>Live observability for retrieval, generation, quality gate, and latency.</p>
-            <div style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: center;">
-              <button class="btn primary" (click)="triggerIngest()" [disabled]="isIngesting" style="padding: 6px 12px;">
-                {{ isIngesting ? 'Ingesting...' : 'Ingest Knowledge' }}
-              </button>
-            </div>
-            <p *ngIf="ingestResult" style="color: var(--success); margin-top: 0.5rem;">{{ ingestResult }}</p>
-          </div>
-
-          <div class="analytics-grid">
-            <article class="analytics-card">
-              <h3>Request Overview</h3>
-              <div class="metric-line"><span>Total Requests</span><strong>{{ metricsData?.chat_requests_total || 0 }}</strong></div>
-              <div class="metric-line"><span>Total Errors</span><strong>{{ metricsData?.chat_errors_total || 0 }}</strong></div>
-              <div class="metric-line"><span>Quality Gate Blocked</span><strong>{{ metricsData?.quality_gate_blocked_total || 0 }}</strong></div>
-              <div class="metric-line"><span>Blocked Rate</span><strong>{{ qualityGateBlockedRate }}</strong></div>
-            </article>
-
-            <article class="analytics-card">
-              <h3>Latency</h3>
-              <div class="metric-line"><span>Samples</span><strong>{{ metricsData?.latency?.samples || 0 }}</strong></div>
-              <div class="metric-line"><span>Average</span><strong>{{ metricsAvgLatencyMs }} ms</strong></div>
-              <div class="metric-line"><span>P95</span><strong>{{ metricsP95LatencyMs }} ms</strong></div>
-            </article>
-
-            <article class="analytics-card">
-              <h3>Runtime Modes</h3>
-              <div class="metric-line"><span>Retrieval</span><strong>{{ runtimeRetrievalMode }}</strong></div>
-              <div class="metric-line"><span>Generation</span><strong>{{ runtimeGenerationMode }}</strong></div>
-              <div class="metric-line"><span>Quality Gate</span><strong>{{ runtimeQualityGateEnabled ? 'ON' : 'OFF' }}</strong></div>
-            </article>
-
-            <article class="analytics-card wide">
-              <h3>Knowledge Health</h3>
-              <div class="metric-line"><span>Vector Table</span><strong>{{ knowledgeHealthData?.table || '-' }}</strong></div>
-              <div class="metric-line"><span>Total Chunks</span><strong>{{ knowledgeHealthData?.total_chunks || 0 }}</strong></div>
-              <div class="metric-line"><span>Retriever Ready</span><strong>{{ knowledgeReadyForRetrieval ? 'YES' : 'NO' }}</strong></div>
-
-              <div class="bar-row health-row">
-                <div class="bar-meta">
-                  <span>Genuine vectors</span>
-                  <strong>{{ knowledgeGenuinePercent }}%</strong>
-                </div>
-                <div class="bar-track">
-                  <div class="bar-fill genuine" [style.width]="percentWidth(knowledgeGenuinePercent)"></div>
-                </div>
-              </div>
-
-              <div class="bar-row health-row">
-                <div class="bar-meta">
-                  <span>Fake vectors</span>
-                  <strong>{{ knowledgeFakePercent }}%</strong>
-                </div>
-                <div class="bar-track">
-                  <div class="bar-fill fake" [style.width]="percentWidth(knowledgeFakePercent)"></div>
-                </div>
-              </div>
-
-              <div class="bar-row health-row" *ngIf="knowledgeOtherPercent > 0">
-                <div class="bar-meta">
-                  <span>Other/unknown</span>
-                  <strong>{{ knowledgeOtherPercent }}%</strong>
-                </div>
-                <div class="bar-track">
-                  <div class="bar-fill other" [style.width]="percentWidth(knowledgeOtherPercent)"></div>
-                </div>
-              </div>
-            </article>
-
-            <article class="analytics-card wide">
-              <h3>Knowledge Coverage by Topic</h3>
-              <div class="dist-empty" *ngIf="!sourceTopicStats.length">No topic coverage data yet.</div>
-              <div class="bar-row" *ngFor="let item of sourceTopicStats">
-                <div class="bar-meta">
-                  <span>{{ item.topic }}</span>
-                  <strong>{{ item.chunks }}</strong>
-                </div>
-                <div class="bar-track">
-                  <div class="bar-fill topic" [style.width]="barWidth(item.chunks, maxTopicChunks)"></div>
-                </div>
-              </div>
-            </article>
-
-            <article class="analytics-card wide">
-              <h3>Authority Score Distribution</h3>
-              <div class="metric-line"><span>Total Chunks</span><strong>{{ sourceAnalyticsData?.total_chunks || 0 }}</strong></div>
-              <div class="metric-line"><span>Total Sources</span><strong>{{ sourceAnalyticsData?.total_sources || 0 }}</strong></div>
-              <div class="dist-empty" *ngIf="!sourceAuthorityStats.length">No authority distribution data yet.</div>
-              <div class="bar-row" *ngFor="let item of sourceAuthorityStats">
-                <div class="bar-meta">
-                  <span>{{ item.band }}</span>
-                  <strong>{{ item.sources }} sources</strong>
-                </div>
-                <div class="bar-track">
-                  <div class="bar-fill authority" [style.width]="barWidth(item.sources, maxAuthoritySources)"></div>
-                </div>
-              </div>
-            </article>
-
-            <article class="analytics-card wide">
-              <h3>Generation Mode Distribution</h3>
-              <div class="dist-row" *ngFor="let item of modeEntries(metricsData?.generation_mode_count)">
-                <span>{{ item.key }}</span>
-                <strong>{{ item.value }}</strong>
-              </div>
-              <div class="dist-empty" *ngIf="!modeEntries(metricsData?.generation_mode_count).length">No data yet.</div>
-            </article>
-
-            <article class="analytics-card wide">
-              <h3>Retrieval Mode Distribution</h3>
-              <div class="dist-row" *ngFor="let item of modeEntries(metricsData?.retrieval_mode_count)">
-                <span>{{ item.key }}</span>
-                <strong>{{ item.value }}</strong>
-              </div>
-              <div class="dist-empty" *ngIf="!modeEntries(metricsData?.retrieval_mode_count).length">No data yet.</div>
-            </article>
-          </div>
-
-          <p class="error" *ngIf="metricsError">{{ metricsError }}</p>
-          <p class="error" *ngIf="sourceAnalyticsError">{{ sourceAnalyticsError }}</p>
-          <p class="error" *ngIf="knowledgeHealthError">{{ knowledgeHealthError }}</p>
-        </section>
-      </ng-template>
-      </ng-container>
-    </main>
+    <p class="error floating-error" *ngIf="errorMessage">{{ errorMessage }}</p>
   </div>
 </div>

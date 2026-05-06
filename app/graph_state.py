@@ -15,6 +15,8 @@ class RetrievedDoc(TypedDict):
     content: str
     score: float
     source: str
+    title: str
+    source_url: str
 
 class GraphState(TypedDict):
     prompt: str

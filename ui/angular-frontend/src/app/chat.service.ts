@@ -22,7 +22,7 @@ export interface StreamEvent {
 
 @Injectable({ providedIn: 'root' })
 export class ChatService {
-  private readonly apiBase = 'http://localhost:8000/api';
+  private readonly apiBase = 'http://localhost:8001/api';
 
   constructor(private readonly http: HttpClient) {}
 
