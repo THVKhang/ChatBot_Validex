@@ -1,4 +1,8 @@
-"""Shared pytest fixtures for all ChatBot Validex tests."""
+import os
+os.environ["USE_LIVE_LLM"] = "0"
+os.environ["ENABLE_PROMPT_GUARD"] = "1"
+os.environ["USE_RATE_LIMIT"] = "0"
+
 import pytest
 from app.langchain_pipeline import pipeline
 

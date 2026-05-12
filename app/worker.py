@@ -113,11 +113,15 @@ def run_ingestion_job(logger: logging.Logger | None = None) -> dict[str, Any]:
         ingest_summary.get("status", "unknown"),
     )
 
-    # Phase 4: Log crawl result to database
+    # Phase 4: Auto-refresh stale embeddings
+    refresh_summary = refresh_stale_embeddings(active_logger)
+
+    # Phase 5: Log crawl result to database
     crawl_result = {
         "discovery": discovery_summary,
         "collect": collect_summary,
         "ingest": ingest_summary,
+        "refresh": refresh_summary,
     }
     _save_crawl_log(crawl_result, active_logger)
 
@@ -161,6 +165,52 @@ def _save_crawl_log(result: dict[str, Any], logger: logging.Logger) -> None:
         logger.info("Crawl log saved to database.")
     except Exception as exc:
         logger.warning("Failed to save crawl log: %s", exc)
+
+
+def refresh_stale_embeddings(logger: logging.Logger) -> dict[str, Any]:
+    """Phase 5: Auto-detect and re-embed chunks that used the 'fake' embedding provider."""
+    import os
+    db_url = os.getenv("DATABASE_URL", "").strip()
+    if not db_url:
+        return {"status": "skipped", "reason": "no DATABASE_URL"}
+    
+    # Check if a live embedding provider is available
+    from app.ingest_pgvector import _build_embedding_client
+    client, provider_name = _build_embedding_client()
+    if not client or provider_name == "fake":
+        return {"status": "skipped", "reason": "no live embedding provider available"}
+        
+    try:
+        import psycopg
+        import json
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                # Find stale chunks
+                cur.execute(f"SELECT chunk_id, content FROM {settings.pgvector_table} WHERE embedding_provider = 'fake' LIMIT 100")
+                rows = cur.fetchall()
+                if not rows:
+                    return {"status": "ok", "refreshed_count": 0}
+                
+                logger.info("Found %d stale 'fake' embeddings. Re-embedding with %s...", len(rows), provider_name)
+                
+                texts = [row[1] for row in rows]
+                chunk_ids = [row[0] for row in rows]
+                vectors = client.embed_documents(texts)
+                
+                if vectors and len(vectors) == len(chunk_ids):
+                    for chunk_id, vector in zip(chunk_ids, vectors):
+                        cur.execute(
+                            f"UPDATE {settings.pgvector_table} SET embedding = %s::vector, embedding_provider = %s WHERE chunk_id = %s",
+                            (json.dumps(vector), provider_name, chunk_id)
+                        )
+                    conn.commit()
+                    logger.info("Successfully refreshed %d embeddings.", len(vectors))
+                    return {"status": "ok", "refreshed_count": len(vectors)}
+                else:
+                    return {"status": "error", "reason": "embedding count mismatch"}
+    except Exception as exc:
+        logger.warning("Failed to refresh stale embeddings: %s", exc)
+        return {"status": "error", "reason": str(exc)}
 
 
 def run_worker_loop(poll_seconds: int = 30) -> None:

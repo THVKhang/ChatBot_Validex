@@ -40,6 +40,7 @@ class Settings:
     min_top_score: int = int(os.getenv("MIN_TOP_SCORE", "3"))
     min_confidence: float = float(os.getenv("MIN_CONFIDENCE", "0.35"))
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    openai_base_url: str = os.getenv("OPENAI_BASE_URL", "")
     google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
     pinecone_api_key: str = os.getenv("PINECONE_API_KEY", "")
     pinecone_index: str = os.getenv("PINECONE_INDEX", "")

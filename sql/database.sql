@@ -15,11 +15,15 @@ CREATE TABLE IF NOT EXISTS validex_knowledge (
     approved BOOLEAN NOT NULL,
     content TEXT NOT NULL,
     embedding vector(1536) NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    fts_content tsvector GENERATED ALWAYS AS (to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, ''))) STORED
 );
+
+CREATE INDEX IF NOT EXISTS idx_validex_knowledge_fts ON validex_knowledge USING GIN (fts_content);
 
 CREATE INDEX IF NOT EXISTS idx_validex_knowledge_topic ON validex_knowledge(topic);
 CREATE INDEX IF NOT EXISTS idx_validex_knowledge_source_domain ON validex_knowledge(source_domain);
+CREATE INDEX IF NOT EXISTS idx_validex_knowledge_provider ON validex_knowledge(embedding_provider);
 
 -- HNSW ANN index: better than IVFFlat for small/medium datasets (<100k rows).
 -- IVFFlat requires ~lists*30 rows (lists=100 → 3000 rows) to train well and degrades below that.
@@ -34,3 +38,18 @@ WITH (m = 16, ef_construction = 64);
 -- ON validex_knowledge
 -- USING ivfflat (embedding vector_cosine_ops)
 -- WITH (lists = 100);
+
+-- Semantic Cache Table
+CREATE TABLE IF NOT EXISTS validex_semantic_cache (
+    id SERIAL PRIMARY KEY,
+    prompt_text TEXT NOT NULL,
+    prompt_embedding vector(1536) NOT NULL,
+    generated_response JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Index for semantic cache using HNSW for fast similarity search
+CREATE INDEX IF NOT EXISTS idx_validex_semantic_cache_embedding_hnsw
+ON validex_semantic_cache
+USING hnsw (prompt_embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);

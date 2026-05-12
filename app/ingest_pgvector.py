@@ -92,8 +92,27 @@ def _chunk_hash(record: dict[str, Any]) -> str:
 
 def _build_embedding_client(google_output_dimensionality: int | None = None) -> tuple[Any | None, str]:
     provider = os.getenv("EMBEDDING_PROVIDER", settings.embedding_provider).strip().lower()
-    if provider not in {"auto", "openai", "google"}:
+    
+    if provider == "local":
+        try:
+            from sentence_transformers import SentenceTransformer
+            class LocalEmbeddings:
+                def __init__(self):
+                    self.model = SentenceTransformer('BAAI/bge-base-en-v1.5')
+                def embed_documents(self, texts):
+                    return self.model.encode(texts).tolist()
+                def embed_query(self, text):
+                    return self.model.encode(text).tolist()
+            return (LocalEmbeddings(), "local")
+        except ImportError:
+            print("Please install sentence-transformers: pip install sentence-transformers")
+            return (None, "local")
+
+    if provider not in {"auto", "openai", "google", "fake", "local"}:
         provider = "auto"
+
+    if provider == "fake":
+        return (None, "fake")
 
     resolved_google_output_dimensionality = google_output_dimensionality
     if resolved_google_output_dimensionality is None:

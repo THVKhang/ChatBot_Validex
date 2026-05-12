@@ -44,7 +44,18 @@ def register(user: UserCreate):
     if not dsn:
         raise HTTPException(status_code=500, detail="Database not configured")
     _ensure_table(dsn)
-    
+    import re
+    if len(user.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
+    if not re.search(r"[A-Z]", user.password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one uppercase letter")
+    if not re.search(r"[a-z]", user.password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one lowercase letter")
+    if not re.search(r"[0-9]", user.password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one number")
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", user.password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one special character")
+
     import psycopg
     try:
         with psycopg.connect(dsn) as conn:

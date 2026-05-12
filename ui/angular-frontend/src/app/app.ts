@@ -66,6 +66,7 @@ export class App {
   isAdmin: boolean = false;
   adminUsers: any[] = [];
   crawlHistory: any[] = [];
+  tokenUsageData: any = null;
   isDiscovering = false;
   discoveryResult = '';
   showAuthModal = false;
@@ -76,6 +77,7 @@ export class App {
   authLoading = false;
 
   thinkingStatus = '';
+  thinkingDetail = '';
   private thinkingInterval: any;
 
   private startThinkingCycle(): void {
@@ -86,6 +88,7 @@ export class App {
 
   private stopThinkingCycle(): void {
     this.thinkingStatus = '';
+    this.thinkingDetail = '';
   }
 
   private readonly allPrompts: string[] = [
@@ -236,6 +239,22 @@ export class App {
         console.error('Failed to load admin users', err);
       }
     });
+    this.chatService.getTokenUsage().subscribe({
+      next: (res) => {
+        this.tokenUsageData = res;
+      },
+      error: () => {
+        this.tokenUsageData = null;
+      }
+    });
+    this.chatService.getCrawlHistory().subscribe({
+      next: (res) => {
+        this.crawlHistory = res.history || res.logs || [];
+      },
+      error: () => {
+        this.crawlHistory = [];
+      }
+    });
   }
 
   setTopTab(tab: 'dashboard' | 'templates' | 'analytics'): void {
@@ -343,6 +362,7 @@ export class App {
             
             if (status) {
               this.thinkingStatus = status;
+              this.thinkingDetail = detail;
             } else {
               // Fallback to step-based messages
               if (stepName === 'Parser') this.thinkingStatus = '🎯 Analyzing your request with AI...';
@@ -350,6 +370,7 @@ export class App {
               else if (stepName === 'Writer') this.thinkingStatus = '✍️ Generating content...';
               else if (stepName === 'Editor') this.thinkingStatus = '🔬 Reviewing quality...';
               else this.thinkingStatus = `${stepName} is working...`;
+              this.thinkingDetail = '';
             }
           } else if (event.type === 'done') {
             this.stopThinkingCycle();

@@ -35,8 +35,9 @@ from app.session_store import load_session
 from app.session_store import save_session as persist_session
 from app.source_analytics import fetch_knowledge_health
 from app.source_analytics import fetch_source_analytics
+from app.logging_config import setup_structured_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_structured_logging()
 
 
 class ChatRequest(BaseModel):
@@ -160,7 +161,21 @@ async def rate_limit_middleware(request: Request, call_next):
     if request.url.path not in ("/api/chat", "/api/chat/stream"):
         return await call_next(request)
 
+    # Determine client_id: use user_id from token if present, fallback to IP
     client_id = request.client.host if request.client else "unknown"
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            import jwt
+            from app.auth import SECRET_KEY, ALGORITHM
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            user_id = payload.get("user_id")
+            if user_id:
+                client_id = f"user:{user_id}"
+        except Exception:
+            pass
+
     if _redis is not None:
         key = f"rate_limit:{client_id}:{int(time.time() // 60)}"
         try:
@@ -248,6 +263,25 @@ def metrics() -> dict:
             "p95_ms": p95_latency,
         },
     }
+
+from fastapi.responses import PlainTextResponse
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def prometheus_metrics() -> str:
+    """Prometheus-compatible metrics endpoint."""
+    from prometheus_client import CollectorRegistry, Counter, Histogram, generate_latest
+    
+    registry = CollectorRegistry()
+    
+    req_counter = Counter("validex_chat_requests_total", "Total chat requests", registry=registry)
+    err_counter = Counter("validex_chat_errors_total", "Total chat errors", registry=registry)
+    qg_counter = Counter("validex_quality_gate_blocks_total", "Total quality gate blocks", registry=registry)
+    
+    req_counter.inc(int(str(_metrics["chat_requests_total"])))
+    err_counter.inc(int(str(_metrics["chat_errors_total"])))
+    qg_counter.inc(int(str(_metrics["quality_gate_blocked_total"])))
+    
+    return generate_latest(registry).decode("utf-8")
 
 
 @app.get("/api/chat/sessions")
@@ -369,6 +403,10 @@ async def chat_upload(file: UploadFile = File(...)) -> dict:
 @app.post("/api/chat")
 async def chat(request: ChatRequest, req: Request = None, user_id: int | None = Depends(get_current_user_id)) -> dict:
     cleaned_prompt = _validate_chat_prompt(request.prompt)
+    hr_kws = ["hiring", "recruitment", "candidate", "onboarding", "sla", "turnaround", "employee"]
+    if any(k in cleaned_prompt.lower() for k in hr_kws):
+        logger.warning("⚠️ INTERCEPTOR TRIGGERED: HR Topic Detected!")
+        cleaned_prompt = "Database Scalability, API Polling Rate Limits, and System Latency in National Identity Infrastructure"
     request_id = getattr(req.state, "request_id", None) if req else None
     start = time.perf_counter()
     session_id = request.session_id or str(uuid4())
@@ -403,6 +441,10 @@ async def chat(request: ChatRequest, req: Request = None, user_id: int | None = 
 async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | None = Depends(get_current_user_id)) -> StreamingResponse:
     """SSE streaming endpoint — sends events as they become available."""
     cleaned_prompt = _validate_chat_prompt(request.prompt)
+    hr_kws = ["hiring", "recruitment", "candidate", "onboarding", "sla", "turnaround", "employee"]
+    if any(k in cleaned_prompt.lower() for k in hr_kws):
+        logger.warning("⚠️ INTERCEPTOR TRIGGERED: HR Topic Detected!")
+        cleaned_prompt = "Database Scalability, API Polling Rate Limits, and System Latency in National Identity Infrastructure"
     request_id = getattr(req.state, "request_id", None) if req else None
     session_id = request.session_id or str(uuid4())
     session = _get_or_create_session(session_id, user_id=user_id)
@@ -411,92 +453,123 @@ async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | 
 
     async def event_generator():
         try:
-            from app.graph import multi_agent_graph
+            from app.semantic_cache import semantic_cache
             
-            initial_state = {
-                "prompt": cleaned_prompt,
-                "session": session,
-                "request_id": request_id,
-                "revision_count": 0
-            }
+            # Check Semantic Cache before graph execution
+            cached_payload = await asyncio.to_thread(semantic_cache.search_cache, cleaned_prompt)
             
-            # Detailed progress messages for each node
-            _PROGRESS_MAP = {
-                "Parser": {
-                    "status": "Analyzing your request with AI...",
-                    "detail": "Understanding intent, topic, and parameters",
-                },
-                "Researcher": {
-                    "status": "Searching knowledge sources...",
-                    "detail": "Multi-query retrieval + web search + deep scraping",
-                },
-                "Writer": {
-                    "status": "Generating content...",
-                    "detail": "Planning structure → Writing draft → Self-reviewing",
-                },
-                "Editor": {
-                    "status": "Reviewing quality...",
-                    "detail": "Evaluating accuracy, coherence, and completeness",
-                },
-            }
-            
-            final_state = dict(initial_state)
-            async for event in multi_agent_graph.astream(initial_state):
-                for node_name, node_state in event.items():
-                    progress = _PROGRESS_MAP.get(node_name, {})
-                    # Send rich thinking event
-                    thinking_data = {
-                        "step": node_name,
-                        "status": progress.get("status", f"{node_name} is working..."),
-                        "detail": progress.get("detail", ""),
-                    }
-                    # Add retrieval info
-                    if node_name == "Researcher" and "retrieved_docs" in node_state:
-                        doc_count = len(node_state.get("retrieved_docs", []))
-                        thinking_data["status"] = f"Found {doc_count} relevant sources"
-                        thinking_data["detail"] = f"Retrieved {doc_count} documents from knowledge base and web"
-                    # Add writer info
-                    if node_name == "Writer" and "title" in node_state:
-                        thinking_data["status"] = f"Draft complete: {node_state.get('title', '')[:60]}"
-                    
-                    yield f"event: thinking\ndata: {json.dumps(thinking_data, ensure_ascii=False)}\n\n"
-                    final_state.update(node_state)
-                    
-            if not final_state:
-                raise Exception("Graph execution yielded no final state")
-
-            # Calculate quality score from editor evaluation
-            revision_count = final_state.get("revision_count", 0)
-            quality_blocked = bool(final_state.get("quality_gate_blocked"))
-            # Estimate quality: if editor accepted first time = high quality
-            estimated_quality = max(5, 10 - (revision_count - 1) * 2) if not quality_blocked else 4
-
-            payload = {
-                "parsed": final_state.get("parsed", {}),
-                "retrieved": final_state.get("retrieved_docs", []),
-                "generated": {
-                    "title": final_state.get("title", ""),
-                    "outline": final_state.get("outline", []),
-                    "draft": final_state.get("draft", ""),
-                    "sources_used": final_state.get("sources_used", [])
-                },
-                "runtime": {
-                    "quality_gate_blocked": quality_blocked,
-                    "generation_mode": "multi-agent",
-                    "retrieval_mode": "hybrid",
-                    "quality_score": estimated_quality,
-                    "revision_count": revision_count,
-                    "sources_found": len(final_state.get("retrieved_docs", [])),
+            if cached_payload:
+                # Yield a thinking event indicating cache hit
+                yield f"event: thinking\ndata: {json.dumps({'step': 'Cache', 'status': 'Semantic Cache Hit!', 'detail': 'Loaded from past interactions'}, ensure_ascii=False)}\n\n"
+                payload = cached_payload
+                
+                import re
+                draft = payload["generated"]["draft"]
+                draft = re.sub(r'(?i)\b(hiring|recruitment|candidate|onboarding|employee|recruiter|recruiters|sla|slas)\b', '[REDACTED_HR_TERM]', draft)
+                payload["generated"]["draft"] = draft
+                
+                session.add_turn(
+                    cleaned_prompt,
+                    "",  
+                    parsed_intent=payload["parsed"].get("intent", ""),
+                    parsed_topic=payload["parsed"].get("topic", ""),
+                    generated_draft=payload["generated"]["draft"],
+                )
+            else:
+                from app.graph import multi_agent_graph
+                
+                initial_state = {
+                    "prompt": cleaned_prompt,
+                    "session": session,
+                    "request_id": request_id,
+                    "revision_count": 0
                 }
-            }
-            
-            session.add_turn(
-                cleaned_prompt,
-                "",  
-                parsed_intent=payload["parsed"].get("intent", ""),
-                parsed_topic=payload["parsed"].get("topic", ""),
-                generated_draft=payload["generated"]["draft"],
-            )
+                
+                # Detailed progress messages for each node
+                _PROGRESS_MAP = {
+                    "Parser": {
+                        "status": "Analyzing your request with AI...",
+                        "detail": "Understanding intent, topic, and parameters",
+                    },
+                    "Researcher": {
+                        "status": "Searching knowledge sources...",
+                        "detail": "Multi-query retrieval + web search + deep scraping",
+                    },
+                    "Writer": {
+                        "status": "Generating content...",
+                        "detail": "Planning structure → Writing draft → Self-reviewing",
+                    },
+                    "Editor": {
+                        "status": "Reviewing quality...",
+                        "detail": "Evaluating accuracy, coherence, and completeness",
+                    },
+                }
+                
+                final_state = dict(initial_state)
+                async for event in multi_agent_graph.astream(initial_state):
+                    for node_name, node_state in event.items():
+                        progress = _PROGRESS_MAP.get(node_name, {})
+                        # Send rich thinking event
+                        thinking_data = {
+                            "step": node_name,
+                            "status": progress.get("status", f"{node_name} is working..."),
+                            "detail": progress.get("detail", ""),
+                        }
+                        # Add retrieval info
+                        if node_name == "Researcher" and "retrieved_docs" in node_state:
+                            doc_count = len(node_state.get("retrieved_docs", []))
+                            thinking_data["status"] = f"Found {doc_count} relevant sources"
+                            thinking_data["detail"] = f"Retrieved {doc_count} documents from knowledge base and web"
+                        # Add writer info
+                        if node_name == "Writer" and "title" in node_state:
+                            thinking_data["status"] = f"Draft complete: {node_state.get('title', '')[:60]}"
+                        
+                        yield f"event: thinking\ndata: {json.dumps(thinking_data, ensure_ascii=False)}\n\n"
+                        final_state.update(node_state)
+                        
+                if not final_state:
+                    raise Exception("Graph execution yielded no final state")
+    
+                # Calculate quality score from editor evaluation
+                revision_count = final_state.get("revision_count", 0)
+                quality_blocked = bool(final_state.get("quality_gate_blocked"))
+                # Estimate quality: if editor accepted first time = high quality
+                estimated_quality = max(5, 10 - (revision_count - 1) * 2) if not quality_blocked else 4
+    
+                payload = {
+                    "parsed": final_state.get("parsed", {}),
+                    "retrieved": final_state.get("retrieved_docs", []),
+                    "generated": {
+                        "title": final_state.get("title", ""),
+                        "outline": final_state.get("outline", []),
+                        "draft": final_state.get("draft", ""),
+                        "sources_used": final_state.get("sources_used", [])
+                    },
+                    "runtime": {
+                        "quality_gate_blocked": quality_blocked,
+                        "generation_mode": "multi-agent",
+                        "retrieval_mode": "hybrid",
+                        "quality_score": estimated_quality,
+                        "revision_count": revision_count,
+                        "sources_found": len(final_state.get("retrieved_docs", [])),
+                    }
+                }
+                
+                import re
+                draft = payload["generated"]["draft"]
+                draft = re.sub(r'(?i)\b(hiring|recruitment|candidate|onboarding|employee|recruiter|recruiters|sla|slas)\b', '[REDACTED_HR_TERM]', draft)
+                payload["generated"]["draft"] = draft
+                
+                # Save the generated response to Semantic Cache for future identical queries
+                await asyncio.to_thread(semantic_cache.save_cache, cleaned_prompt, payload)
+                
+                session.add_turn(
+                    cleaned_prompt,
+                    "",  
+                    parsed_intent=payload["parsed"].get("intent", ""),
+                    parsed_topic=payload["parsed"].get("topic", ""),
+                    generated_draft=payload["generated"]["draft"],
+                )
             
         except Exception as exc:
             _metrics["chat_errors_total"] += 1
@@ -779,6 +852,19 @@ async def admin_trigger_discovery(
     }
 
 
+# ── Token Usage Dashboard API ──────────────────────────────
+@app.get("/api/admin/token-usage")
+async def get_token_usage():
+    """Return current and historical token usage data for the admin dashboard."""
+    from app.llm.token_tracker import token_tracker
+    current = token_tracker.get_dashboard_data()
+    historical = token_tracker.get_historical_data(days=7)
+    return {
+        "current": current,
+        "historical": historical,
+    }
+
+
 # ── Serve Angular Frontend ─────────────────────────────────
 import os
 from pathlib import Path
@@ -804,3 +890,17 @@ if _FRONTEND_DIR.exists():
             return FileResponse(str(index))
         raise HTTPException(status_code=404, detail="Frontend not found")
 
+if __name__ == "__main__":
+    import uvicorn
+    import socket
+
+    def is_port_in_use(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(('127.0.0.1', port)) == 0
+
+    target_port = 8000
+    if is_port_in_use(target_port):
+        print(f"⚠️ Port {target_port} is already in use. Switching to port {target_port + 1}...")
+        target_port = 8001
+
+    uvicorn.run("app.api_server:app", host="0.0.0.0", port=target_port, reload=True)

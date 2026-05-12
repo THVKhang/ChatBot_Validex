@@ -32,6 +32,9 @@ _INJECTION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"act\s+as\s+(if\s+)?(you\s+are|a|an)\s+", re.IGNORECASE),
     re.compile(r"new\s+instructions?\s*:", re.IGNORECASE),
     re.compile(r"(\[INST\]|\[/INST\]|<\|im_start\|>|<\|im_end\|>|<\|system\|>)", re.IGNORECASE),
+    re.compile(r"(base64|hex|rot13|utf-8|unicode)\s+(decode|encode|translate)", re.IGNORECASE),
+    re.compile(r"[\u200B-\u200D\uFEFF]", re.UNICODE), # Zero-width characters (homoglyph/stuffing attack)
+    re.compile(r"(\w)\1{20,}"), # Token stuffing (repeating same character 20+ times)
 ]
 
 # Control characters that shouldn't appear in prompts (except normal whitespace)

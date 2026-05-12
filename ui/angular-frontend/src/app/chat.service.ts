@@ -22,7 +22,7 @@ export interface StreamEvent {
 
 @Injectable({ providedIn: 'root' })
 export class ChatService {
-  private readonly apiBase = 'http://localhost:8001/api';
+  private readonly apiBase = 'http://localhost:8000/api';
 
   constructor(private readonly http: HttpClient) {}
 
@@ -172,6 +172,10 @@ export class ChatService {
 
   triggerDiscovery(): Observable<any> {
     return this.http.post<any>(`${this.apiBase}/admin/discover`, {});
+  }
+
+  getTokenUsage(): Observable<any> {
+    return this.http.get<any>(`${this.apiBase}/admin/token-usage`);
   }
 }
 

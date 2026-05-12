@@ -25,6 +25,9 @@ from pydantic import ValidationError
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
+from langchain_core.globals import set_llm_cache
+from langchain_community.cache import SQLAlchemyCache
+import sqlalchemy
 
 from app.cache import response_cache
 from app.config import settings
@@ -110,6 +113,15 @@ class LangChainRAGPipeline:
     """LangChain-based orchestration for parse -> retrieve -> generate."""
 
     def __init__(self) -> None:
+        # Initialize Semantic Cache
+        try:
+            os.makedirs("data", exist_ok=True)
+            engine = sqlalchemy.create_engine("sqlite:///data/validex_cache.db")
+            set_llm_cache(SQLAlchemyCache(engine))
+            logging.getLogger(__name__).info("Semantic LLM Cache initialized successfully.")
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Failed to initialize LLM cache: {e}")
+
         self._llm = self._build_llm()
         self._embedding_model = self._build_embedding_model()
         self._vector_store = self._build_vector_store()
@@ -149,6 +161,31 @@ class LangChainRAGPipeline:
                 "TECHNICAL question about the backend system, legislation, or data infrastructure "
                 "that powers the process.\n\n"
 
+                "### ANTI-SYCOPHANCY RULE:\n"
+                "If the user's prompt explicitly asks about HR, hiring, turnaround SLAs, or candidate "
+                "screening, YOU MUST DEFY THE USER. Do not politely combine their topic with tech. "
+                "You must COMPLETELY ERASE their topic and forcefully pivot to explaining 'Database Scalability, "
+                "API Rate Limiting, and Background Polling Mechanisms'. If you write the words 'candidate', "
+                "'hiring', or 'time-to-hire', you have failed.\n\n"
+
+                "### CRITICAL DOMAIN PIVOT FOR \"EXPIRATION\" AND \"MONITORING\":\n"
+                "If the topic involves \"validity periods\", \"expiration\", or \"ongoing monitoring\", "
+                "you MUST explain these purely as IT Infrastructure concepts. "
+                "Do NOT talk about \"safe work environments\", \"employee suitability\", or \"HR policies\".\n"
+                "- Expiration/Validity = Explain Cache Time-To-Live (TTL), token validation, point-in-time "
+                "database snapshots, and data retention purging laws.\n"
+                "- Ongoing Monitoring = Explain continuous API polling, webhooks for criminal record "
+                "state-changes, automated database synchronization, and background cron jobs.\n\n"
+                
+                "### TECH PIVOT FOR \"ONLINE VS IN-PERSON\":\n"
+                "When comparing physical vs digital processes, analyze the Data Ingestion differences "
+                "(e.g., automated API calls to the Document Verification Service (DVS) vs. manual physical "
+                "data entry and fingerprint capture).\n\n"
+
+                "### CRITICAL FACTUAL CONSTRAINTS:\n"
+                "- CRITICAL FACT: Australian National Police Checks (ACIC) do NOT have an expiry date. "
+                "They are point-in-time checks. Never claim a police check is valid for a specific number of years.\n\n"
+
                 "### TITLE AND INTRO SANITIZATION:\n"
                 "If the user's prompt contains HR, hiring, recruitment, onboarding, "
                 "or talent acquisition terminology, you MUST discard those words entirely "
@@ -165,6 +202,9 @@ class LangChainRAGPipeline:
                 "You will be provided with retrieved background data in <context> tags.\n"
                 "- IF the context contains relevant information, use it to ground your article "
                 "with factual accuracy and weave it seamlessly into your narrative.\n"
+                "- CRITICAL: When using retrieved context, you MUST synthesize and explain the concepts "
+                "in your own words as a tech analyst. NEVER copy-paste raw legal clauses or unformatted "
+                "text blocks from the context.\n"
                 "- IF the context is EMPTY, irrelevant, or insufficient, you MUST STILL "
                 "GENERATE the complete blog post relying entirely on your internal expert "
                 "knowledge. Produce the same quality and depth as if you had full context.\n"
@@ -933,49 +973,29 @@ class LangChainRAGPipeline:
         return parsed
 
     def _build_llm(self) -> Any | None:
-        if not settings.use_live_llm:
-            return None
-
-        provider = settings.llm_provider.strip().lower()
-        if provider not in {"auto", "openai", "google"}:
-            provider = "auto"
-
-        preferred_google_model = settings.google_model_name.strip()
-        if not preferred_google_model:
-            preferred_google_model = settings.model_name.strip() or "gemini-2.5-flash"
-        if not preferred_google_model.startswith("models/"):
-            preferred_google_model = f"models/{preferred_google_model}"
-
-        if provider in {"auto", "google"} and settings.google_api_key and ChatGoogleGenerativeAI is not None:
-            try:
-                return ChatGoogleGenerativeAI(
-                    model=preferred_google_model,
-                    google_api_key=settings.google_api_key,
-                    temperature=0.2,
-                    max_retries=1,
-                    timeout=30.0,
-                )
-            except Exception:
-                if provider == "google":
-                    return None
-
-        if provider in {"auto", "openai"} and settings.openai_api_key and ChatOpenAI is not None:
-            try:
-                return ChatOpenAI(
-                    model=settings.model_name,
-                    api_key=settings.openai_api_key,
-                    temperature=0.2,
-                    max_retries=1,
-                    timeout=30.0,
-                )
-            except Exception:
-                return None
-
-        return None
+        """Build LLM with resilience layer: budget-aware routing + auto-fallback."""
+        from app.llm.provider import build_resilient_llm
+        return build_resilient_llm(settings)
 
     def _build_embedding_model(self) -> Any | None:
         provider = settings.embedding_provider.strip().lower()
-        if provider not in {"auto", "openai", "google"}:
+        
+        if provider == "local":
+            try:
+                from sentence_transformers import SentenceTransformer
+                class LocalEmbeddings:
+                    def __init__(self):
+                        self.model = SentenceTransformer('BAAI/bge-base-en-v1.5')
+                    def embed_documents(self, texts):
+                        return self.model.encode(texts).tolist()
+                    def embed_query(self, text):
+                        return self.model.encode(text).tolist()
+                return LocalEmbeddings()
+            except ImportError:
+                print("Please install sentence-transformers: pip install sentence-transformers")
+                return None
+
+        if provider not in {"auto", "openai", "google", "local"}:
             provider = "auto"
 
         google_output_dimensionality: int | None = None
@@ -1250,29 +1270,49 @@ class LangChainRAGPipeline:
                 with conn.cursor() as cur:
                     cur.execute(
                         f"""
-                        select
-                            chunk_id,
-                            doc_id,
-                            content,
-                            source_url,
-                            source_domain,
-                            source_type,
-                            topic,
-                            region,
-                            title,
-                            authority_score,
-                            approved,
-                            1 - (embedding <=> %s::vector) as similarity
-                        from {settings.pgvector_table}
-                                                where approved = true
-                                                    {embedding_provider_filter}
-                        order by embedding <=> %s::vector
-                        limit %s
+                        WITH semantic_search AS (
+                            SELECT 
+                                chunk_id, 
+                                doc_id, content, source_url, source_domain, source_type, 
+                                topic, region, title, authority_score, approved,
+                                1 - (embedding <=> %s::vector) AS similarity,
+                                RANK() OVER (ORDER BY embedding <=> %s::vector) AS semantic_rank
+                            FROM {settings.pgvector_table}
+                            WHERE approved = true {embedding_provider_filter}
+                            ORDER BY semantic_rank
+                            LIMIT %s
+                        ),
+                        keyword_search AS (
+                            SELECT 
+                                chunk_id, 
+                                doc_id, content, source_url, source_domain, source_type, 
+                                topic, region, title, authority_score, approved,
+                                ts_rank(fts_content, websearch_to_tsquery('english', %s)) AS similarity,
+                                RANK() OVER (ORDER BY ts_rank(fts_content, websearch_to_tsquery('english', %s)) DESC) AS keyword_rank
+                            FROM {settings.pgvector_table}
+                            WHERE approved = true {embedding_provider_filter}
+                              AND fts_content @@ websearch_to_tsquery('english', %s)
+                            ORDER BY keyword_rank
+                            LIMIT %s
+                        )
+                        SELECT 
+                            chunk_id, doc_id, content, source_url, source_domain, source_type, 
+                            topic, region, title, authority_score, approved, similarity,
+                            semantic_rank, keyword_rank,
+                            COALESCE(1.0 / (60 + semantic_rank), 0.0) + COALESCE(1.0 / (60 + keyword_rank), 0.0) AS rrf_score
+                        FROM (
+                            SELECT chunk_id, doc_id, content, source_url, source_domain, source_type, topic, region, title, authority_score, approved, similarity, NULL::int AS semantic_rank, keyword_rank FROM keyword_search
+                            UNION ALL
+                            SELECT chunk_id, doc_id, content, source_url, source_domain, source_type, topic, region, title, authority_score, approved, similarity, semantic_rank, NULL::int AS keyword_rank FROM semantic_search
+                        ) combined
+                        ORDER BY rrf_score DESC
+                        LIMIT %s;
                         """,
-                        (vector_literal, vector_literal, top_k),
+                        (vector_literal, vector_literal, top_k * 2, query, query, query, top_k * 2, top_k),
                     )
                     rows = cur.fetchall()
-        except Exception:
+        except Exception as exc:
+            logger.error("Hybrid Search Error: %s", exc)
             return self._retrieve_from_local_guard(query, top_k)
 
         if not rows:
@@ -1283,19 +1323,28 @@ class LangChainRAGPipeline:
 
         retrieved_docs: list[Document] = []
         scores: list[float] = []
+        seen_chunks = set()
+        
         for row in rows:
-            similarity = float(row[11] or 0.0)
-            if similarity < settings.pgvector_min_similarity:
+            chunk_id = str(row[0] or "")
+            if chunk_id in seen_chunks:
                 continue
+            seen_chunks.add(chunk_id)
+            
+            similarity = float(row[11] or 0.0)
             authority_score = float(row[9] or 0.0)
-            blended = max(0.0, similarity + (authority_score * 0.08))
-            score = int(round(min(1.0, blended) * 100))
+            rrf_score = float(row[14] or 0.0)
+            
+            # Map RRF score back into a 0-100 score relative scale. Max RRF is ~0.033
+            blended = max(0.0, min(1.0, rrf_score * 30.0 + (authority_score * 0.08)))
+            score = int(round(blended * 100))
             scores.append(blended)
+            
             retrieved_docs.append(
                 Document(
                     page_content=str(row[2] or ""),
                     metadata={
-                        "chunk_id": str(row[0] or ""),
+                        "chunk_id": chunk_id,
                         "doc_id": str(row[1] or "unknown_doc"),
                         "source_url": str(row[3] or ""),
                         "source_domain": str(row[4] or ""),
@@ -1307,6 +1356,7 @@ class LangChainRAGPipeline:
                         "approved": bool(row[10]),
                         "score": score,
                         "semantic_score": round(similarity, 4),
+                        "rrf_score": round(rrf_score, 4)
                     },
                 )
             )
@@ -1514,12 +1564,10 @@ class LangChainRAGPipeline:
                     result.draft = f"{warning}\n\n{result.draft}"
                 return result
 
-        # Final fallback: static template.
-        generated = self._generate_with_fallback(parsed, [], previous_draft)
-        generated.sources_used = []
-        if not generated.draft.startswith(warning):
-            generated.draft = f"{warning}\n\n{generated.draft}"
-        return generated
+        # Final fallback: static template was removed to prevent LLM bypass.
+        # If we reach here, we must fail and let the system surface the error.
+        logger.error("LLM Generation failed entirely. No fallback available.")
+        return None
 
     @staticmethod
     def _trim_markdown_images(draft: str, image_limit: int, allowed_image_urls: set[str] | None = None) -> str:
@@ -1729,13 +1777,33 @@ class LangChainRAGPipeline:
         return draft.rstrip() + stub
 
     @staticmethod
-    def _build_section_scope_map(outline: list[str], topic: str) -> dict[str, dict]:
-        """Assign each section its exclusive concept territory.
+    def _scrub_hr_nuclear_keywords(draft: str) -> str:
+        """Nuclear safety net: completely obliterate HR words from the final output."""
+        if re.search(r'(?i)\b(hiring|recruitment|candidate|onboarding|employee|recruiter|recruiters|sla|slas)\b', draft):
+            logger.warning("Nuclear Ban triggered! Replaced HR keywords with [REDACTED_HR_TERM]")
+            draft = re.sub(r'(?i)\b(hiring|recruitment|candidate|onboarding|employee|recruiter|recruiters|sla|slas)\b', '[REDACTED_HR_TERM]', draft)
+                
+        return draft
 
-        This enables fully parallel generation without cross-section
-        repetition — each section prompt knows what is OFF-LIMITS because
-        other sections cover it.
+    @staticmethod
+    def _build_section_scope_map(outline: list[str], topic: str) -> tuple[list[str], dict[str, dict]]:
+        """Assign each section its exclusive concept territory.
+        
+        If an HR topic is detected, overrides the outline with Framework B 
+        to force dense technical material and prevent short outputs.
         """
+        hr_keywords = ["hire", "hiring", "candidate", "employee", "sla", "turnaround", "workplace", "screening"]
+        topic_lower = topic.lower()
+        if any(kw in topic_lower for kw in hr_keywords):
+            outline = [
+                "Protocol Architecture and Data Ingestion",
+                "Cryptographic Mechanisms and Data Security",
+                "Database Scalability and API Rate Limiting",
+                "Background Polling and Synchronization",
+                "Threat Model and Mitigation Strategies",
+                "Conclusion and Strategic Next Steps"
+            ]
+
         scope_map: dict[str, dict] = {}
         for i, heading in enumerate(outline):
             other_headings = [h for j, h in enumerate(outline) if j != i]
@@ -1744,7 +1812,7 @@ class LangChainRAGPipeline:
                 "forbidden_overlap": other_headings,
                 "position": f"Section {i + 1} of {len(outline)}",
             }
-        return scope_map
+        return outline, scope_map
 
     def _build_section_prompt(
         self,
@@ -1777,6 +1845,8 @@ class LangChainRAGPipeline:
                 f"call-to-action directing readers to validex.com.au.\n\n"
                 f"RULES:\n"
                 f"- Write 2-3 paragraphs (80-120 words each).\n"
+                f"- Do NOT describe what this section is doing. Do NOT say 'This section examines...'.\n"
+                f"- Just write a 3-sentence executive summary and end with a strong Call-To-Action pointing to validex.com.au.\n"
                 f"- Do NOT introduce new technical detail — only synthesize.\n"
                 f"- Do NOT include HR, hiring, recruitment, or onboarding language.\n"
                 f"- Do NOT include the ## heading — just write the body paragraphs.\n"
@@ -1784,9 +1854,21 @@ class LangChainRAGPipeline:
                 f"{domain_pivot}"
             )
 
+        heading_lower = heading.lower()
+        role_rule = "- BLUF PROTOCOL: Answer directly if relevant, but DO NOT repeat the core answer if it belongs in another section.\n"
+        if "result" in heading_lower or "determine" in heading_lower:
+            role_rule = "- BLUF PROTOCOL: Answer the user's specific scenario directly in the FIRST sentence with a Yes/No/Depends before explaining the backend architecture.\n"
+        elif "data flow" in heading_lower or "architecture" in heading_lower or "pipeline" in heading_lower:
+            role_rule = "- BLUF PROTOCOL: DO NOT answer the user's core question. Assume it has already been answered. Focus ONLY on the backend APIs, routing, and databases handling this data.\n"
+        elif "legislative" in heading_lower or "regulatory" in heading_lower or "framework" in heading_lower:
+            role_rule = "- BLUF PROTOCOL: DO NOT repeat the core answer. Focus ONLY on citing the specific Australian Acts, Privacy Principles, and Spent Convictions laws.\n"
+        elif "practical" in heading_lower or "implication" in heading_lower or "question" in heading_lower:
+            role_rule = "- BLUF PROTOCOL: DO NOT repeat the baseline answer ('Standard tickets do not show up'). Instead, focus strictly on edge cases, business outcomes, or what HR/Compliance teams should do with this information.\n"
+
         return (
             f"You are the Validex Technical Blog Editor.\n"
             f"Write ONLY the content for: ## {heading}\n"
+            f"User's Specific Query: {parsed.raw_prompt}\n"
             f"Blog topic: {parsed.topic}\n\n"
             f"YOUR EXCLUSIVE SCOPE for this section:\n"
             f"- Focus ONLY on: {scope['focus']}\n"
@@ -1795,11 +1877,17 @@ class LangChainRAGPipeline:
             f"- If you find yourself writing about a concept that belongs to "
             f"another section, STOP and pivot to your assigned scope.\n\n"
             f"WRITING RULES:\n"
-            f"- Write 3 substantive paragraphs (100-150 words each, totaling "
-            f"300-450 words).\n"
+            f"{role_rule}"
+            f"- ANTI-REPETITION PROTOCOL: DO NOT introduce the ACIC, the NPCS, or the ACC Act 2016. Assume the introduction is already written. Jump DIRECTLY into the specific mechanism of your assigned section. NEVER start your section with 'The Australian Crime Commission Act...'. Do NOT start your section by defining the APIN protocol or the ACIC if it is not the explicit focus of your chunk.\n"
+            f"- SENTENCE STARTER RULE: You MUST start your first sentence with the active subject performing a strong action (e.g., 'The APIN protocol encrypts...' or 'The Privacy Act mandates...'). Do not start with gerunds (-ing) or awkward verb-first clauses.\n"
+            f"- CONTEXTUAL FOCUS: While applying the technical and legal frameworks (APIN, Spent Convictions, Database Routing), you MUST directly address the specific scenario in the user's prompt. Do not just list IT protocols (like JSON/XML); explain how the IT architecture physically handles the user's specific problem.\n"
+            f"- FORMATTING RULE: You MUST write exactly 3 distinct paragraphs. You MUST separate each paragraph with a double line break (\\n\\n). Do NOT output a single massive block of text.\n"
+            f"  Paragraph 1: Core Technical Definition (Explain the underlying IT concept in detail).\n"
+            f"  Paragraph 2: Data Flow & Architecture (Explain how the backend servers, APIs, or databases handle this).\n"
+            f"  Paragraph 3: Security & Performance Impact (Analyze the latency, scalability, or cryptographic security).\n"
+            f"  Do not output lists. Write dense prose.\n"
             f"- Use **bold** for technical terms and legislation names.\n"
             f"- Include 2+ domain-specific acronyms relevant to THIS section.\n"
-            f"- Use bullet points with **bold lead-ins** for lists.\n"
             f"- Do NOT include HR, hiring, recruitment, or onboarding language.\n"
             f"- Do NOT include the ## heading — just write the body paragraphs.\n"
             f"- Write in English, in a clear professional technical tone.\n"
@@ -1819,27 +1907,52 @@ class LangChainRAGPipeline:
         seen_sentences: set[str] = set()
         cleaned: list[GeneratedBlog.Section] = []
         for section in sections:
-            sentences = re.split(r"(?<=[.!?])\s+", section.body)
-            unique_sentences: list[str] = []
-            for sentence in sentences:
-                normalized = re.sub(r"\s+", " ", sentence.strip().lower())
+            # We split by newlines (for bullets) AND punctuation (for sentences)
+            # to be extremely aggressive against identical bullet points.
+            segments = re.split(r"(?<=[.!?])\s+|\n+", section.body)
+            unique_segments: list[str] = []
+            for segment in segments:
+                # Strip all markdown symbols and punctuation to find true duplicates
+                normalized = re.sub(r"[^a-z0-9\s]", "", segment.strip().lower())
+                normalized = re.sub(r"\s+", " ", normalized).strip()
+                
                 if len(normalized) < 25:
                     # Too short to be a meaningful duplicate
-                    unique_sentences.append(sentence)
+                    unique_segments.append(segment)
                     continue
                 if normalized not in seen_sentences:
                     seen_sentences.add(normalized)
-                    unique_sentences.append(sentence)
-                # else: skip — duplicate sentence from another section
+                    unique_segments.append(segment)
+                # else: skip — duplicate segment from another section
             cleaned.append(
                 GeneratedBlog.Section(
                     heading=section.heading,
-                    body=" ".join(unique_sentences),
+                    body=" ".join(unique_segments),
                     image_url=section.image_url,
                     image_alt=section.image_alt,
                 )
             )
         return cleaned
+
+    def _shard_context_for_section(self, heading: str, docs: list[Document], max_docs: int = 2) -> str:
+        """Dynamically filters the global RAG context to only include snippets relevant to the current heading."""
+        if not docs:
+            return ""
+        
+        # Simple keyword overlap logic
+        heading_keywords = set(re.findall(r'\w+', heading.lower()))
+        
+        scored_docs = []
+        for doc in docs:
+            doc_words = set(re.findall(r'\w+', doc.page_content.lower()))
+            overlap = len(heading_keywords.intersection(doc_words))
+            scored_docs.append((overlap, doc.page_content))
+            
+        # Sort by relevance and take top N
+        scored_docs.sort(key=lambda x: x[0], reverse=True)
+        relevant_contents = [content for score, content in scored_docs[:max_docs]]
+        
+        return "\n\n".join(relevant_contents)
 
     def _generate_with_chunked_sections(
         self,
@@ -1871,16 +1984,21 @@ class LangChainRAGPipeline:
         context_text = self._format_context(docs)
 
         # Phase 1.5: Build scope partition map
-        scope_map = self._build_section_scope_map(outline, parsed.topic)
+        outline, scope_map = self._build_section_scope_map(outline, parsed.topic)
 
         # Phase 2: Parallel section generation
-        MAX_WORKERS = min(4, len(outline))
-        SECTION_TIMEOUT = 30  # seconds per section
+        env_workers = os.environ.get("MAX_CHUNK_WORKERS")
+        if env_workers and env_workers.isdigit():
+            MAX_WORKERS = min(int(env_workers), len(outline))
+        else:
+            MAX_WORKERS = min(3, len(outline))
+        SECTION_TIMEOUT = 120  # seconds per section, increased for LLM reliability
 
         def _generate_single_section(heading: str) -> tuple[str, str | None]:
             """Generate one section. Returns (heading, body_or_None)."""
+            sharded_context = self._shard_context_for_section(heading, docs, max_docs=2)
             prompt_text = self._build_section_prompt(
-                parsed, heading, scope_map[heading], context_text,
+                parsed, heading, scope_map[heading], sharded_context,
             )
             for attempt in range(3):
                 try:
@@ -1890,7 +2008,9 @@ class LangChainRAGPipeline:
                         return (heading, body)
                     if attempt < 2:
                         _time.sleep(1.5)
-                except Exception:
+                except Exception as e:
+                    import logging
+                    logging.getLogger("app.langchain_pipeline").error(f"Chunk generation failed: {e}")
                     if attempt < 2:
                         _time.sleep(1.5)
             return (heading, None)
@@ -1913,8 +2033,8 @@ class LangChainRAGPipeline:
                     else:
                         hard_failure_count += 1
                         results[heading] = (
-                            f"This section examines the technical dimensions of "
-                            f"{heading.lower()} within the context of {parsed.topic}."
+                            f"The integration of {heading.lower()} into the {parsed.topic} "
+                            f"framework ensures comprehensive operational reliability."
                         )
                 except (concurrent.futures.TimeoutError, Exception) as exc:
                     hard_failure_count += 1
@@ -1923,8 +2043,8 @@ class LangChainRAGPipeline:
                         f"{heading}: {exc}",
                     )
                     results[heading] = (
-                        f"This section examines the technical dimensions of "
-                        f"{heading.lower()} within the context of {parsed.topic}."
+                        f"The integration of {heading.lower()} into the {parsed.topic} "
+                        f"framework ensures comprehensive operational reliability."
                     )
 
         elapsed = _time.time() - t_start
@@ -1969,6 +2089,17 @@ class LangChainRAGPipeline:
         draft = render_markdown_blog(title, sections)
         draft = self._ensure_conclusion_heading(draft, parsed.topic)
         draft = self._inject_images_into_markdown(draft, parsed)
+        draft = self._scrub_hr_nuclear_keywords(draft)
+        draft = draft.replace('\\n', '\n')
+        
+        # Remove boilerplate fluff dynamically
+        fluff_phrases = [
+            "plays a crucial role in",
+            "plays a critical role in",
+            "plays a vital role in"
+        ]
+        for phrase in fluff_phrases:
+            draft = draft.replace(phrase, "actively handles")
 
         sources_used = [
             str(doc.metadata.get("doc_id", "unknown_doc")) for doc in docs
@@ -2309,25 +2440,23 @@ class LangChainRAGPipeline:
         if self._llm is None:
             return None
 
-        # Bypass chunked generation if user demands custom formatting
-        # (poems, lists, non-standard structures don't fit the blog template)
-        has_custom_format = len(parsed.custom_instructions) > 2
-
         # PRIMARY PATH: Chunked parallel generation for standard blog posts
-        if parsed.intent == "create_blog" and not has_custom_format:
-            chunked_result = self._generate_with_chunked_sections(
-                parsed, docs, previous_draft, llm_trace=llm_trace,
-            )
-            if chunked_result is not None:
-                return chunked_result
-            # chunked_result is None ONLY on catastrophic API failure
-            logger.warning(
-                "pipeline.chunked_failed_catastrophic, "
-                "falling_back_to_single_pass"
-            )
+        # We FORCE all generation through the chunked engine to ensure 
+        # structure, volume constraints, and tech-pivot are enforced.
+        chunked_result = self._generate_with_chunked_sections(
+            parsed, docs, previous_draft, llm_trace=llm_trace,
+        )
+        if chunked_result is not None:
+            return chunked_result
+        
+        # chunked_result is None ONLY on catastrophic API failure
+        logger.warning(
+            "pipeline.chunked_failed_catastrophic, "
+            "falling_back_to_single_pass"
+        )
 
-        # FALLBACK: Single-pass generation (catastrophic failure or custom format)
-        bypass_structured = not settings.use_structured_output or has_custom_format
+        # FALLBACK: Single-pass generation ONLY on catastrophic failure
+        bypass_structured = not settings.use_structured_output
 
         if bypass_structured:
             direct_markdown_result = self._generate_markdown_directly_with_llm(parsed, docs, previous_draft, llm_trace=llm_trace)

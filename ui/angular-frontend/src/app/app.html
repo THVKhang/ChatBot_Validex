@@ -18,6 +18,9 @@
       <a href="#" [class.active]="activeMenu === 'settings'" (click)="$event.preventDefault(); setMenu('settings')">
         <span class="material-symbols-outlined">settings</span> Settings
       </a>
+      <a href="#" *ngIf="isAdmin" [class.active]="activeMenu === 'admin'" (click)="$event.preventDefault(); setMenu('admin')">
+        <span class="material-symbols-outlined">admin_panel_settings</span> Admin
+      </a>
     </nav>
 
     <section class="reports-list" *ngIf="activeMenu === 'saved'">
@@ -45,6 +48,52 @@
         </button>
       </div>
       <div class="reports-empty" *ngIf="!sessionsLoading && !sessions.length">No chat history.</div>
+    </section>
+
+    <!-- Admin Dashboard Panel -->
+    <section class="admin-panel" *ngIf="activeMenu === 'admin' && isAdmin">
+      <p>Admin Dashboard</p>
+
+      <div class="admin-section">
+        <strong><span class="material-symbols-outlined">token</span> Token Usage</strong>
+        <div *ngIf="tokenUsageData?.current?.models?.length">
+          <div class="token-card" *ngFor="let m of tokenUsageData.current.models">
+            <div class="token-model-name">{{ m.model }}</div>
+            <div class="token-bar-bg">
+              <div class="token-bar-fill" [style.width.%]="m.usage_percent" [class.warning]="m.usage_percent > 70" [class.danger]="m.usage_percent > 90"></div>
+            </div>
+            <div class="token-stats">
+              <span>{{ m.total_tokens | number }} / {{ m.daily_limit | number }}</span>
+              <span class="token-pct">{{ m.usage_percent }}%</span>
+            </div>
+            <div class="token-meta">Requests: {{ m.request_count }} | Errors: {{ m.error_count }}</div>
+          </div>
+        </div>
+        <div *ngIf="!tokenUsageData?.current?.models?.length" class="reports-empty">No usage data yet.</div>
+      </div>
+
+      <div class="admin-section">
+        <strong><span class="material-symbols-outlined">group</span> Users ({{ adminUsers.length }})</strong>
+        <div class="admin-user-row" *ngFor="let user of adminUsers">
+          <span class="user-name">{{ user.username }}</span>
+          <span class="user-badge" *ngIf="user.is_admin">Admin</span>
+          <span class="user-sessions">{{ user.session_count || 0 }} sessions</span>
+        </div>
+        <div *ngIf="!adminUsers.length" class="reports-empty">No users.</div>
+      </div>
+
+      <div class="admin-section">
+        <strong><span class="material-symbols-outlined">history</span> Crawl History</strong>
+        <div class="crawl-row" *ngFor="let crawl of crawlHistory">
+          <div class="crawl-date">{{ crawl.created_at | date:'short' }}</div>
+          <div class="crawl-stats">
+            <span>+{{ crawl.discovery_approved || 0 }} discovered</span>
+            <span>{{ crawl.chunks_total || 0 }} chunks</span>
+            <span *ngIf="crawl.errors_total" class="crawl-errors">{{ crawl.errors_total }} errors</span>
+          </div>
+        </div>
+        <div *ngIf="!crawlHistory.length" class="reports-empty">No crawl history.</div>
+      </div>
     </section>
 
     <div class="side-actions">
@@ -140,7 +189,10 @@
           <div class="msg-avatar"><span class="material-symbols-outlined">psychology</span></div>
           <div class="msg-bubble thinking">
             <span class="thinking-spinner material-symbols-outlined">sync</span>
-            <em>{{ thinkingStatus }}</em>
+            <div class="thinking-text">
+              <strong>{{ thinkingStatus }}</strong>
+              <span class="thinking-detail" *ngIf="thinkingDetail">{{ thinkingDetail }}</span>
+            </div>
           </div>
         </div>
       </div>

@@ -4,7 +4,29 @@ from app.session_manager import SessionManager
 
 def process_prompt(prompt: str, session: SessionManager, *, request_id: str | None = None) -> dict:
     from app.graph import multi_agent_graph
+    import re
     
+    # 1. Global Topic Sanitizer (At the API/Pipeline Entry Point)
+    hr_keywords = ["hiring", "recruitment", "candidate", "onboarding", "sla", "turnaround", "employee"]
+    if any(kw in prompt.lower() for kw in hr_keywords):
+        print("⚠️ INTERCEPTOR TRIGGERED: HR Topic Detected!")
+        prompt = "Database Scalability, API Polling Rate Limits, and System Latency in National Identity Infrastructure"
+    
+    from app.semantic_cache import semantic_cache
+    
+    # Check Semantic Cache before doing any heavy lifting
+    cached_payload = semantic_cache.search_cache(prompt)
+    if cached_payload:
+        print("⚡ SEMANTIC CACHE HIT! Bypassing LangGraph.")
+        session.add_turn(
+            prompt,
+            "",
+            parsed_intent=cached_payload.get("parsed", {}).get("intent", ""),
+            parsed_topic=cached_payload.get("parsed", {}).get("topic", ""),
+            generated_draft=cached_payload.get("generated", {}).get("draft", ""),
+        )
+        return cached_payload
+
     # Initialize the LangGraph state
     initial_state = {
         "prompt": prompt,
@@ -33,6 +55,14 @@ def process_prompt(prompt: str, session: SessionManager, *, request_id: str | No
             "retrieval_mode": "hybrid"
         }
     }
+
+    # 2. Hardcoded Regex Replacement (At the Absolute Exit Point)
+    draft = payload["generated"]["draft"]
+    draft = re.sub(r'(?i)\b(hiring|recruitment|candidate|onboarding|employee|recruiter|recruiters|sla|slas)\b', '[REDACTED_HR_TERM]', draft)
+    payload["generated"]["draft"] = draft
+    
+    # Save the generated response to Semantic Cache for future identical queries
+    semantic_cache.save_cache(prompt, payload)
 
     session.add_turn(
         prompt,

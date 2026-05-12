@@ -30,8 +30,10 @@ def _plan_outline(parsed: ParsedPrompt, docs: list[Document]) -> list[dict]:
         '- "heading": section heading\n'
         '- "key_points": array of 2-3 key points to cover\n'
         '- "relevant_sources": which sources to cite\n\n'
-        "Include 4-6 sections (Introduction, 2-4 body sections, Conclusion).\n"
-        "Make headings specific and compelling, not generic.\n"
+        "CRITICAL RULES:\n"
+        "1. Include 5-7 sections to ensure the final blog exceeds 700 words.\n"
+        "2. The final section MUST be exactly headed: \"Conclusion and Strategic Next Steps\".\n"
+        "3. Make other headings specific and compelling, not generic.\n"
         "Return ONLY the JSON array."
     )
 
@@ -60,7 +62,8 @@ def _self_review(draft: str, parsed: ParsedPrompt, docs: list[Document]) -> str:
     prompt = (
         "You are an editorial reviewer. Review this blog draft and improve it.\n\n"
         "Check for:\n"
-        "1. ACCURACY: Are all claims supported by the available sources? Remove unsupported claims.\n"
+        "1. ACCURACY: Are all claims supported by the available sources? Remove unsupported claims. "
+        "CRITICAL FACT: Australian National Police Checks (ACIC) do NOT have an expiry date. They are point-in-time checks.\n"
         "2. CITATIONS: Does every factual statement have a [Source: ...] citation?\n"
         "3. COHERENCE: Do sections flow logically? Are transitions smooth?\n"
         "4. COMPLETENESS: Are all key aspects of the topic covered?\n"
@@ -120,6 +123,25 @@ def writer_node(state: GraphState) -> GraphState:
         for d in retrieved_docs
     ]
     
+    # Evaluate and enrich context via RAG Quality Gate
+    if docs and not state.get("revision_count", 0) > 0:
+        from app.rag_evaluator import rag_evaluator
+        eval_result = rag_evaluator.evaluate_context(parsed, docs)
+        if eval_result.needs_enrichment:
+            docs = rag_evaluator.enrich_context(parsed, docs)
+            # Update state with enriched docs for downstream nodes
+            state["retrieved_docs"] = [
+                {
+                    "content": d.page_content,
+                    "doc_id": d.metadata.get("doc_id", ""),
+                    "score": d.metadata.get("score", 0.0),
+                    "source": d.metadata.get("source", ""),
+                    "title": d.metadata.get("title", ""),
+                    "source_url": d.metadata.get("source_url", ""),
+                }
+                for d in docs
+            ]
+
     # Handle editor feedback
     feedback = state.get("editor_feedback")
     if feedback:
@@ -160,19 +182,16 @@ def writer_node(state: GraphState) -> GraphState:
     )
     
     if not generated:
-        logger.warning("LLM Generation failed, using fallback templates")
-        generated = pipeline._generate_with_fallback(parsed, docs, previous_draft)
-        return {
-            "title": generated.title,
-            "outline": generated.outline,
-            "draft": generated.draft,
-            "sources_used": generated.sources_used
-        }
+        logger.error("LLM Generation failed completely. Pipeline must not bypass the LLM.")
+        raise RuntimeError("LLM Pipeline failed. Generation engine is completely bypassing the LLM.")
     
     # --- Stage 3: SELF-REVIEW (only for new blogs, skip for quick edits) ---
     final_draft = generated.draft
     if parsed.intent == "create_blog" and not feedback and len(final_draft) > 500:
         final_draft = _self_review(final_draft, parsed, docs)
+        
+    # Enforce conclusion heading after self-review
+    final_draft = pipeline._ensure_conclusion_heading(final_draft, parsed.topic)
     
     return {
         "title": generated.title,

@@ -12,21 +12,20 @@ pip install -r requirements.txt
 
 2. Run backend API
 
-You must run the server using your virtual environment to ensure all dependencies like `psycopg` are found.
-
-**Option A (Directly using venv):**
+**Option 1: The simple way (Starts BOTH Backend and Frontend)**
+Just run the master script. It will auto-detect available ports and start everything:
 ```bash
-# Windows
-.\.venv\Scripts\python.exe -m uvicorn app.api_server:app --reload --host 0.0.0.0 --port 8000
-
-# macOS / Linux
-./.venv/bin/python -m uvicorn app.api_server:app --reload --host 0.0.0.0 --port 8000
+python run.py
 ```
 
-**Option B (Activate venv first):**
+**Option 2: Using uvicorn directly**
 ```bash
 # Windows
 .\.venv\Scripts\activate
+python -m uvicorn app.api_server:app --reload --host 0.0.0.0 --port 8000
+
+# macOS / Linux
+source .venv/bin/activate
 python -m uvicorn app.api_server:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -34,7 +33,7 @@ python -m uvicorn app.api_server:app --reload --host 0.0.0.0 --port 8000
 
 ```bash
 cd ui/angular-frontend
-npm install
+npm install  # (Only needed the first time)
 npm start
 ```
 

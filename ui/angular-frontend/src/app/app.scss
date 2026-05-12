@@ -389,11 +389,31 @@
 }
 
 .thinking-spinner {
-  font-size: 1rem;
+  font-size: 1.2rem;
   animation: spin 1.5s linear infinite;
+  color: #3b82f6;
+  margin-right: 4px;
+}
+
+.thinking-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.thinking-text strong {
+  font-weight: 500;
+  color: #3f3f46;
+  font-size: 0.85rem;
+}
+
+.thinking-detail {
+  font-size: 0.72rem;
+  color: #a1a1aa;
 }
 
 @keyframes spin {
+  0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
 }
 
@@ -969,6 +989,14 @@ input:focus {
   color: #71717a;
 }
 
+.sentinel-layout.dark-mode .thinking-text strong {
+  color: #e4e4e7;
+}
+
+.sentinel-layout.dark-mode .thinking-detail {
+  color: #52525b;
+}
+
 .sentinel-layout.dark-mode .chat-input-bar {
   background: linear-gradient(transparent, #09090b 20%);
 }
@@ -1071,4 +1099,164 @@ input:focus {
   .prompt-suggestions {
     grid-template-columns: 1fr;
   }
+}
+
+/* ─── Admin Dashboard ─── */
+.admin-panel {
+  padding: 12px 16px;
+  overflow-y: auto;
+  flex: 1;
+
+  > p {
+    font-weight: 600;
+    font-size: 0.82rem;
+    color: #71717a;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 12px;
+  }
+}
+
+.admin-section {
+  margin-bottom: 20px;
+
+  > strong {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    color: #a1a1aa;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 10px;
+
+    .material-symbols-outlined {
+      font-size: 16px;
+    }
+  }
+}
+
+/* Token Usage Cards */
+.token-card {
+  background: #141414;
+  border: 1px solid #27272a;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+}
+
+.token-model-name {
+  font-size: 0.72rem;
+  color: #71717a;
+  margin-bottom: 8px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.token-bar-bg {
+  height: 6px;
+  background: #27272a;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.token-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #22c55e, #4ade80);
+  border-radius: 3px;
+  transition: width 0.5s ease;
+
+  &.warning {
+    background: linear-gradient(90deg, #eab308, #facc15);
+  }
+
+  &.danger {
+    background: linear-gradient(90deg, #ef4444, #f87171);
+  }
+}
+
+.token-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: #a1a1aa;
+}
+
+.token-pct {
+  font-weight: 600;
+  color: #e4e4e7;
+}
+
+.token-meta {
+  font-size: 0.68rem;
+  color: #52525b;
+  margin-top: 4px;
+}
+
+/* User Management */
+.admin-user-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #141414;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  font-size: 0.78rem;
+}
+
+.user-name {
+  color: #e4e4e7;
+  font-weight: 500;
+  flex: 1;
+}
+
+.user-badge {
+  background: #22c55e;
+  color: #052e16;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.user-sessions {
+  color: #52525b;
+  font-size: 0.72rem;
+}
+
+/* Crawl History */
+.crawl-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #141414;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  font-size: 0.75rem;
+}
+
+.crawl-date {
+  color: #71717a;
+  font-weight: 500;
+  min-width: 80px;
+}
+
+.crawl-stats {
+  display: flex;
+  gap: 10px;
+  color: #a1a1aa;
+}
+
+.crawl-errors {
+  color: #ef4444;
+  font-weight: 600;
 }

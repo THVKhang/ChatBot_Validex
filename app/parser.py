@@ -211,6 +211,12 @@ def _extract_modifiers(prompt: str) -> dict:
     return modifiers
 
 
+def sanitize_topic_for_tech_pivot(raw_topic: str) -> bool:
+    """Interceptor to brutally check for HR topics."""
+    hr_triggers = ["candidate", "hiring", "recruitment", "onboarding", "sla", "turnaround", "employee", "workplace", "screening"]
+    topic_lower = raw_topic.lower()
+    return any(trigger in topic_lower for trigger in hr_triggers)
+
 def parse_prompt(prompt: str) -> ParsedPrompt:
     prompt_lower = prompt.lower()
 
@@ -219,6 +225,13 @@ def parse_prompt(prompt: str) -> ParsedPrompt:
     audience = _detect_audience(prompt_lower)
     length = _detect_length(prompt_lower)
     topic = _clean_topic_text(_extract_topic(prompt, prompt_lower, intent))
+    
+    # Intercept and sanitize the entire request if it's an HR bait
+    if sanitize_topic_for_tech_pivot(prompt_lower):
+        topic = "Database Scalability, API Polling Rate Limits, and System Latency in National Identity Infrastructure"
+        prompt = topic  # Completely overwrite raw_prompt to prevent RAG leak
+        intent = "create_blog"  # Force standard blog creation
+    
     modifiers = _extract_modifiers(prompt)
 
     return ParsedPrompt(
