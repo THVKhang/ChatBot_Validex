@@ -1,19 +1,28 @@
-"""Multi-Stage Writer Node — Plan → Draft → Self-Review pipeline."""
+"""Multi-Stage Writer Node — Plan → Draft → Self-Review pipeline.
+
+All 3 stages are ACTIVE:
+  Stage 1 (Plan): LLM generates structured outline with key points per section
+  Stage 2 (Draft): LLM writes the full blog using outline + retrieved docs
+  Stage 3 (Self-Review): LLM reviews and improves its own draft before Editor
+"""
 import json
 import logging
 import re
 from langchain_core.documents import Document
 from app.graph_state import GraphState
 from app.langchain_pipeline import pipeline
-from app.parser import ParsedPrompt
+from app.parser import ParsedPrompt, LANGUAGE_MAP
 from app.generator import GeneratedBlog
+from app.local_nli import verify_facts_nli
 
 logger = logging.getLogger(__name__)
 
 
 def _plan_outline(parsed: ParsedPrompt, docs: list[Document]) -> list[dict]:
     """Stage 1: LLM generates a detailed outline with key points per section."""
-    if pipeline._llm is None:
+    # Use fast LLM for planning
+    llm_to_use = getattr(pipeline, "_fast_llm", pipeline._llm) or pipeline._llm
+    if llm_to_use is None:
         return []
 
     doc_summaries = "\n".join([
@@ -21,9 +30,13 @@ def _plan_outline(parsed: ParsedPrompt, docs: list[Document]) -> list[dict]:
         for d in docs[:5]
     ])
 
+    # Determine section count from user settings
+    target_sections = parsed.target_sections if parsed.target_sections > 0 else 5
+
     prompt = (
         f"You are planning a blog article about: {parsed.topic}\n"
-        f"Audience: {parsed.audience} | Tone: {parsed.tone} | Length: {parsed.length}\n\n"
+        f"Audience: {parsed.audience} | Tone: {parsed.tone} | Length: {parsed.length}\n"
+        f"Language: Write in {LANGUAGE_MAP.get(parsed.language, 'English')}\n\n"
         "Available source material:\n"
         f"{doc_summaries}\n\n"
         "Create a detailed outline for this blog. Return ONLY a JSON array where each item has:\n"
@@ -31,14 +44,14 @@ def _plan_outline(parsed: ParsedPrompt, docs: list[Document]) -> list[dict]:
         '- "key_points": array of 2-3 key points to cover\n'
         '- "relevant_sources": which sources to cite\n\n'
         "CRITICAL RULES:\n"
-        "1. Include 5-7 sections to ensure the final blog exceeds 700 words.\n"
+        f"1. Include {target_sections}-{target_sections + 2} sections to ensure the final blog exceeds 700 words.\n"
         "2. The final section MUST be exactly headed: \"Conclusion and Strategic Next Steps\".\n"
         "3. Make other headings specific and compelling, not generic.\n"
         "Return ONLY the JSON array."
     )
 
     try:
-        response = pipeline._llm.invoke(prompt)
+        response = llm_to_use.invoke(prompt)
         raw = getattr(response, "content", str(response))
         match = re.search(r"\[[\s\S]*\]", raw)
         if match:
@@ -53,8 +66,10 @@ def _plan_outline(parsed: ParsedPrompt, docs: list[Document]) -> list[dict]:
 
 
 def _self_review(draft: str, parsed: ParsedPrompt, docs: list[Document]) -> str:
-    """Stage 3: LLM self-reviews and improves the draft."""
-    if pipeline._llm is None or not draft:
+    """Stage 3: LLM self-reviews and improves the draft before Editor."""
+    # Use fast LLM for review
+    llm_to_use = getattr(pipeline, "_fast_llm", pipeline._llm) or pipeline._llm
+    if llm_to_use is None or not draft:
         return draft
 
     doc_titles = [d.metadata.get("title", "Source") for d in docs[:5]]
@@ -79,7 +94,7 @@ def _self_review(draft: str, parsed: ParsedPrompt, docs: list[Document]) -> str:
     )
 
     try:
-        response = pipeline._llm.invoke(prompt)
+        response = llm_to_use.invoke(prompt)
         improved = getattr(response, "content", str(response)).strip()
         # Basic validation
         if len(improved) > len(draft) * 0.5 and "##" in improved:
@@ -92,110 +107,213 @@ def _self_review(draft: str, parsed: ParsedPrompt, docs: list[Document]) -> str:
     return draft
 
 
-def writer_node(state: GraphState) -> GraphState:
-    """Multi-stage writer: Plan → Draft → Self-Review."""
-    logger.info(f"Executing Smart Writer Node (Revision {state.get('revision_count', 0)})")
-    
-    parsed_dict = state["parsed"]
-    parsed = ParsedPrompt(
-        raw_prompt=state["prompt"],
-        intent=parsed_dict["intent"],
-        topic=parsed_dict["topic"],
-        audience=parsed_dict["audience"],
-        tone=parsed_dict["tone"],
-        length=parsed_dict["length"],
-        custom_instructions=parsed_dict.get("context_note", "")
-    )
-    
-    # Convert retrieved docs to Document objects
-    retrieved_docs = state.get("retrieved_docs", [])
-    docs = [
-        Document(
-            page_content=d["content"],
-            metadata={
-                "doc_id": d["doc_id"],
-                "score": d["score"],
-                "source": d.get("source", ""),
-                "title": d.get("title", ""),
-                "source_url": d.get("source_url", ""),
-            }
-        )
-        for d in retrieved_docs
-    ]
-    
-    # Evaluate and enrich context via RAG Quality Gate
-    if docs and not state.get("revision_count", 0) > 0:
-        from app.rag_evaluator import rag_evaluator
-        eval_result = rag_evaluator.evaluate_context(parsed, docs)
-        if eval_result.needs_enrichment:
-            docs = rag_evaluator.enrich_context(parsed, docs)
-            # Update state with enriched docs for downstream nodes
-            state["retrieved_docs"] = [
-                {
-                    "content": d.page_content,
-                    "doc_id": d.metadata.get("doc_id", ""),
-                    "score": d.metadata.get("score", 0.0),
-                    "source": d.metadata.get("source", ""),
-                    "title": d.metadata.get("title", ""),
-                    "source_url": d.metadata.get("source_url", ""),
-                }
-                for d in docs
-            ]
+def _inject_outline_into_instructions(parsed: ParsedPrompt, outline: list[dict]) -> ParsedPrompt:
+    """Inject the planned outline into custom_instructions so the generator follows it."""
+    if not outline:
+        return parsed
 
-    # Handle editor feedback
-    feedback = state.get("editor_feedback")
-    if feedback:
-        logger.info(f"Writer incorporating editor feedback: {feedback}")
-        if parsed.custom_instructions:
-            parsed.custom_instructions = f"EDITOR FEEDBACK: {feedback}\n\nORIGINAL INSTRUCTIONS: {parsed.custom_instructions}"
+    outline_text = "FOLLOW THIS EXACT OUTLINE:\n"
+    for i, section in enumerate(outline, 1):
+        heading = section.get("heading", f"Section {i}")
+        key_points = section.get("key_points", [])
+        points_str = "; ".join(key_points) if key_points else ""
+        outline_text += f"{i}. {heading}"
+        if points_str:
+            outline_text += f" — Cover: {points_str}"
+        outline_text += "\n"
+
+    if parsed.custom_instructions:
+        parsed.custom_instructions = f"{outline_text}\n{parsed.custom_instructions}"
+    else:
+        parsed.custom_instructions = outline_text
+
+    return parsed
+
+
+from app.agents.base import BaseAgentNode
+
+class WriterAgentNode(BaseAgentNode):
+    def execute(self, state: GraphState) -> GraphState:
+        """Multi-stage writer: Plan → Draft → Self-Review."""
+        from app.langchain_pipeline import pipeline
+        revision_count = state.get("revision_count", 0)
+        logger.info(f"Executing Smart Writer Node (Revision {revision_count})")
+    
+        parsed_dict = state["parsed"]
+        parsed = ParsedPrompt(
+            raw_prompt=state["prompt"],
+            intent=parsed_dict["intent"],
+            topic=parsed_dict["topic"],
+            audience=parsed_dict["audience"],
+            tone=parsed_dict["tone"],
+            length=parsed_dict["length"],
+            language=parsed_dict.get("language", "en"),
+            target_sections=parsed_dict.get("target_sections", 0),
+            target_images=parsed_dict.get("target_images", -1),
+            custom_instructions=parsed_dict.get("context_note", "")
+        )
+    
+        # Inject language instruction
+        lang_name = LANGUAGE_MAP.get(parsed.language, "English")
+        if parsed.language != "en":
+            lang_instruction = f"IMPORTANT: Write the ENTIRE blog in {lang_name}. All headings, paragraphs, and conclusions must be in {lang_name}."
+            if parsed.custom_instructions:
+                parsed.custom_instructions = f"{lang_instruction}\n\n{parsed.custom_instructions}"
+            else:
+                parsed.custom_instructions = lang_instruction
+    
+        # Convert retrieved docs to Document objects
+        retrieved_docs = state.get("retrieved_docs", [])
+        docs = [
+            Document(
+                page_content=d["content"],
+                metadata={
+                    "doc_id": d["doc_id"],
+                    "score": d["score"],
+                    "source": d.get("source", ""),
+                    "title": d.get("title", ""),
+                    "source_url": d.get("source_url", ""),
+                }
+            )
+            for d in retrieved_docs
+        ]
+    
+        # Handle editor feedback (revision loop)
+        feedback = state.get("editor_feedback")
+        if feedback:
+            logger.info(f"Writer incorporating editor feedback: {feedback}")
+            if parsed.custom_instructions:
+                parsed.custom_instructions = f"EDITOR FEEDBACK: {feedback}\n\nORIGINAL INSTRUCTIONS: {parsed.custom_instructions}"
+            else:
+                parsed.custom_instructions = f"EDITOR FEEDBACK: {feedback}"
+    
+        # Get previous draft for continuation mode
+        previous_draft = None
+        last_turn = state["session"].latest_turn()
+        if last_turn and last_turn.generated_draft:
+            previous_draft = last_turn.generated_draft
+            logger.info(f"Continuation mode: using previous draft ({len(previous_draft)} chars)")
+    
+        if state.get("draft") and revision_count > 0:
+            previous_draft = state["draft"]
+    
+        # ── FAST-PATH: Edit Existing Blog ──────────────────────────
+        # When edit_instruction is set (e.g., "add 1 more picture", "make it shorter"),
+        # apply the edit directly to the existing blog using LLM, skip full regeneration.
+        edit_instruction = state.get("edit_instruction")
+        if edit_instruction and previous_draft:
+            logger.info(f"Writer: EDIT MODE — applying '{edit_instruction}' to existing draft")
+            llm_to_use = getattr(pipeline, "_llm", None)
+            if llm_to_use:
+                edit_prompt = (
+                    "You are a blog editor. The user wants to modify an existing blog post.\n\n"
+                    f"USER REQUEST: {edit_instruction}\n\n"
+                    f"EXISTING BLOG:\n{previous_draft[:6000]}\n\n"
+                    "Apply the user's requested changes to the blog. Rules:\n"
+                    "1. Keep all existing content that the user did NOT ask to change.\n"
+                    "2. Only modify what the user explicitly asked for.\n"
+                    "3. If the user asks to add images, insert relevant Unsplash markdown images at appropriate positions.\n"
+                    "   Format: ![description](https://images.unsplash.com/photo-XXXXX?w=800&h=400&fit=crop)\n"
+                    "   Use real Unsplash photo IDs that match the topic.\n"
+                    "4. Maintain the same markdown format, heading structure, and tone.\n"
+                    "5. Output ONLY the modified blog post. No commentary.\n"
+                )
+                try:
+                    response = llm_to_use.invoke(edit_prompt)
+                    edited_draft = getattr(response, "content", str(response)).strip()
+                    # Validate the edit produced something reasonable
+                    if len(edited_draft) > len(previous_draft) * 0.3 and ("##" in edited_draft or "#" in edited_draft):
+                        logger.info(f"Writer: Edit applied successfully ({len(previous_draft)} → {len(edited_draft)} chars)")
+                        # Extract title from the edited draft
+                        import re as _re
+                        title_match = _re.search(r"^#\s+(.+)$", edited_draft, _re.MULTILINE)
+                        title = title_match.group(1).strip() if title_match else state.get("title", parsed.topic)
+                        return {
+                            "title": title,
+                            "outline": state.get("outline", []),
+                            "draft": edited_draft,
+                            "sources_used": state.get("sources_used", []),
+                            "previous_draft": previous_draft,
+                            "loop_step": state.get("loop_step", 0) + 1,
+                        }
+                    else:
+                        logger.warning("Writer: Edit output failed validation, falling through to full regeneration")
+                except Exception as exc:
+                    logger.warning(f"Writer: Edit fast-path failed: {exc}, falling through to full regeneration")
+    
+        # ── Stage 1: PLAN (only on first attempt, skip on revisions) ──
+        if revision_count == 0 and not feedback:
+            outline = _plan_outline(parsed, docs)
+            if outline:
+                parsed = _inject_outline_into_instructions(parsed, outline)
+                logger.info(f"Writer Stage 1: Outline injected ({len(outline)} sections)")
+            else:
+                logger.info("Writer Stage 1: Outline skipped (LLM unavailable or failed)")
         else:
-            parsed.custom_instructions = f"EDITOR FEEDBACK: {feedback}"
+            logger.info("Writer Stage 1: Outline skipped (revision/feedback mode)")
     
-    # Get previous draft for continuation mode
-    previous_draft = None
-    last_turn = state["session"].latest_turn()
-    if last_turn and last_turn.generated_draft:
-        previous_draft = last_turn.generated_draft
-        logger.info(f"Continuation mode: using previous draft ({len(previous_draft)} chars)")
+        # ── Stage 2: DRAFT (Active RAG enabled) ──
+        llm_trace = {}
+        payload = {
+            "effective_parsed": parsed,
+            "previous_draft": previous_draft,
+            "documents": docs,
+            "llm_trace": llm_trace,
+        }
+        generated: GeneratedBlog | None = pipeline._generate(payload)
     
-    if state.get("draft") and state.get("revision_count", 0) > 0:
-        previous_draft = state["draft"]
+        is_fallback = getattr(pipeline, "_last_generation_mode", None) == "fallback"
+        from_api = state.get("from_api", False)
     
-    # --- Stage 1: PLAN (only for new blogs, skip for rewrites) ---
-    outline_plan = []
-    if parsed.intent == "create_blog" and not feedback:
-        outline_plan = _plan_outline(parsed, docs)
-        if outline_plan:
-            # Inject outline into custom_instructions so the LLM follows it
-            outline_text = "\n".join([
-                f"## {item.get('heading', 'Section')}\n"
-                f"  Key points: {', '.join(item.get('key_points', []))}"
-                for item in outline_plan
-            ])
-            plan_instruction = f"\n\nFOLLOW THIS OUTLINE STRUCTURE:\n{outline_text}"
-            parsed.custom_instructions = (parsed.custom_instructions or "") + plan_instruction
+        if not generated or (from_api and is_fallback):
+            logger.error("LLM Generation failed completely. Pipeline must not bypass the LLM.")
+            raise RuntimeError("LLM Pipeline failed. Generation engine is completely bypassing the LLM.")
     
-    # --- Stage 2: DRAFT ---
-    llm_trace = {}
-    generated: GeneratedBlog | None = pipeline._generate_with_llm(
-        parsed, docs, previous_draft, llm_trace=llm_trace
-    )
+        # ── Stage 3: SELF-REVIEW (only on first attempt, skip on revisions) ──
+        final_draft = generated.draft
+        if revision_count == 0 and not feedback:
+            final_draft = _self_review(final_draft, parsed, docs)
+            logger.info("Writer Stage 3: Self-review complete")
+            
+            # NLI Fact-Check to remove hallucinations
+            context = "\n\n".join([d.page_content for d in docs])
+            final_draft = verify_facts_nli(final_draft, context)
+        else:
+            logger.info("Writer Stage 3: Self-review skipped (revision mode)")
     
-    if not generated:
-        logger.error("LLM Generation failed completely. Pipeline must not bypass the LLM.")
-        raise RuntimeError("LLM Pipeline failed. Generation engine is completely bypassing the LLM.")
+        loop_step = state.get("loop_step", 0) + 1
     
-    # --- Stage 3: SELF-REVIEW (only for new blogs, skip for quick edits) ---
-    final_draft = generated.draft
-    if parsed.intent == "create_blog" and not feedback and len(final_draft) > 500:
-        final_draft = _self_review(final_draft, parsed, docs)
-        
-    # Enforce conclusion heading after self-review
-    final_draft = pipeline._ensure_conclusion_heading(final_draft, parsed.topic)
+        # Hallucination fallback check when no docs are retrieved or fallback was used
+        ret_status = state.get("retrieval_meta", {}).get("status", "ok")
+        if (not retrieved_docs or ret_status in {"low_confidence", "out_of_domain", "no_match"}) and not edit_instruction:
+            from app.langchain_pipeline import pipeline
+            settings = pipeline.settings
+            if not settings.allow_hybrid_fallback:
+                return {
+                    "title": "Need More Context",
+                    "outline": [
+                        "Xac dinh lai chu de trong pham vi dataset",
+                        "Bo sung tai lieu lien quan vao data/raw",
+                        "Chay ingest de cap nhat data/processed va metadata",
+                    ],
+                    "draft": "Query hien tai nam ngoai pham vi dataset RAG hien co. (Hybrid fallback is disabled)",
+                    "sources_used": [],
+                    "previous_draft": state.get("draft", ""),
+                    "loop_step": loop_step,
+                }
+            else:
+                warning_text = settings.hybrid_warning_text
+                if warning_text and warning_text not in final_draft:
+                    final_draft = f"> [!WARNING]\n> {warning_text}\n\n{final_draft}"
     
-    return {
-        "title": generated.title,
-        "outline": generated.outline,
-        "draft": final_draft,
-        "sources_used": generated.sources_used
-    }
+        return {
+            "title": generated.title,
+            "outline": generated.outline,
+            "draft": final_draft,
+            "sources_used": generated.sources_used if ret_status not in {"low_confidence", "out_of_domain", "no_match"} else [],
+            "previous_draft": state.get("draft", ""),  # Comparison Gate: store draft before revision
+            "loop_step": loop_step,
+        }
+
+writer_node = WriterAgentNode()
+

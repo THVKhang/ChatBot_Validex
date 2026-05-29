@@ -29,7 +29,9 @@ export class App {
   prompt = '';
   darkMode = false;
   selectedTone = 'Professional';
-  selectedWordCount = '800 Words';
+  selectedWordCount = '500 Words';
+  selectedSectionCount = '3';
+  selectedImageCount = '1';
   selectedAudience = 'General Audience';
   sessionId: string | null = null;
   loading = false;
@@ -76,19 +78,151 @@ export class App {
   authError = '';
   authLoading = false;
 
+  // HITL Dashboard State
+  pendingReviews: import('./chat.models').PendingReview[] = [];
+  pendingReviewsLoading = false;
+  selectedReview: import('./chat.models').PendingReview | null = null;
+
+  // OS Dock State
+  dockPopup: string | null = null;
+  showTokenPopup = false;
+
+  // Module 1: Feedback State
+  feedbackMap: Record<number, 1 | -1> = {};
+
+  // Module 2: Analytics State
+  analyticsTokens: any = null;
+  analyticsQuality: any = null;
+  analyticsCache: any = null;
+  analyticsFeedback: any = null;
+
+  // Module 3: Language State
+  selectedLanguage = 'Auto';
+  detectedLanguage = '';
+  readonly languageOptions = [
+    { code: 'Auto', label: '🌐 Auto-detect' },
+    { code: 'en', label: '🇬🇧 English' },
+    { code: 'vi', label: '🇻🇳 Tiếng Việt' },
+    { code: 'zh', label: '🇨🇳 中文' },
+    { code: 'ko', label: '🇰🇷 한국어' },
+    { code: 'ja', label: '🇯🇵 日本語' },
+  ];
+
+  // Module 4: Pipeline Visualizer State
+  pipelineSteps: { name: string; icon: string; status: 'done' | 'active' | 'pending'; detail: string }[] = [];
+
+  // Module 5: Scheduling State
+  schedules: any[] = [];
+  newScheduleTopic = '';
+  newScheduleLang = 'en';
+  newScheduleCron = '0 9 * * MON';
+
+  // Module 6: Supervisor State
+  lastComplexityLevel: 'simple' | 'complex' | '' = '';
+  supervisorNotes = '';
+
+  // User Token Budget State
+  userBudget: { remaining: number; total: number; used: number; percent: number; tier: string; requests: number } | null = null;
+  quotaExceeded = false;
+
+  toggleDockPopup(name: string): void {
+    this.dockPopup = this.dockPopup === name ? null : name;
+  }
+
+  closeDockPopups(): void {
+    this.dockPopup = null;
+  }
+
   thinkingStatus = '';
   thinkingDetail = '';
   private thinkingInterval: any;
+  
+  isTyping = false;
+  private typingInterval: any;
 
   private startThinkingCycle(): void {
-    // We now rely on real-time SSE "thinking" events from LangGraph multi-agent architecture
-    // This is just the initial state
     this.thinkingStatus = 'Initializing Multi-Agent system...';
+    // Initialize pipeline steps for visualizer
+    this.pipelineSteps = [
+      { name: 'Parser', icon: 'psychology', status: 'pending', detail: '' },
+      { name: 'Researcher', icon: 'search', status: 'pending', detail: '' },
+      { name: 'RAG Eval', icon: 'fact_check', status: 'pending', detail: '' },
+      { name: 'Supervisor', icon: 'hub', status: 'pending', detail: '' },
+      { name: 'Writer', icon: 'edit_note', status: 'pending', detail: '' },
+      { name: 'Editor', icon: 'rate_review', status: 'pending', detail: '' },
+    ];
+    this.lastComplexityLevel = '';
+    this.supervisorNotes = '';
+    this.detectedLanguage = '';
   }
 
   private stopThinkingCycle(): void {
     this.thinkingStatus = '';
     this.thinkingDetail = '';
+  }
+
+  private updatePipelineStep(nodeName: string, detail: string): void {
+    const nodeMap: Record<string, string> = {
+      'Parser': 'Parser', 'Researcher': 'Researcher',
+      'RAG_Evaluator': 'RAG Eval', 'Supervisor': 'Supervisor',
+      'Deep_Researcher': 'Researcher', 'Writer': 'Writer', 'Editor': 'Editor',
+    };
+    const stepName = nodeMap[nodeName] || nodeName;
+    let found = false;
+    for (const step of this.pipelineSteps) {
+      if (step.name === stepName) {
+        step.status = 'active';
+        step.detail = detail;
+        found = true;
+      } else if (found) {
+        step.status = 'pending';
+      } else {
+        step.status = 'done';
+      }
+    }
+    // Special: insert Deep_Researcher after Supervisor when complex
+    if (nodeName === 'Deep_Researcher') {
+      const hasDR = this.pipelineSteps.some(s => s.name === 'Deep Research');
+      if (!hasDR) {
+        const supIdx = this.pipelineSteps.findIndex(s => s.name === 'Supervisor');
+        if (supIdx >= 0) {
+          this.pipelineSteps.splice(supIdx + 1, 0, {
+            name: 'Deep Research', icon: 'library_books', status: 'active', detail: detail,
+          });
+        }
+      }
+    }
+  }
+
+  private typewriterEffect(targetMsg: ChatMessage, fullText: string): void {
+    this.isTyping = true;
+    targetMsg.text = ''; 
+    
+    // Smooth swing effect: ~150 frames at 20ms each = 3 seconds max duration
+    const intervalMs = 20;
+    const maxFrames = 150;
+    const charsPerFrame = Math.max(3, Math.ceil(fullText.length / maxFrames));
+    
+    let currentIndex = 0;
+    
+    if (this.typingInterval) {
+      clearInterval(this.typingInterval);
+    }
+    
+    this.typingInterval = setInterval(() => {
+      currentIndex += charsPerFrame;
+      if (currentIndex >= fullText.length) {
+        targetMsg.text = fullText;
+        this.isTyping = false;
+        clearInterval(this.typingInterval);
+        this.typingInterval = null;
+        this.scrollChatToBottom();
+      } else {
+        targetMsg.text = fullText.slice(0, currentIndex);
+        // Throttle scrolling slightly if needed, but modern browsers handle it fine
+        this.scrollChatToBottom();
+      }
+    }, intervalMs);
   }
 
   private readonly allPrompts: string[] = [
@@ -148,6 +282,7 @@ export class App {
     }
 
     this.loadReports();
+    this.loadTokenUsage();
     this.startRuntimePolling();
   }
 
@@ -165,6 +300,7 @@ export class App {
 
     this.pollTimerId = window.setInterval(() => {
       this.refreshRuntime();
+      this.loadTokenUsage();
     }, 10000);
   }
 
@@ -177,7 +313,7 @@ export class App {
       error: () => {
         this.apiReady = false;
         this.healthData = null;
-        this.errorMessage = 'Backend API is not running. Start the API server before testing the frontend.';
+        console.error('Backend API is not running. Start the API server before testing the frontend.');
       }
     });
 
@@ -212,6 +348,31 @@ export class App {
         this.knowledgeHealthData = null;
         this.knowledgeHealthError = 'Unable to fetch knowledge health.';
       },
+    });
+  }
+
+  loadTokenUsage(): void {
+    this.chatService.getTokenUsage().subscribe({
+      next: (res) => {
+        this.tokenUsageData = res;
+      },
+      error: () => {
+        this.tokenUsageData = null;
+      }
+    });
+    this.loadUserBudget();
+  }
+
+  loadUserBudget(): void {
+    this.chatService.getUserBudget().subscribe({
+      next: (res) => {
+        this.userBudget = res;
+        this.quotaExceeded = res.remaining <= 0;
+      },
+      error: () => {
+        this.userBudget = null;
+        this.quotaExceeded = false;
+      }
     });
   }
 
@@ -255,6 +416,7 @@ export class App {
         this.crawlHistory = [];
       }
     });
+    this.loadPendingReviews();
   }
 
   setTopTab(tab: 'dashboard' | 'templates' | 'analytics'): void {
@@ -355,18 +517,27 @@ export class App {
               assistantMsg.latencyMs = Math.round(latency);
             }
           } else if (event.type === 'thinking') {
-            // Use rich status from backend
             const status = event.data?.status || '';
             const detail = event.data?.detail || '';
             const stepName = event.data?.step || 'Agent working';
             
+            // Update Pipeline Visualizer (Module 4)
+            this.updatePipelineStep(stepName, detail || status);
+
+            // Track Supervisor routing (Module 6)
+            if (stepName === 'Supervisor') {
+              this.lastComplexityLevel = status.toLowerCase().includes('complex') ? 'complex' : 'simple';
+              this.supervisorNotes = detail || status;
+            }
+
             if (status) {
               this.thinkingStatus = status;
               this.thinkingDetail = detail;
             } else {
-              // Fallback to step-based messages
-              if (stepName === 'Parser') this.thinkingStatus = '🎯 Analyzing your request with AI...';
-              else if (stepName === 'Researcher') this.thinkingStatus = '🔍 Searching knowledge sources...';
+              if (stepName === 'Parser') this.thinkingStatus = '🎯 Analyzing your request...';
+              else if (stepName === 'Researcher') this.thinkingStatus = '🔍 Searching knowledge...';
+              else if (stepName === 'Supervisor') this.thinkingStatus = '🧠 Routing pipeline...';
+              else if (stepName === 'Deep_Researcher') this.thinkingStatus = '📚 Deep-diving legal sources...';
               else if (stepName === 'Writer') this.thinkingStatus = '✍️ Generating content...';
               else if (stepName === 'Editor') this.thinkingStatus = '🔬 Reviewing quality...';
               else this.thinkingStatus = `${stepName} is working...`;
@@ -378,11 +549,16 @@ export class App {
             this.sessionId = response.session_id;
             this.generatedAt = new Date();
             this.selectedReport = null;
-            assistantMsg.text = response.generated.draft;
             assistantMsg.payload = response;
             assistantMsg.latencyMs = Date.now() - startTime;
             this.loading = false;
-            this.scrollChatToBottom();
+            // Mark all pipeline steps as done
+            for (const s of this.pipelineSteps) s.status = 'done';
+            // Track detected language (Module 3)
+            this.detectedLanguage = response.parsed?.language || 'en';
+            // Trigger smooth typewriter UI
+            this.typewriterEffect(assistantMsg, response.generated.draft);
+            
           } else if (event.type === 'error') {
             this.stopThinkingCycle();
             this.loading = false;
@@ -442,7 +618,7 @@ export class App {
   }
 
   onPromptKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       this.sendPrompt();
     }
@@ -536,6 +712,32 @@ export class App {
       error: () => {
         this.sessionsError = 'Unable to load this session.';
       }
+    });
+  }
+
+  loadPendingReviews(): void {
+    this.pendingReviewsLoading = true;
+    this.chatService.getPendingReviews().subscribe({
+      next: (reviews) => {
+        this.pendingReviewsLoading = false;
+        this.pendingReviews = reviews;
+      },
+      error: () => {
+        this.pendingReviewsLoading = false;
+        // Optionally show error
+      }
+    });
+  }
+
+  approveReview(runId: string): void {
+    this.chatService.updateReview(runId, { action: 'Approve' }).subscribe(() => {
+      this.loadPendingReviews();
+    });
+  }
+
+  rejectReview(runId: string): void {
+    this.chatService.updateReview(runId, { action: 'Reject', feedback: 'Rejected by Editor' }).subscribe(() => {
+      this.loadPendingReviews();
     });
   }
 
@@ -874,14 +1076,37 @@ export class App {
   }
 
   private buildConfiguredPrompt(basePrompt: string): string {
-    return [
+    const lines = [
       basePrompt,
       '',
       'Editorial settings:',
       `- tone: ${this.selectedTone}`,
       `- target_word_count: ${this.selectedWordCount}`,
       `- target_audience: ${this.selectedAudience}`,
-    ].join('\n');
+    ];
+
+    // Language injection (Module 3)
+    if (this.selectedLanguage !== 'Auto') {
+      lines.push(`- language: ${this.selectedLanguage}`);
+    }
+
+    if (this.selectedSectionCount !== 'Auto') {
+      const secCount = parseInt(this.selectedSectionCount);
+      if (!isNaN(secCount)) {
+        lines.push(`- target_sections: ${secCount}`);
+      }
+    }
+
+    if (this.selectedImageCount !== 'Auto') {
+      const imgCount = parseInt(this.selectedImageCount);
+      if (!isNaN(imgCount)) {
+        lines.push(`- target_images: ${imgCount}`);
+      } else if (this.selectedImageCount === 'No images') {
+        lines.push(`- target_images: 0`);
+      }
+    }
+
+    return lines.join('\n');
   }
 
   // --- Auth Methods ---
@@ -949,5 +1174,65 @@ export class App {
     this.messages.length = 0;
     this.sessions = [];
     this.activeMenu = 'new';
+  }
+
+  // ── Module 1: Feedback Methods ──
+  submitFeedback(msgIndex: number, rating: 1 | -1): void {
+    if (this.feedbackMap[msgIndex] !== undefined) return;
+    const msg = this.messages[msgIndex];
+    const reportId = msg?.payload?.session_id || this.sessionId || 'unknown';
+    this.feedbackMap[msgIndex] = rating;
+    this.chatService.submitFeedback(reportId, rating).subscribe({
+      error: () => { delete this.feedbackMap[msgIndex]; }
+    });
+  }
+
+  // ── Module 2: Analytics Methods ──
+  loadAnalytics(): void {
+    this.chatService.getAnalyticsTokens().subscribe({ next: (d) => this.analyticsTokens = d, error: () => {} });
+    this.chatService.getAnalyticsQuality().subscribe({ next: (d) => this.analyticsQuality = d, error: () => {} });
+    this.chatService.getAnalyticsCache().subscribe({ next: (d) => this.analyticsCache = d, error: () => {} });
+    this.chatService.getAnalyticsFeedback().subscribe({ next: (d) => this.analyticsFeedback = d, error: () => {} });
+  }
+
+  get qualityEntries(): { key: string; value: number }[] {
+    const data = this.analyticsQuality?.data;
+    if (!data) return [];
+    return Object.entries(data).map(([k, v]) => ({ key: k, value: v as number })).sort((a, b) => b.value - a.value);
+  }
+
+  get qualityTotal(): number {
+    return this.qualityEntries.reduce((sum, e) => sum + e.value, 0);
+  }
+
+  // ── Module 3: Language Helper ──
+  getLanguageLabel(code: string): string {
+    return this.languageOptions.find(l => l.code === code)?.label || code;
+  }
+
+  // ── Module 5: Scheduling Methods ──
+  loadSchedules(): void {
+    this.chatService.getSchedules().subscribe({
+      next: (s) => this.schedules = s || [],
+      error: () => this.schedules = [],
+    });
+  }
+
+  createSchedule(): void {
+    if (!this.newScheduleTopic.trim()) return;
+    this.chatService.createSchedule(this.newScheduleTopic, this.newScheduleLang, this.newScheduleCron).subscribe({
+      next: () => {
+        this.newScheduleTopic = '';
+        this.loadSchedules();
+      },
+      error: () => {}
+    });
+  }
+
+  deleteSchedule(id: number): void {
+    this.chatService.deleteSchedule(id).subscribe({
+      next: () => this.loadSchedules(),
+      error: () => {}
+    });
   }
 }

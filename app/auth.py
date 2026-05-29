@@ -8,7 +8,12 @@ import jwt
 from passlib.context import CryptContext
 from app.session_store import _connection_dsn, _ensure_table
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "super_secret_key_validex_2026")
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError(
+        "JWT_SECRET_KEY environment variable is not set! "
+        "Application cannot start safely without a configured JWT secret."
+    )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 

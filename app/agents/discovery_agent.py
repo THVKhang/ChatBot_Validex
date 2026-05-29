@@ -25,6 +25,12 @@ DISCOVERY_TOPICS = [
     "Australian criminal history check legislation",
     "Volunteer screening requirements Australia",
     "Right to work verification Australia",
+    "Australian PEP check politically exposed persons requirements",
+    "VEVO work rights check Australia immigration",
+    "Digital identity verification framework TDIF Australia",
+    "Reference checks compliance Australia Fair Work",
+    "KYC AML background check requirements Australia",
+    "Fit and Proper person test Australian guidelines",
 ]
 
 # Domains already known — we skip these to find NEW sources
@@ -134,41 +140,36 @@ def _search(query: str, num: int = 5) -> list[dict[str, str]]:
     return _google_custom_search(query, num)
 
 
-def _llm_evaluate_relevance(url: str, title: str, snippet: str) -> dict[str, Any]:
-    """Use LLM to score relevance of a discovered URL (0-10)."""
+def _semantic_evaluate_relevance(url: str, title: str, snippet: str) -> dict[str, Any]:
+    """Score relevance using Local Semantics (0 LLM tokens)."""
     try:
-        from app.langchain_pipeline import pipeline
-    except Exception:
-        return {"score": 0, "reason": "LLM not available"}
-
-    if pipeline._llm is None:
-        return {"score": 0, "reason": "LLM not configured"}
-
-    prompt = (
-        "You are an expert evaluator for an Australian compliance knowledge base.\n"
-        "Rate the following web page's relevance to Australian background checks, "
-        "police checks, worker screening, workplace compliance, or HR legal requirements.\n\n"
-        f"URL: {url}\n"
-        f"Title: {title}\n"
-        f"Snippet: {snippet}\n\n"
-        "Return ONLY a JSON object: {\"score\": <1-10>, \"reason\": \"<brief explanation>\"}\n"
-        "Score 10 = perfectly relevant, Score 1 = completely irrelevant."
-    )
-
-    try:
-        response = pipeline._llm.invoke(prompt)
-        raw = getattr(response, "content", str(response))
-        match = re.search(r"\{[^}]+\}", raw)
-        if match:
-            parsed = json.loads(match.group(0))
-            return {
-                "score": int(parsed.get("score", 0)),
-                "reason": str(parsed.get("reason", "")),
-            }
+        from app.local_semantics import get_embedding, get_reference_embedding, cosine_similarity
+        
+        text = f"{title} {snippet} {url}"
+        
+        text_emb = get_embedding(text)
+        ref_emb = get_reference_embedding()
+        
+        sim = cosine_similarity(text_emb, ref_emb)
+        
+        # Map similarity (typically 0.1 to 0.5) to a 1-10 score
+        # Using a conservative mapping
+        raw_score = (sim * 20)
+        
+        # .gov.au domains get a bonus
+        if ".gov.au" in url.lower():
+            raw_score += 2
+            
+        score = min(10, max(1, int(round(raw_score))))
+        
+        return {
+            "score": score,
+            "reason": f"semantic_sim={sim:.3f}",
+        }
+        
     except Exception as exc:
-        logger.warning("LLM relevance evaluation failed for %s: %s", url, exc)
-
-    return {"score": 0, "reason": "evaluation_failed"}
+        logger.error(f"Semantic relevance evaluation failed: {exc}")
+        return {"score": 1, "reason": "evaluation_failed"}
 
 
 def discover_new_sources(
@@ -218,8 +219,8 @@ def discover_new_sources(
             if clean_domain in KNOWN_DOMAINS:
                 continue
 
-            # LLM evaluation
-            evaluation = _llm_evaluate_relevance(url, result["title"], result["snippet"])
+            # Semantic-based evaluation (0 LLM tokens)
+            evaluation = _semantic_evaluate_relevance(url, result["title"], result["snippet"])
             score = evaluation.get("score", 0)
 
             entry = {

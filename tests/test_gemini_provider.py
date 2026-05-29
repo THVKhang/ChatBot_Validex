@@ -1,8 +1,10 @@
 from dataclasses import replace
 
 import app.langchain_pipeline as langchain_pipeline_module
+import app.llm.provider as provider_module
 from app.config import settings
 from app.langchain_pipeline import LangChainRAGPipeline
+import langchain_google_genai
 
 
 class _FakeGoogleChat:
@@ -22,7 +24,7 @@ class _FakeGoogleEmbeddings:
 
 
 def test_build_llm_prefers_google_provider(monkeypatch):
-    monkeypatch.setattr(langchain_pipeline_module, "ChatGoogleGenerativeAI", _FakeGoogleChat)
+    monkeypatch.setattr(langchain_google_genai, "ChatGoogleGenerativeAI", _FakeGoogleChat)
 
     local_settings = replace(
         settings,
@@ -37,8 +39,10 @@ def test_build_llm_prefers_google_provider(monkeypatch):
 
     pipeline = LangChainRAGPipeline()
 
-    assert isinstance(pipeline._llm, _FakeGoogleChat)
-    assert pipeline._llm.model == "models/gemini-2.5-flash"
+    from app.llm.provider import ResilientLLM
+    assert isinstance(pipeline._llm, ResilientLLM)
+    assert isinstance(pipeline._llm.primary, _FakeGoogleChat)
+    assert pipeline._llm.primary.model == "models/gemini-2.5-flash"
 
 
 def test_build_embedding_prefers_google_provider(monkeypatch):

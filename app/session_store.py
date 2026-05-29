@@ -233,7 +233,7 @@ def delete_expired_sessions(ttl_seconds: int = 3600) -> int:
         with psycopg.connect(dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "DELETE FROM chat_sessions WHERE updated_at < NOW() - INTERVAL '%s seconds'",
+                    "DELETE FROM chat_sessions WHERE updated_at < NOW() - INTERVAL '1 second' * %s",
                     (ttl_seconds,),
                 )
                 deleted = cur.rowcount

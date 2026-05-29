@@ -19,13 +19,12 @@ class PgSemanticCache:
         self.dsn = os.environ.get("DATABASE_URL")
         
     def _get_embedding(self, text: str) -> list[float] | None:
-        """Get embedding for the prompt text using the configured provider."""
+        """Get embedding for the prompt text using Local Semantics (0 tokens)."""
         try:
-            from app.ingest_pgvector import get_embeddings_model
-            embedding_model, _ = get_embeddings_model()
-            if not embedding_model:
-                return None
-            return embedding_model.embed_query(text)
+            from app.local_semantics import get_embedding
+            emb = get_embedding(text)
+            # Convert numpy array to python list for psycopg
+            return emb.tolist()
         except Exception as exc:
             logger.warning("SemanticCache failed to generate embedding: %s", exc)
             return None

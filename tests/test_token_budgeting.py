@@ -14,8 +14,8 @@ from app.session_manager import SessionManager
     "prompt,expected_profile,min_k,max_k",
     [
         ("Write a 400 chu blog about police check", "short", 3, 4),
-        ("Write a 800 words blog about police check", "medium", 6, 8),
-        ("Write a 1200 words detailed blog about police check", "long", 10, 12),
+        ("Write a 800 words blog about police check", "medium", 6, 7),
+        ("Write a 1200 words detailed blog about police check", "long", 7, 7),
     ],
 )
 def test_dynamic_top_k_matches_length_profile(monkeypatch, prompt, expected_profile, min_k, max_k):

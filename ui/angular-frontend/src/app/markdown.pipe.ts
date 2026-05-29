@@ -14,7 +14,11 @@ export class MarkdownPipe implements PipeTransform {
   }
 
   private markdownToHtml(md: string): string {
-    let html = md;
+    // Escape raw HTML tags in user/LLM input to prevent XSS vulnerabilities
+    let html = md
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
 
     // ── Strip raw source citations completely ──
     // [Source: Title | URL: url] → remove entirely
@@ -47,8 +51,7 @@ export class MarkdownPipe implements PipeTransform {
 
     // ── Code blocks (fenced) ──
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
-      const escaped = this.escapeHtml(code.trim());
-      return `<pre><code class="lang-${lang || 'text'}">${escaped}</code></pre>`;
+      return `<pre><code class="lang-${lang || 'text'}">${code.trim()}</code></pre>`;
     });
 
     // ── Inline code ──

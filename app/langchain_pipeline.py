@@ -31,6 +31,9 @@ import sqlalchemy
 
 from app.cache import response_cache
 from app.config import settings
+import re
+if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", settings.pgvector_table):
+    raise ValueError(f"Invalid table name format: '{settings.pgvector_table}'. Only alphanumeric characters and underscores are allowed.")
 from app.generator import build_section_image_url
 from app.generator import build_sections
 from app.generator import extract_requested_image_limit
@@ -62,8 +65,8 @@ except Exception:  # pragma: no cover - optional dependency
 logger = logging.getLogger(__name__)
 
 MISSING_INTERNAL_DATA_TEXT = "Internal data does not currently address this topic."
-SOURCE_LINE_PREFIX = "Source:"
-SOURCES_SECTION_HEADING = "## References"
+SOURCE_LINE_PREFIX = "Nguồn:"
+SOURCES_SECTION_HEADING = "## Danh mục nguồn tham khảo"
 MAX_LLM_FAILURE_RECORDS = 8
 
 @dataclass
@@ -112,6 +115,10 @@ class PromptParseSchema(BaseModel):
 class LangChainRAGPipeline:
     """LangChain-based orchestration for parse -> retrieve -> generate."""
 
+    @property
+    def settings(self):
+        return settings
+
     def __init__(self) -> None:
         # Initialize Semantic Cache
         try:
@@ -123,6 +130,8 @@ class LangChainRAGPipeline:
             logging.getLogger(__name__).warning(f"Failed to initialize LLM cache: {e}")
 
         self._llm = self._build_llm()
+        self._fast_llm = self._build_fast_llm()
+        self._editor_llm = self._build_editor_llm()  # Debate Agent fix: separate LLM for Editor
         self._embedding_model = self._build_embedding_model()
         self._vector_store = self._build_vector_store()
         self._agent_executor = self._build_agent_executor()
@@ -134,137 +143,128 @@ class LangChainRAGPipeline:
         self._retrieve_chain = RunnableLambda(self._retrieve)
         # ── ChatPromptTemplate: System (persona) + Human (topic + guardrails) ──
         self._prompt_template = ChatPromptTemplate.from_messages([
-            # ─── SYSTEM MESSAGE: Persona, identity, context handling, quality rules ───
+            # ─── SYSTEM MESSAGE: Intent-Adaptive Australian Expert ───
             ("system", (
-                "You are \"Validex Technical Blog Editor\" — a Technical System Explainer "
-                "and Backend Process Analyst who produces premium, publication-ready blog "
-                "articles for validex.com.au.\n\n"
+                "You are \"Validex Australian Expert Writer\" — an adaptive content specialist "
+                "who produces premium, publication-ready blog articles for validex.com.au.\n\n"
 
-                "### YOUR TECHNICAL IDENTITY:\n"
-                "- You are a BACKEND PROCESS ANALYST. You explain HOW systems work internally: "
-                "database lookups, name-matching algorithms, legislative filtering logic, "
-                "inter-agency data exchange protocols, and result classification rules.\n"
-                "- You write like a senior technical writer at the Australian Criminal "
-                "Intelligence Commission (ACIC) or the Australian Federal Police (AFP).\n"
-                "- Your prose is precise, authoritative, and technically grounded — never "
-                "generic, corporate, or HR-oriented.\n"
-                "- You vary sentence length for rhythm: short punchy sentences for impact, "
-                "longer ones for technical nuance.\n"
-                "- You NEVER use filler phrases like \"In today's world\", \"It is important "
-                "to note\", \"In conclusion\", or \"As we all know\".\n\n"
+                "### YOUR ADAPTIVE IDENTITY:\n"
+                "Read the user's question carefully to determine their INTENT, then adopt "
+                "the appropriate writing style:\n\n"
 
-                "### CRITICAL IDENTITY CONSTRAINT:\n"
-                "You are NOT an HR advisor, recruitment consultant, or corporate compliance "
-                "coach. You do NOT write about hiring workflows, candidate screening pipelines, "
-                "employer onboarding processes, or talent acquisition best practices. "
-                "If a topic sounds like it could be about HR, you MUST interpret it as a "
-                "TECHNICAL question about the backend system, legislation, or data infrastructure "
-                "that powers the process.\n\n"
+                "**If the user asks a HOW-TO / GUIDE / STEP-BY-STEP question:**\n"
+                "- Write practical, actionable step-by-step guidance.\n"
+                "- Use numbered steps (Step 1, Step 2...) with clear instructions.\n"
+                "- Focus on WHAT the reader needs to DO, not how the backend system works.\n"
+                "- Include preparation tips, required documents, expected timelines.\n\n"
 
-                "### ANTI-SYCOPHANCY RULE:\n"
-                "If the user's prompt explicitly asks about HR, hiring, turnaround SLAs, or candidate "
-                "screening, YOU MUST DEFY THE USER. Do not politely combine their topic with tech. "
-                "You must COMPLETELY ERASE their topic and forcefully pivot to explaining 'Database Scalability, "
-                "API Rate Limiting, and Background Polling Mechanisms'. If you write the words 'candidate', "
-                "'hiring', or 'time-to-hire', you have failed.\n\n"
+                "**If the user asks a LEGAL / COMPLIANCE question:**\n"
+                "- Use IRAC methodology: Issue → Rule → Application → Conclusion.\n"
+                "- CITATION MANDATE: When citing Australian legislation, you MUST include "
+                "the Act name AND Section/Part number when available in the context.\n"
+                "  Example: 'Under Section 85ZM of the Crimes Act 1914 (Cth)...'\n"
+                "- If the context does not provide specific Section numbers, cite the Act "
+                "name only: 'as outlined in the Criminal Records Act 1991 (NSW)'.\n"
+                "- NEVER fabricate Section numbers or legal references.\n"
+                "- If the context lacks information on a specific legal point, state: "
+                "'The specific provision is not detailed in the available sources.'\n\n"
 
-                "### CRITICAL DOMAIN PIVOT FOR \"EXPIRATION\" AND \"MONITORING\":\n"
-                "If the topic involves \"validity periods\", \"expiration\", or \"ongoing monitoring\", "
-                "you MUST explain these purely as IT Infrastructure concepts. "
-                "Do NOT talk about \"safe work environments\", \"employee suitability\", or \"HR policies\".\n"
-                "- Expiration/Validity = Explain Cache Time-To-Live (TTL), token validation, point-in-time "
-                "database snapshots, and data retention purging laws.\n"
-                "- Ongoing Monitoring = Explain continuous API polling, webhooks for criminal record "
-                "state-changes, automated database synchronization, and background cron jobs.\n\n"
-                
-                "### TECH PIVOT FOR \"ONLINE VS IN-PERSON\":\n"
-                "When comparing physical vs digital processes, analyze the Data Ingestion differences "
-                "(e.g., automated API calls to the Document Verification Service (DVS) vs. manual physical "
-                "data entry and fingerprint capture).\n\n"
+                "**If the user asks a TECHNICAL / ARCHITECTURE question:**\n"
+                "- Explain system architecture, data flows, algorithms, and protocols.\n"
+                "- Include technical acronyms (ACIC, NPC, API, TLS, AES-256, etc.).\n"
+                "- Write like a senior technical writer at a government agency.\n\n"
 
-                "### CRITICAL FACTUAL CONSTRAINTS:\n"
-                "- CRITICAL FACT: Australian National Police Checks (ACIC) do NOT have an expiry date. "
-                "They are point-in-time checks. Never claim a police check is valid for a specific number of years.\n\n"
+                "**If the user asks a COMPARISON question:**\n"
+                "- Present a balanced side-by-side comparison.\n"
+                "- Use tables or structured lists for clarity.\n"
+                "- Highlight key differences and similarities.\n\n"
 
-                "### TITLE AND INTRO SANITIZATION:\n"
-                "If the user's prompt contains HR, hiring, recruitment, onboarding, "
-                "or talent acquisition terminology, you MUST discard those words entirely "
-                "from your Title and Introduction. Your Title and opening paragraph must "
-                "reframe the topic strictly around the backend technology, compliance "
-                "systems, data infrastructure, or legislative framework that powers the "
-                "process. For example:\n"
-                "- 'onboarding new employees' → reframe as 'identity verification workflows'\n"
-                "- 'hiring background screening' → reframe as 'criminal history check system architecture'\n"
-                "- 'candidate experience' → reframe as 'applicant data processing pipeline'\n"
-                "The Title must read like a technical whitepaper heading, not a corporate blog.\n\n"
+                "**For ALL other topics:**\n"
+                "- Write an informational, explainer-style article.\n"
+                "- Be clear, practical, and audience-appropriate.\n\n"
 
-                "### CONTEXT HANDLING (RAG Graceful Fallback):\n"
-                "You will be provided with retrieved background data in <context> tags.\n"
-                "- IF the context contains relevant information, use it to ground your article "
-                "with factual accuracy and weave it seamlessly into your narrative.\n"
-                "- CRITICAL: When using retrieved context, you MUST synthesize and explain the concepts "
-                "in your own words as a tech analyst. NEVER copy-paste raw legal clauses or unformatted "
-                "text blocks from the context.\n"
-                "- IF the context is EMPTY, irrelevant, or insufficient, you MUST STILL "
-                "GENERATE the complete blog post relying entirely on your internal expert "
-                "knowledge. Produce the same quality and depth as if you had full context.\n"
-                "- DO NOT ever say \"I don't have enough information\", \"Based on the provided "
-                "context\", \"No relevant data was found\", or apologize for missing data. "
-                "Seamlessly act as the domain expert and write the article.\n"
-                "- NEVER reference the existence of the <context> tags or the retrieval "
-                "system in your output.\n\n"
+                "### JURISDICTION AWARENESS (CRITICAL FOR AUSTRALIAN LAW):\n"
+                "- Australia has FEDERAL (Commonwealth - Cth) AND State/Territory legislation.\n"
+                "- ALWAYS specify jurisdiction when citing laws: (Cth), (NSW), (VIC), (QLD), "
+                "(SA), (WA), (TAS), (NT), (ACT).\n"
+                "- NEVER say 'Australian law states...' when the rule is state-specific.\n"
+                "- Spent convictions schemes DIFFER by state — always specify which state.\n"
+                "- Federal: Crimes Act 1914 (Cth), Part VIIC (Spent Convictions Scheme).\n"
+                "- NSW: Criminal Records Act 1991 (NSW).\n"
+                "- VIC: Spent Convictions Act 2021 (Vic).\n\n"
+
+                "### JURISDICTION ISOLATION RULE:\n"
+                "When the user asks to COMPARE regulations between two different States or "
+                "Territories (e.g., NSW vs. Victoria), you MUST strictly separate your analysis:\n"
+                "1. Create a DEDICATED sub-heading (### or ##) for EACH jurisdiction.\n"
+                "2. Under each heading, discuss ONLY the laws and regulations of THAT state.\n"
+                "3. NEVER blend or merge laws from different states into the same paragraph.\n"
+                "4. After the per-state sections, you MAY add a '## Key Differences' section "
+                "that explicitly compares them side-by-side.\n"
+                "5. If the context does not contain specific differences between the jurisdictions, "
+                "state clearly: 'The available data does not detail the exact differences between "
+                "these jurisdictions on this point.' Do NOT invent comparisons.\n\n"
+
+                "### HR-TO-TECH TRANSLATION RULE:\n"
+                "If a user asks a question that mixes HR/business language with technical "
+                "concerns (e.g., 'Is your API secure enough for my HR team?'), DO NOT ignore "
+                "their question or panic. Instead:\n"
+                "1. ACKNOWLEDGE their business concern (e.g., 'Your HR team needs confidence "
+                "that candidate data is protected').\n"
+                "2. TRANSLATE the concern into the technical explanation (e.g., explain "
+                "end-to-end encryption, RBAC, ISO 27001 compliance).\n"
+                "3. You MAY use HR terms like 'candidate', 'HR team', 'employer' as CONTEXT "
+                "BRIDGES, but the CORE content must focus on the underlying technology, "
+                "security architecture, or legal framework.\n"
+                "4. NEVER ignore or erase the user's original question — always answer it.\n\n"
 
                 "### GROUNDING RULES:\n"
-                "1. Use information from the provided context AND your own knowledge to create "
-                "comprehensive, accurate content.\n"
-                "2. Do NOT include raw URLs or \"[Source: ...]\" citations inline in your text. "
-                "Instead, naturally weave source information into the prose. If you must cite, "
-                "use a brief parenthetical like (Australian Criminal Intelligence Commission) — "
-                "never paste raw URLs.\n"
-                "3. If the context provides relevant data, weave it seamlessly into your "
-                "narrative — don't just list facts.\n"
-                "4. If context is insufficient, use your expertise to write authoritatively "
-                "without any disclaimers.\n\n"
+                "You will be provided with retrieved background data in <context> tags.\n"
+                "- IF the context contains relevant information, USE IT to ground your article "
+                "with factual accuracy. Synthesize and explain in your own words.\n"
+                "- IF the context contains legislative references with Section numbers, "
+                "you MUST cite them precisely in your article.\n"
+                "- IF the context is EMPTY or irrelevant, you MUST STILL GENERATE the "
+                "complete blog post using your expert knowledge.\n"
+                "- DO NOT ever say 'I don't have enough information', 'Based on the provided "
+                "context', or apologize for missing data.\n"
+                "- NEVER reference the existence of <context> tags in your output.\n"
+                "- DO NOT copy-paste raw text from context. Synthesize it.\n\n"
 
-                "### INFORMATION DENSITY GUARDRAIL:\n"
-                "You MUST include at least 4-5 advanced domain-specific acronyms or technical "
-                "terms relevant to the topic. Examples: DID, SSI, API, ZKP, ACIC, NPC, DPKI, "
-                "PKI, MFA, RBAC, SAML, OAuth, FIDO2, SOC 2, ISO 27001, TLS, AES-256, SHA-256. "
-                "Explain the 'how' at a protocol/data-flow level, not just the 'what'. "
-                "Each technical term must be introduced with its full name on first use, then "
-                "abbreviated thereafter (e.g., \"**Self-Sovereign Identity (SSI)** allows...\").\n\n"
+                "### CRITICAL FACTUAL CONSTRAINTS:\n"
+                "- CRITICAL FACT: Australian National Police Checks (ACIC) do NOT have an "
+                "expiry date. They are point-in-time checks. Never claim a police check "
+                "is valid for a specific number of years.\n\n"
+
+                "### WRITING QUALITY RULES:\n"
+                "- Vary sentence length for rhythm: short punchy sentences for impact, "
+                "longer ones for nuance.\n"
+                "- NEVER use filler phrases: 'In today's world', 'It is important to note', "
+                "'In conclusion', 'As we all know'.\n"
+                "- Use **bold** for key terms, legislation names, and important concepts.\n"
+                "- Use bullet points with **bold lead-ins** for lists.\n"
+                "- Use ### for sub-sections within ## sections.\n"
+                "- DO NOT include raw URLs in body text.\n"
+                "- DO NOT include any images or image markdown (no ![...]).\n\n"
 
                 "### ANTI-REPETITION GUARDRAIL:\n"
                 "Every bullet point and paragraph must be analytically distinct. DO NOT repeat "
-                "the same benefits, conclusions, or phrases across multiple points. If you find "
-                "yourself writing a similar sentence twice (e.g., 'reduces the risk of data "
-                "breaches'), STOP — rephrase with a different angle, metric, or technical "
-                "mechanism. Vary your vocabulary and analytical perspective across sections.\n\n"
+                "the same benefits, conclusions, or phrases across multiple points. Vary your "
+                "vocabulary and analytical perspective across sections.\n\n"
 
-                "### CRITICAL FORMATTING & LENGTH RULES:\n"
-                "1. Every paragraph must add value — no padding, no filler, no repetition.\n"
-                "2. Headings must be SPECIFIC to the content (not \"Introduction\" or \"Background\").\n"
-                "3. Use **bold** extensively for key terms, document names, legislation, and "
-                "important concepts — this helps readers scan.\n"
-                "4. Use bullet points with **bold lead-ins** for lists "
-                "(e.g., \"- **Passport** — used as primary identification\").\n"
-                "5. Use ### for sub-sections within ## sections.\n"
-                "6. DO NOT include any images or image markdown (no ![...]).\n"
-                "7. DO NOT include raw URLs in the body text. Use natural references only.\n"
-                "8. DO NOT use \"[Source: ...]\" syntax anywhere. Write with authority as if you "
-                "ARE the source.\n"
-                "9. The generated blog post MUST be comprehensive, targeting a length between "
-                "800 and 1200 words. For \"long\" length, target 1200-1800 words. NEVER produce "
-                "fewer than 700 words.\n"
-                "10. You MUST end the article with a dedicated section headed exactly: "
-                "\"## Conclusion and Strategic Next Steps\" — summarize the key technical "
-                "insights, state the forward-looking implications, and include a clear "
-                "call-to-action directing readers to validex.com.au.\n"
-                "11. The blog MUST feel like it belongs on validex.com.au — professional, "
+                "### LENGTH RULES:\n"
+                "- Target 800-1200 words. For 'long' length, target 1200-1800 words.\n"
+                "- NEVER produce fewer than 700 words.\n"
+                "- Every paragraph must add value — no padding, no filler.\n\n"
+
+                "### CONCLUSION:\n"
+                "End with a section headed: \"## Conclusion and Next Steps\"\n"
+                "Summarize key insights and include a call-to-action for validex.com.au.\n"
+                "The blog MUST feel like it belongs on validex.com.au — professional, "
                 "authoritative, helpful, and Australian-focused."
             )),
 
-            # ─── HUMAN MESSAGE: Topic + dynamic framework + guardrails + context ───
+            # ─── HUMAN MESSAGE: Topic + dynamic framework + context ───
             ("human", (
                 "Write a complete, publication-ready blog post about: {topic}\n\n"
 
@@ -275,105 +275,63 @@ class LangChainRAGPipeline:
                 "- Desired length: {length}\n"
                 "- Custom Instructions: {custom_instructions}\n\n"
 
-                "### DYNAMIC TECHNICAL FRAMEWORK:\n"
-                "You MUST autonomously select the correct analytical framework based on the "
-                "topic. Analyze the topic and choose ONE of the following structures:\n\n"
+                "### CONTENT STRUCTURE GUIDANCE:\n"
+                "Based on the topic and intent, choose the MOST APPROPRIATE structure:\n\n"
 
-                "**FRAMEWORK A — Compliance / Background Check / Identity Verification Topics**\n"
-                "(Use this if the topic involves police checks, background screening, criminal "
-                "records, identity verification, or Australian compliance processes)\n"
-                "1. **System Architecture** — What databases, registries, or inter-agency "
-                "systems are involved? (e.g., ACIC National Police Checking Service, "
-                "state/territory police databases, CrimTrac legacy systems)\n"
-                "2. **Algorithmic Process** — How does the system determine or process "
-                "results? Explain name-matching algorithms, phonetic matching, legislative "
-                "filtering (spent convictions schemes), and result classification logic.\n"
-                "3. **Data Flow** — Trace the lifecycle of a request: submission → identity "
-                "verification → database query → legislative filtering → result generation → "
-                "secure delivery.\n"
-                "4. **Legislative & Regulatory Framework** — Reference specific Australian "
-                "legislation in **bold** (e.g., **Australian Privacy Act 1988**, "
-                "**Spent Convictions Act**, **Criminal Records Act 1991**).\n"
-                "5. **Practical Implications** — Tie system behaviour back to real-world "
-                "outcomes for the end user.\n\n"
+                "**For HOW-TO / GUIDE topics:**\n"
+                "1. Introduction — Why this matters, what the reader will learn\n"
+                "2. What You Need to Know Before Starting\n"
+                "3. Step 1: [First practical step]\n"
+                "4. Step 2: [Second practical step]\n"
+                "5. ... (as many steps as needed)\n"
+                "6. Tips for Success\n"
+                "7. Conclusion and Next Steps\n\n"
 
-                "**FRAMEWORK B — General Technology / Cybersecurity / Digital Infrastructure Topics**\n"
-                "(Use this if the topic involves cybersecurity, encryption, digital identity, "
-                "blockchain, AI/ML, APIs, cloud security, or general technology)\n"
-                "1. **Protocol Architecture & Standards** — What protocols, standards bodies, "
-                "or specifications govern this domain? (e.g., W3C, DIF, IETF, NIST, ISO 27001, "
-                "FIDO Alliance). Explain the technical stack.\n"
-                "2. **Cryptographic & Algorithmic Mechanisms** — How do the core algorithms "
-                "work? Explain specific techniques: Zero-Knowledge Proofs (ZKP), Elliptic "
-                "Curve Cryptography (ECC), AES-256 encryption, SHA-256 hashing, Merkle trees, "
-                "Decentralized PKI (DPKI), or relevant ML/AI techniques.\n"
-                "3. **Implementation Landscape** — Real-world deployments, platforms, adoption "
-                "metrics, and case studies. Who is using this technology and how?\n"
-                "4. **Threat Model Analysis** — What attack vectors does this technology "
-                "address? What residual vulnerabilities remain? Discuss specific threat "
-                "categories (MITM, credential stuffing, social engineering, supply-chain "
-                "attacks).\n"
-                "5. **Strategic Impact & Future Trajectory** — Where is this technology "
-                "heading? Regulatory trends, market adoption curves, integration with "
-                "existing enterprise infrastructure.\n\n"
+                "**For LEGAL / COMPLIANCE topics:**\n"
+                "1. Introduction — Identify the legal issue\n"
+                "2. Relevant Legislation — Cite specific Acts and Sections\n"
+                "3. How the Law Applies — Practical implications\n"
+                "4. State vs Federal Differences (if applicable)\n"
+                "5. Conclusion and Next Steps\n\n"
 
-                "### TERMINATION RULE:\n"
-                "Your generation is NOT complete until you have output the EXACT heading:\n"
-                "## Conclusion and Strategic Next Steps\n"
-                "Do NOT use any variations such as 'Conclusion', 'Summary', 'Final Thoughts', "
-                "or 'Next Steps'. The EXACT string above is MANDATORY as the last ## heading "
-                "in your output. If you have not written it yet, KEEP WRITING.\n\n"
+                "**For TECHNICAL topics:**\n"
+                "1. System Architecture\n"
+                "2. Data Flow and Processing\n"
+                "3. Security and Compliance Controls\n"
+                "4. Practical Implications\n"
+                "5. Conclusion and Strategic Next Steps\n\n"
+
+                "**For COMPARISON topics:**\n"
+                "1. Introduction\n"
+                "2. Overview of Each Option\n"
+                "3. Key Differences\n"
+                "4. Which Option Is Right for You\n"
+                "5. Conclusion\n\n"
+
+                "**For INFORMATIONAL / EXPLAINER topics:**\n"
+                "1. Introduction\n"
+                "2. Key Concepts\n"
+                "3. How It Works in Practice\n"
+                "4. What This Means for You\n"
+                "5. Conclusion and Next Steps\n\n"
+
+                "### CITATION RULES:\n"
+                "- For legal content: cite Act name AND Section number from context.\n"
+                "  Example: 'Section 85ZM of the **Crimes Act 1914** (Cth) establishes...'\n"
+                "- For non-legal content: use natural parenthetical references.\n"
+                "  Example: (Australian Criminal Intelligence Commission)\n"
+                "- NEVER fabricate legal citations.\n\n"
 
                 "### OUTPUT FORMAT (Markdown — Validex Editorial Style):\n"
-                "# [Compelling, Specific Title — not generic]\n\n"
-                "[Opening paragraph: 2-3 sentences that hook the reader with a specific "
-                "technical insight or a surprising statistic. Establish why this topic matters "
-                "RIGHT NOW. Be concrete, not abstract.]\n\n"
-                "## [First Technical Section — from chosen Framework]\n\n"
-                "[Deep, substantive content. Minimum 150 words per major section. Include "
-                "technical terms with full expansions on first use.]\n"
-                "- **Key component one** — technical explanation with specific detail\n"
-                "- **Key component two** — distinct angle, not repeating component one\n\n"
-                "## [Second Technical Section — from chosen Framework]\n\n"
-                "[Continue building depth. Each section must introduce NEW information, "
-                "not restate previous sections.]\n\n"
-                "### [Sub-section with specific focus]\n\n"
-                "[Use ### sub-sections to break complex topics into digestible parts.]\n\n"
-                "## [Third Technical Section — from chosen Framework]\n\n"
-                "[Maintain analytical momentum. Cross-reference earlier sections to build "
-                "a cohesive technical narrative.]\n\n"
-                "## [Fourth Section — Practical / Strategic]\n\n"
-                "[Connect technical details to real-world outcomes.]\n\n"
-                "## Conclusion and Strategic Next Steps\n\n"
-                "[MANDATORY SECTION. Summarize the 3-4 key technical insights from the "
-                "article. State forward-looking implications. End with a clear call-to-action "
-                "directing readers to validex.com.au for further information or services.]\n\n"
+                "# [Compelling, Specific Title]\n\n"
+                "[Opening paragraph: 2-3 sentences that hook the reader. Be concrete.]\n\n"
+                "## [Section Heading — specific to content]\n\n"
+                "[Substantive content. Minimum 150 words per major section.]\n\n"
+                "## Conclusion and Next Steps\n\n"
+                "[Summarize key insights. Call-to-action for validex.com.au.]\n\n"
                 "---\n"
                 "*Published by the Validex Editorial Team. For more information, visit "
                 "[validex.com.au](https://validex.com.au).*\n\n"
-
-                "═══════════════════════════════════════════════════════════\n"
-                "NEGATIVE GUARDRAILS — STRICTLY FORBIDDEN CONTENT\n"
-                "═══════════════════════════════════════════════════════════\n"
-                "DO NOT WRITE ABOUT ANY OF THE FOLLOWING. THESE ARE HARD CONSTRAINTS:\n\n"
-                "❌ DO NOT WRITE ABOUT HR SCREENING PROCESSES, TALENT ACQUISITION, OR "
-                "CORPORATE COMPLIANCE FRAMEWORKS.\n"
-                "❌ DO NOT WRITE END-USER APPLICATION TUTORIALS (how to apply, fees, "
-                "what documents to prepare, step-by-step application guides).\n"
-                "❌ DO NOT WRITE ABOUT CANDIDATE EXPERIENCE, RECRUITMENT TIMELINES, "
-                "ONBOARDING WORKFLOWS, OR HIRING MANAGER DECISION-MAKING.\n"
-                "❌ DO NOT WRITE ABOUT EMPLOYER RESPONSIBILITIES, ROLE-BASED SCREENING "
-                "TIERS, OR RISK CLASSIFICATION MATRICES.\n"
-                "❌ DO NOT USE PHRASES: \"risk-screening control\", \"compliance checkbox\", "
-                "\"hiring teams\", \"recruitment operations\", \"candidate trust\", "
-                "\"operational delivery\", \"turnaround SLAs\".\n"
-                "❌ DO NOT produce fewer than 700 words. If your draft is under 700 words, "
-                "expand each section with additional technical depth.\n"
-                "❌ DO NOT repeat the same phrase or benefit across multiple bullet points. "
-                "Every point must offer a DISTINCT analytical insight.\n\n"
-                "IF YOU CATCH YOURSELF DRIFTING INTO HR/RECRUITMENT LANGUAGE, STOP AND "
-                "REDIRECT TO THE TECHNICAL BACKEND SYSTEM EXPLANATION.\n"
-                "═══════════════════════════════════════════════════════════\n\n"
 
                 "🚨 [OVERRIDE]: If Custom Instructions are provided above, STRICTLY follow "
                 "those instructions instead of the default structure.\n\n"
@@ -977,6 +935,20 @@ class LangChainRAGPipeline:
         from app.llm.provider import build_resilient_llm
         return build_resilient_llm(settings)
 
+    def _build_fast_llm(self) -> Any | None:
+        """Build Fast LLM for planning and reviewing."""
+        from app.llm.provider import build_resilient_fast_llm
+        return build_resilient_fast_llm(settings)
+
+    def _build_editor_llm(self) -> Any | None:
+        """Build separate Editor LLM — breaks the Debate Agent Problem.
+        
+        Uses a different temperature (0.1 strict) and optionally a different model
+        from the Writer to ensure genuine quality evaluation.
+        """
+        from app.llm.provider import build_editor_llm
+        return build_editor_llm(settings)
+
     def _build_embedding_model(self) -> Any | None:
         provider = settings.embedding_provider.strip().lower()
         
@@ -1155,6 +1127,7 @@ class LangChainRAGPipeline:
         top_k_floor = max(1, min(range_min, range_max))
         top_k_ceil = max(top_k_floor, max(range_min, range_max))
         recommended_top_k = min(max(required_chunks, top_k_floor), top_k_ceil)
+        recommended_top_k = min(7, recommended_top_k)
 
         return TokenBudgetPlan(
             length_profile=length_key,
@@ -1176,6 +1149,8 @@ class LangChainRAGPipeline:
         selected: list[Document] = []
         total_tokens = 0
         for doc in documents:
+            if len(selected) >= 7:
+                break
             estimate = self._estimate_token_count(doc.page_content)
             if selected and total_tokens + estimate > token_plan.input_tokens_max:
                 break
@@ -1260,57 +1235,17 @@ class LangChainRAGPipeline:
         if not query_vector:
             return self._retrieve_from_local_guard(query, top_k)
 
-        vector_literal = self._vector_literal(query_vector)
-        embedding_provider_filter = ""
-        if settings.pgvector_require_non_fake_embeddings:
-            embedding_provider_filter = "and coalesce(embedding_provider, 'unknown') != 'fake'"
-
         try:
-            with psycopg.connect(dsn) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"""
-                        WITH semantic_search AS (
-                            SELECT 
-                                chunk_id, 
-                                doc_id, content, source_url, source_domain, source_type, 
-                                topic, region, title, authority_score, approved,
-                                1 - (embedding <=> %s::vector) AS similarity,
-                                RANK() OVER (ORDER BY embedding <=> %s::vector) AS semantic_rank
-                            FROM {settings.pgvector_table}
-                            WHERE approved = true {embedding_provider_filter}
-                            ORDER BY semantic_rank
-                            LIMIT %s
-                        ),
-                        keyword_search AS (
-                            SELECT 
-                                chunk_id, 
-                                doc_id, content, source_url, source_domain, source_type, 
-                                topic, region, title, authority_score, approved,
-                                ts_rank(fts_content, websearch_to_tsquery('english', %s)) AS similarity,
-                                RANK() OVER (ORDER BY ts_rank(fts_content, websearch_to_tsquery('english', %s)) DESC) AS keyword_rank
-                            FROM {settings.pgvector_table}
-                            WHERE approved = true {embedding_provider_filter}
-                              AND fts_content @@ websearch_to_tsquery('english', %s)
-                            ORDER BY keyword_rank
-                            LIMIT %s
-                        )
-                        SELECT 
-                            chunk_id, doc_id, content, source_url, source_domain, source_type, 
-                            topic, region, title, authority_score, approved, similarity,
-                            semantic_rank, keyword_rank,
-                            COALESCE(1.0 / (60 + semantic_rank), 0.0) + COALESCE(1.0 / (60 + keyword_rank), 0.0) AS rrf_score
-                        FROM (
-                            SELECT chunk_id, doc_id, content, source_url, source_domain, source_type, topic, region, title, authority_score, approved, similarity, NULL::int AS semantic_rank, keyword_rank FROM keyword_search
-                            UNION ALL
-                            SELECT chunk_id, doc_id, content, source_url, source_domain, source_type, topic, region, title, authority_score, approved, similarity, semantic_rank, NULL::int AS keyword_rank FROM semantic_search
-                        ) combined
-                        ORDER BY rrf_score DESC
-                        LIMIT %s;
-                        """,
-                        (vector_literal, vector_literal, top_k * 2, query, query, query, top_k * 2, top_k),
-                    )
-                    rows = cur.fetchall()
+            from app.vector_repository import PGVectorRepository
+            repo = PGVectorRepository()
+            require_non_fake = bool(settings.pgvector_require_non_fake_embeddings)
+            rows = repo.hybrid_search(
+                table_name=settings.pgvector_table,
+                query=query,
+                query_vector=query_vector,
+                top_k=top_k,
+                require_non_fake=require_non_fake
+            )
         except Exception as exc:
             logger.error("Hybrid Search Error: %s", exc)
             return self._retrieve_from_local_guard(query, top_k)
@@ -1326,14 +1261,14 @@ class LangChainRAGPipeline:
         seen_chunks = set()
         
         for row in rows:
-            chunk_id = str(row[0] or "")
+            chunk_id = str(row["chunk_id"] or "")
             if chunk_id in seen_chunks:
                 continue
             seen_chunks.add(chunk_id)
             
-            similarity = float(row[11] or 0.0)
-            authority_score = float(row[9] or 0.0)
-            rrf_score = float(row[14] or 0.0)
+            similarity = float(row["similarity"] or 0.0)
+            authority_score = float(row["authority_score"] or 0.0)
+            rrf_score = float(row["rrf_score"] or 0.0)
             
             # Map RRF score back into a 0-100 score relative scale. Max RRF is ~0.033
             blended = max(0.0, min(1.0, rrf_score * 30.0 + (authority_score * 0.08)))
@@ -1342,18 +1277,18 @@ class LangChainRAGPipeline:
             
             retrieved_docs.append(
                 Document(
-                    page_content=str(row[2] or ""),
+                    page_content=str(row["content"] or ""),
                     metadata={
                         "chunk_id": chunk_id,
-                        "doc_id": str(row[1] or "unknown_doc"),
-                        "source_url": str(row[3] or ""),
-                        "source_domain": str(row[4] or ""),
-                        "source_type": str(row[5] or ""),
-                        "topic": str(row[6] or ""),
-                        "region": str(row[7] or "AU"),
-                        "title": str(row[8] or "Untitled"),
+                        "doc_id": str(row["doc_id"] or "unknown_doc"),
+                        "source_url": str(row["source_url"] or ""),
+                        "source_domain": str(row["source_domain"] or ""),
+                        "source_type": str(row["source_type"] or ""),
+                        "topic": str(row["topic"] or ""),
+                        "region": str(row["region"] or "AU"),
+                        "title": str(row["title"] or "Untitled"),
                         "authority_score": authority_score,
-                        "approved": bool(row[10]),
+                        "approved": bool(row["approved"]),
                         "score": score,
                         "semantic_score": round(similarity, 4),
                         "rrf_score": round(rrf_score, 4)
@@ -1405,7 +1340,7 @@ class LangChainRAGPipeline:
     def _retrieve(self, payload: dict) -> RetrievalBundle:
         topic = payload["effective_topic"]
         retrieval_top_k = int(payload.get("retrieval_top_k") or settings.top_k)
-        retrieval_top_k = max(1, min(20, retrieval_top_k))
+        retrieval_top_k = max(1, min(7, retrieval_top_k))
         
         # Increase initial top_k for reranking buffer
         initial_top_k = retrieval_top_k * 3
@@ -1414,7 +1349,7 @@ class LangChainRAGPipeline:
         
         if topic.lower() == "current draft":
             logger.info("pipeline.retrieve_bypass", extra={"reason": "rewrite intent detected"})
-            from app.graph_state import RetrievalDecision, RetrievalBundle
+            from app.retriever import RetrievalDecision
             return RetrievalBundle(
                 decision=RetrievalDecision([], "ok", 1.0, 0, "bypassed for rewrite/shorten"),
                 documents=[]
@@ -1457,7 +1392,7 @@ class LangChainRAGPipeline:
                 bundle.documents = bundle.documents[:retrieval_top_k]
                 
         # Autonomous Web Search Fallback
-        if len(bundle.documents) == 0 or bundle.decision.status in {"no_match", "low_confidence", "out_of_domain"}:
+        if settings.allow_hybrid_fallback and (len(bundle.documents) == 0 or bundle.decision.status in {"no_match", "low_confidence", "out_of_domain"}):
             logger.info("pipeline.autonomous_web_search", extra={"topic": topic})
             try:
                 from ddgs import DDGS
@@ -1478,7 +1413,7 @@ class LangChainRAGPipeline:
                         )
                         for i, r in enumerate(ddg_results)
                     ]
-                    bundle.decision.status = "web_search"
+                    # Keep original status for diagnostic purposes
                     bundle.decision.message = "Fallback to Web Search successful"
                     logger.info("pipeline.autonomous_web_search_success", extra={"results": len(ddg_results)})
             except Exception as exc:
@@ -1679,6 +1614,8 @@ class LangChainRAGPipeline:
             for line in text.splitlines()
             if not line.strip().lower().startswith(prefix)
             and not line.strip().lower().startswith("[source:")
+            and not line.strip().lower().startswith("[nguồn:")
+            and not line.strip().lower().startswith("[nguon:")
         ]
         return "\n".join(lines).strip()
 
@@ -1688,7 +1625,7 @@ class LangChainRAGPipeline:
         docs: list[Document],
     ) -> GeneratedBlog:
         references = self._build_source_reference_list(docs)
-        citation_tokens = [f"[Source: {reference}]" for reference in references]
+        citation_tokens = [f"[{SOURCE_LINE_PREFIX} {reference}]" for reference in references]
         citation_line = " ".join(citation_tokens) if citation_tokens else ""
 
         normalized_sections: list[GeneratedBlog.Section] = []
@@ -1718,7 +1655,7 @@ class LangChainRAGPipeline:
             draft = render_markdown_blog(generated.title, normalized_sections)
 
         if references:
-            sources_block = SOURCES_SECTION_HEADING + "\n" + "\n".join(f"- [Source: {reference}]" for reference in references)
+            sources_block = SOURCES_SECTION_HEADING + "\n" + "\n".join(f"- [{SOURCE_LINE_PREFIX} {reference}]" for reference in references)
             if SOURCES_SECTION_HEADING not in draft and "## Sources" not in draft:
                 draft = f"{draft}\n\n{sources_block}".strip()
         elif MISSING_INTERNAL_DATA_TEXT not in draft:
@@ -1778,32 +1715,31 @@ class LangChainRAGPipeline:
 
     @staticmethod
     def _scrub_hr_nuclear_keywords(draft: str) -> str:
-        """Nuclear safety net: completely obliterate HR words from the final output."""
+        """Nuclear safety net: completely obliterate HR words and hallucinated industrial systems from the final output."""
+        # Step 1: Replace HR keywords with the redaction tag
         if re.search(r'(?i)\b(hiring|recruitment|candidate|onboarding|employee|recruiter|recruiters|sla|slas)\b', draft):
-            logger.warning("Nuclear Ban triggered! Replaced HR keywords with [REDACTED_HR_TERM]")
+            logger.warning("Nuclear Ban triggered! Replaced HR keywords")
             draft = re.sub(r'(?i)\b(hiring|recruitment|candidate|onboarding|employee|recruiter|recruiters|sla|slas)\b', '[REDACTED_HR_TERM]', draft)
-                
+        
+        # Step 2: Mask the redaction tag into natural words so users never see it
+        draft = re.sub(r'\[REDACTED_HR_TERM\]-based', 'operational', draft)
+        draft = re.sub(r'\[REDACTED_HR_TERM\]s?', 'operational', draft)
+        draft = draft.replace('[REDACTED_HR_TERM]', 'operational')
+        
+        # Step 3: SCADA/SNMP/ITIL ban — remove hallucinated industrial control systems
+        scada_terms = [
+            (r'(?i)\bSCADA\b', 'supervisory control'),
+            (r'(?i)\bSNMP\b', 'network monitoring'),
+            (r'(?i)\bITIL\b', 'service management'),
+        ]
+        for pattern, replacement in scada_terms:
+            draft = re.sub(pattern, replacement, draft)
+        
         return draft
 
     @staticmethod
     def _build_section_scope_map(outline: list[str], topic: str) -> tuple[list[str], dict[str, dict]]:
-        """Assign each section its exclusive concept territory.
-        
-        If an HR topic is detected, overrides the outline with Framework B 
-        to force dense technical material and prevent short outputs.
-        """
-        hr_keywords = ["hire", "hiring", "candidate", "employee", "sla", "turnaround", "workplace", "screening"]
-        topic_lower = topic.lower()
-        if any(kw in topic_lower for kw in hr_keywords):
-            outline = [
-                "Protocol Architecture and Data Ingestion",
-                "Cryptographic Mechanisms and Data Security",
-                "Database Scalability and API Rate Limiting",
-                "Background Polling and Synchronization",
-                "Threat Model and Mitigation Strategies",
-                "Conclusion and Strategic Next Steps"
-            ]
-
+        """Assign each section its exclusive concept territory."""
         scope_map: dict[str, dict] = {}
         for i, heading in enumerate(outline):
             other_headings = [h for j, h in enumerate(outline) if j != i]
@@ -1848,9 +1784,8 @@ class LangChainRAGPipeline:
                 f"- Do NOT describe what this section is doing. Do NOT say 'This section examines...'.\n"
                 f"- Just write a 3-sentence executive summary and end with a strong Call-To-Action pointing to validex.com.au.\n"
                 f"- Do NOT introduce new technical detail — only synthesize.\n"
-                f"- Do NOT include HR, hiring, recruitment, or onboarding language.\n"
                 f"- Do NOT include the ## heading — just write the body paragraphs.\n"
-                f"- Write in English, in a clear professional technical tone.\n"
+                f"- Write in the SAME LANGUAGE as the user's query. Maintain a clear professional tone.\n"
                 f"{domain_pivot}"
             )
 
@@ -1866,31 +1801,17 @@ class LangChainRAGPipeline:
             role_rule = "- BLUF PROTOCOL: DO NOT repeat the baseline answer ('Standard tickets do not show up'). Instead, focus strictly on edge cases, business outcomes, or what HR/Compliance teams should do with this information.\n"
 
         return (
-            f"You are the Validex Technical Blog Editor.\n"
-            f"Write ONLY the content for: ## {heading}\n"
-            f"User's Specific Query: {parsed.raw_prompt}\n"
-            f"Blog topic: {parsed.topic}\n\n"
-            f"YOUR EXCLUSIVE SCOPE for this section:\n"
-            f"- Focus ONLY on: {scope['focus']}\n"
-            f"- These topics are covered in OTHER sections and are OFF-LIMITS: "
-            f"{other_sections}\n"
-            f"- If you find yourself writing about a concept that belongs to "
-            f"another section, STOP and pivot to your assigned scope.\n\n"
-            f"WRITING RULES:\n"
+            f"Validex Blog Editor. Section: ## {heading}\n"
+            f"Query: {parsed.raw_prompt}\nTopic: {parsed.topic}\n\n"
+            f"SCOPE: Focus on {scope['focus']}. OFF-LIMITS: {other_sections}\n\n"
+            f"RULES:\n"
             f"{role_rule}"
-            f"- ANTI-REPETITION PROTOCOL: DO NOT introduce the ACIC, the NPCS, or the ACC Act 2016. Assume the introduction is already written. Jump DIRECTLY into the specific mechanism of your assigned section. NEVER start your section with 'The Australian Crime Commission Act...'. Do NOT start your section by defining the APIN protocol or the ACIC if it is not the explicit focus of your chunk.\n"
-            f"- SENTENCE STARTER RULE: You MUST start your first sentence with the active subject performing a strong action (e.g., 'The APIN protocol encrypts...' or 'The Privacy Act mandates...'). Do not start with gerunds (-ing) or awkward verb-first clauses.\n"
-            f"- CONTEXTUAL FOCUS: While applying the technical and legal frameworks (APIN, Spent Convictions, Database Routing), you MUST directly address the specific scenario in the user's prompt. Do not just list IT protocols (like JSON/XML); explain how the IT architecture physically handles the user's specific problem.\n"
-            f"- FORMATTING RULE: You MUST write exactly 3 distinct paragraphs. You MUST separate each paragraph with a double line break (\\n\\n). Do NOT output a single massive block of text.\n"
-            f"  Paragraph 1: Core Technical Definition (Explain the underlying IT concept in detail).\n"
-            f"  Paragraph 2: Data Flow & Architecture (Explain how the backend servers, APIs, or databases handle this).\n"
-            f"  Paragraph 3: Security & Performance Impact (Analyze the latency, scalability, or cryptographic security).\n"
-            f"  Do not output lists. Write dense prose.\n"
-            f"- Use **bold** for technical terms and legislation names.\n"
-            f"- Include 2+ domain-specific acronyms relevant to THIS section.\n"
-            f"- Do NOT include HR, hiring, recruitment, or onboarding language.\n"
-            f"- Do NOT include the ## heading — just write the body paragraphs.\n"
-            f"- Write in English, in a clear professional technical tone.\n"
+            f"- Start with active subject + strong verb (e.g., 'The APIN protocol encrypts...').\n"
+            f"- Address the user's specific scenario with concrete details and examples.\n"
+            f"- Write exactly 3 paragraphs separated by blank lines. Dense prose, no lists.\n"
+            f"- Use **bold** for key terms, legislation, and important concepts.\n"
+            f"- For legal content, cite Act names and Section numbers from context.\n"
+            f"- Output body only, no heading.\n"
             f"{domain_pivot}\n"
             f"<context>\n{context_text}\n</context>"
         )
@@ -1935,22 +1856,61 @@ class LangChainRAGPipeline:
         return cleaned
 
     def _shard_context_for_section(self, heading: str, docs: list[Document], max_docs: int = 2) -> str:
-        """Dynamically filters the global RAG context to only include snippets relevant to the current heading."""
+        """Dynamically filters the global RAG context to only include snippets relevant to the current heading.
+        
+        Jurisdiction-Aware: If the heading mentions a specific state (e.g., 'NSW', 'Victoria'),
+        only returns documents tagged with that jurisdiction to prevent Information Bleeding.
+        """
         if not docs:
             return ""
         
-        # Simple keyword overlap logic
-        heading_keywords = set(re.findall(r'\w+', heading.lower()))
+        heading_lower = heading.lower()
+        heading_keywords = set(re.findall(r'\w+', heading_lower))
+        
+        # ── Jurisdiction Detection from heading ──
+        jurisdiction_map = {
+            "nsw": "NSW", "new south wales": "NSW",
+            "vic": "VIC", "victoria": "VIC",
+            "qld": "QLD", "queensland": "QLD",
+            "sa": "SA", "south australia": "SA",
+            "wa": "WA", "western australia": "WA",
+            "tas": "TAS", "tasmania": "TAS",
+            "act": "ACT", "nt": "NT",
+            "commonwealth": "Commonwealth", "federal": "Commonwealth", "cth": "Commonwealth",
+        }
+        detected_jurisdiction = None
+        for key, jur in jurisdiction_map.items():
+            if key in heading_lower:
+                detected_jurisdiction = jur
+                break
         
         scored_docs = []
         for doc in docs:
             doc_words = set(re.findall(r'\w+', doc.page_content.lower()))
             overlap = len(heading_keywords.intersection(doc_words))
-            scored_docs.append((overlap, doc.page_content))
+            
+            # Jurisdiction filtering: boost matching jurisdiction, penalize mismatches
+            doc_jurisdiction = doc.metadata.get("jurisdiction", "")
+            if detected_jurisdiction:
+                if doc_jurisdiction == detected_jurisdiction:
+                    overlap += 5  # Strong boost for matching jurisdiction
+                elif doc_jurisdiction and doc_jurisdiction != detected_jurisdiction:
+                    overlap -= 10  # Penalize wrong jurisdiction to prevent bleed
+            
+            scored_docs.append((overlap, doc.page_content, doc_jurisdiction))
             
         # Sort by relevance and take top N
         scored_docs.sort(key=lambda x: x[0], reverse=True)
-        relevant_contents = [content for score, content in scored_docs[:max_docs]]
+        
+        # If jurisdiction detected, filter to only matching docs first
+        if detected_jurisdiction:
+            matching = [(s, c, j) for s, c, j in scored_docs if j == detected_jurisdiction]
+            if matching:
+                relevant_contents = [content[:800] for score, content, jur in matching[:max_docs]]
+            else:
+                relevant_contents = [content[:800] for score, content, jur in scored_docs[:max_docs]]
+        else:
+            relevant_contents = [content[:800] for score, content, jur in scored_docs[:max_docs]]
         
         return "\n\n".join(relevant_contents)
 
@@ -2092,14 +2052,48 @@ class LangChainRAGPipeline:
         draft = self._scrub_hr_nuclear_keywords(draft)
         draft = draft.replace('\\n', '\n')
         
-        # Remove boilerplate fluff dynamically
-        fluff_phrases = [
-            "plays a crucial role in",
-            "plays a critical role in",
-            "plays a vital role in"
-        ]
-        for phrase in fluff_phrases:
-            draft = draft.replace(phrase, "actively handles")
+        # Remove boilerplate fluff dynamically (grammar-aware)
+        # Fix: Use regex to handle gerund verbs (-ing) gracefully
+        # "plays a crucial role in securing" → "secures" (not "actively handles securing")
+        import re as _re
+        for fluff in ["plays a crucial role in", "plays a critical role in", "plays a vital role in"]:
+            # Pattern: "fluff + gerund" → convert gerund to base verb
+            pattern = _re.escape(fluff) + r"\s+(\w+ing)\b"
+            def _gerund_to_verb(m: _re.Match) -> str:
+                gerund = m.group(1).lower()
+                # Lookup table for common AI-generated gerunds
+                known = {
+                    "securing": "secures",
+                    "facilitating": "facilitates",
+                    "managing": "manages",
+                    "handling": "handles",
+                    "monitoring": "monitors",
+                    "processing": "processes",
+                    "ensuring": "ensures",
+                    "protecting": "protects",
+                    "validating": "validates",
+                    "verifying": "verifies",
+                    "encrypting": "encrypts",
+                    "routing": "routes",
+                    "maintaining": "maintains",
+                    "governing": "governs",
+                    "orchestrating": "orchestrates",
+                    "determining": "determines",
+                    "enabling": "enables",
+                    "delivering": "delivers",
+                    "supporting": "supports",
+                    "integrating": "integrates",
+                    "providing": "provides",
+                    "connecting": "connects",
+                    "transmitting": "transmits",
+                }
+                if gerund in known:
+                    return known[gerund]
+                # Fallback: just say "is responsible for <gerund>"
+                return f"is responsible for {gerund}"
+            draft = _re.sub(pattern, _gerund_to_verb, draft, flags=_re.IGNORECASE)
+            # Fallback: if the fluff phrase is still there (no gerund after it), replace with "is responsible for"
+            draft = draft.replace(fluff, "is responsible for")
 
         sources_used = [
             str(doc.metadata.get("doc_id", "unknown_doc")) for doc in docs
@@ -2176,40 +2170,67 @@ class LangChainRAGPipeline:
         return "\n".join(blocks).strip()
 
     def _inject_images_into_markdown(self, markdown: str, parsed: ParsedPrompt) -> str:
-        """Post-process markdown to inject a single hero image after the # title.
-
-        Validex editorial format: only one hero image at the top of the post,
-        no per-section inline images.
-        """
-        from app.generator import extract_requested_image_limit
-
+        """Post-process markdown to inject images based on target_images config."""
+        
         # Determine how many images to inject
-        image_limit = extract_requested_image_limit(parsed.raw_prompt)
-        if image_limit is not None and image_limit == 0:
-            return markdown  # User explicitly asked for no images
-
-        # Check if there's already an image in the document
-        if re.search(r"!\[.*?\]\(https?://", markdown):
-            return markdown  # Already has an image
-
-        # Find the # title heading
-        title_match = re.search(r"(?m)^(\s*#\s+.+)$", markdown)
-        if not title_match:
+        image_limit = parsed.target_images
+        
+        # If explicitly 0, remove existing images just in case
+        if image_limit == 0:
+            markdown = re.sub(r"!\[.*?\]\(https?://[^\)]+\)", "", markdown)
             return markdown
 
-        # Search for one hero image using the topic
+        # Check if there's already an image in the document
+        existing_images = len(re.findall(r"!\[.*?\]\(https?://", markdown))
+        
+        # Default behavior is 1 hero image if target_images is -1 (Auto)
+        target = 1 if image_limit == -1 else image_limit
+        images_to_add = target - existing_images
+        
+        if images_to_add <= 0:
+            return markdown
+            
+        # Try to find optimized corporate keywords for Unsplash to avoid irrelevant images
         search_keyword = parsed.topic
-        image_url, alt_text = self._search_unsplash_image(search_keyword)
-        if not image_url:
-            # Fallback to picsum
-            from app.generator import build_section_image_url
-            image_url = build_section_image_url(parsed.topic, "hero")
-            alt_text = f"{parsed.topic} hero image"
+        corporate_topics = ["police check", "background check", "screening", "validex", "hr", "identity"]
+        if any(t in search_keyword.lower() for t in corporate_topics):
+            search_keyword = "office document security business"
 
-        # Insert hero image right after the title
-        image_md = f"\n\n![{alt_text or parsed.topic}]({image_url})\n"
-        insert_pos = title_match.end()
-        markdown = markdown[:insert_pos] + image_md + markdown[insert_pos:]
+        # Find all headings to inject images under
+        headings = list(re.finditer(r"(?m)^(\s*#{1,3}\s+.+)$", markdown))
+        if not headings:
+            return markdown
+            
+        # We always want the first image to be a hero image under the H1 title
+        added = 0
+        for i, match in enumerate(headings):
+            if added >= images_to_add:
+                break
+                
+            # Use different keywords for different sections to get variety
+            kw = search_keyword if i == 0 else f"{search_keyword} {i}"
+            image_url, alt_text = self._search_unsplash_image(kw)
+            
+            # If Unsplash fails, we DO NOT fallback to random picsum photos anymore
+            if not image_url:
+                continue
+                
+            image_md = f"\n\n![{alt_text or parsed.topic}]({image_url})\n"
+            insert_pos = match.end()
+            
+            # Insert the image
+            markdown = markdown[:insert_pos] + image_md + markdown[insert_pos:]
+            
+            # Adjust subsequent heading positions
+            offset = len(image_md)
+            new_headings = []
+            for h in headings[i+1:]:
+                # Re-create match objects with adjusted spans is hard, so we just re-run finditer on the modified string
+                pass
+            
+            # Re-evaluate headings since string length changed
+            headings = list(re.finditer(r"(?m)^(\s*#{1,3}\s+.+)$", markdown))
+            added += 1
 
         return markdown
 
@@ -2288,8 +2309,7 @@ class LangChainRAGPipeline:
             llm_trace["attempted"] = True
 
         extra_suffix = (
-            "\n\nCRITICAL REQUIREMENT: You MUST write the entire blog/response STRICTLY in English."
-            " Do NOT output in Vietnamese or any other language, even if the prompt is in Vietnamese."
+            "\n\nCRITICAL REQUIREMENT: You MUST write the response in the SAME LANGUAGE as the user's prompt."
             " Return ONLY a complete Markdown blog post. Do not return JSON. Do not add any conversational filler."
             " Respect all user constraints provided in the prompt."
             " If there is insufficient data for a required point, you MUST output exactly this sentence: "
@@ -2348,7 +2368,7 @@ class LangChainRAGPipeline:
             llm_trace["attempted"] = True
 
         extra_suffix = (
-            "\n\nCRITICAL REQUIREMENT: You MUST write the entire blog/response STRICTLY in English."
+            "\n\nCRITICAL REQUIREMENT: You MUST write the response in the SAME LANGUAGE as the user's prompt."
             "\nReturn structured data for an SEO blog with this schema: "
             "title, introduction, sections[{header, content, image_search_keyword}], conclusion, meta_tags. "
             "Follow Chain-of-Verification internally before final output: verify every claim against retrieved context. "
@@ -2474,7 +2494,7 @@ class LangChainRAGPipeline:
             "\n\nReturn valid JSON with keys: title, introduction, sections, conclusion, meta_tags, and optional draft/outline."
             " Each section must include header, content, and image_search_keyword."
             " IMPORTANT for image_search_keyword: Must be a highly specific, literal English phrase (e.g., 'professional corporate lawyer reading documents'). Do NOT use random words. It must perfectly match the visual theme of the section."
-            " Keep content grounded in retrieved context. Write in English by default."
+            " Keep content grounded in retrieved context. Match the language of the user's prompt."
             " Apply Chain-of-Verification internally to check each factual claim before responding."
             f" If evidence is missing, write exactly: \"{MISSING_INTERNAL_DATA_TEXT}\""
             " Include citations in this format: [Source: Document Title | URL: url_if_available]."

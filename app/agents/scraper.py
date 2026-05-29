@@ -46,10 +46,34 @@ def scrape_url(url: str, timeout: int = 8, max_chars: int = 5000) -> str | None:
     Returns None if scraping fails or URL is blocked.
     """
     from urllib.parse import urlparse
+    import socket
+    import ipaddress
     
-    domain = urlparse(url).netloc.lower().lstrip("www.")
-    if domain in BLOCKED_DOMAINS:
-        logger.debug(f"Scraper: blocked domain {domain}")
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return None
+            
+        domain = parsed.netloc.lower().lstrip("www.")
+        if domain in BLOCKED_DOMAINS:
+            logger.debug(f"Scraper: blocked domain {domain}")
+            return None
+            
+        # SSRF Protection: check if the resolved IP is private/loopback/link-local
+        if hostname.lower() in ("localhost", "loopback"):
+            logger.warning(f"Scraper: blocked loopback hostname {hostname}")
+            return None
+            
+        addr_info = socket.getaddrinfo(hostname, None)
+        for item in addr_info:
+            ip_str = item[4][0]
+            ip_obj = ipaddress.ip_address(ip_str)
+            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+                logger.warning(f"Scraper: blocked private/local IP {ip_str} for {hostname}")
+                return None
+    except Exception as exc:
+        logger.debug(f"Scraper: failed SSRF safety check for {url}: {exc}")
         return None
 
     try:

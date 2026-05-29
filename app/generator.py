@@ -23,8 +23,8 @@ class GeneratedBlog:
 
 
 def build_section_image_url(topic: str, heading: str) -> str:
-    seed = quote_plus(f"{topic} {heading} editorial")
-    return f"https://picsum.photos/seed/{seed}/1600/900"
+    seed = quote_plus(f"{topic}-{heading}")
+    return f"https://picsum.photos/seed/{seed}/800/450"
 
 
 def _clean_text(text: str, max_chars: int = 180) -> str:
@@ -664,74 +664,211 @@ def format_title(topic: str) -> str:
     return " ".join(titled)
 
 
-def _build_topic_aware_outline(parsed: ParsedPrompt) -> list[str]:
-    """Build an outline that reflects the user's actual topic using dynamic frameworks.
-
-    Framework A: Compliance / Background Check / Identity Verification topics
-    Framework B: General Technology / Cybersecurity / Digital Infrastructure topics
+def _detect_prompt_language(text: str) -> str:
+    """Detect the primary language of the user's prompt.
+    
+    Returns: 'vi' for Vietnamese, 'en' for English, 'zh' for Chinese, 'ko' for Korean, 'ja' for Japanese.
     """
-    topic = re.sub(r"\s+", " ", parsed.topic).strip()
-    topic_title = format_title(topic)
-
-    # Shorten topic for headings — max 8 words
-    topic_words = topic_title.split()
-    short_topic = " ".join(topic_words[:8]) if len(topic_words) > 8 else topic_title
-
-    topic_lower = topic.lower()
-
-    # Strip question prefixes for cleaner headings
-    # e.g., "How Is My Police Check Result Determined" → "Police Check Result Determination"
-    question_prefixes = [
-        "how is ", "how are ", "how does ", "how do ", "how can ", "how to ",
-        "what is ", "what are ", "what does ", "what do ",
-        "why is ", "why are ", "why does ", "why do ",
-        "when is ", "when are ", "when does ", "when do ",
-        "does ", "do ", "can ", "is ", "are ",
+    text_lower = text.lower()
+    
+    # Vietnamese detection — diacritics and common Vietnamese words
+    vi_markers = [
+        "ư", "ơ", "ă", "đ", "ê", "ô", "â",  # Vietnamese-specific chars
+        "của", "là", "và", "các", "cho", "với", "được", "không",
+        "thế nào", "tại sao", "bao lâu", "hướng dẫn", "cách",
+        "làm sao", "như thế", "gì", "bao nhiêu",
     ]
-    heading_topic = short_topic
-    for prefix in question_prefixes:
-        if heading_topic.lower().startswith(prefix):
-            heading_topic = heading_topic[len(prefix):].strip()
-            heading_topic = format_title(heading_topic)
-            break
+    vi_count = sum(1 for marker in vi_markers if marker in text_lower)
+    if vi_count >= 2:
+        return "vi"
+    
+    # Chinese detection
+    if re.search(r'[\u4e00-\u9fff]{2,}', text):
+        return "zh"
+    # Korean detection
+    if re.search(r'[\uac00-\ud7af]{2,}', text):
+        return "ko"
+    # Japanese detection  
+    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]{2,}', text):
+        return "ja"
+    
+    return "en"
 
-    # Detect if this is a compliance/background-check topic (Framework A)
-    compliance_keywords = [
-        "police check", "background check", "criminal record", "identity verification",
-        "spent conviction", "acic", "npc", "compliance", "vetting", "screening",
-        "criminal history", "disclosure", "working with children", "wwcc",
-    ]
-    is_compliance = any(kw in topic_lower for kw in compliance_keywords)
 
-    if is_compliance:
-        # Framework A — Compliance / Background Check
-        outline = [
-            f"System Architecture Behind {heading_topic}",
-            f"How {heading_topic} Results Are Determined",
+# ── Language-aware heading templates ──────────────────────────
+_OUTLINE_TEMPLATES = {
+    "en": {
+        "howto": [
+            "Introduction",
+            "What You Need to Know Before Starting",
+            "Step 1: Understand the Requirements for {topic}",
+            "Step 2: Gather Your Documents and Information",
+            "Step 3: Submit Your Application",
+            "Step 4: What Happens Next — Processing and Results",
+            "Tips for a Smooth Experience",
+            "Conclusion and Next Steps",
+        ],
+        "comparison": [
+            "Introduction",
+            "Overview of {topic}",
+            "Key Differences at a Glance",
+            "Detailed Comparison: Features and Requirements",
+            "Which Option Is Right for You",
+            "Conclusion and Recommendations",
+        ],
+        "technical": [
+            "System Architecture Overview",
+            "Core Technical Components",
             "Data Flow and Processing Pipeline",
-            "Legislative and Regulatory Framework",
+            "Security and Compliance Framework",
             "Practical Implications and Outcomes",
             "Conclusion and Strategic Next Steps",
-        ]
-    else:
-        # Framework B — General Technology / Cybersecurity
-        outline = [
-            f"Protocol Architecture and Standards Governing {heading_topic}",
-            f"Core Mechanisms and Algorithms",
-            "Implementation Landscape and Real-World Deployments",
-            "Threat Model Analysis and Security Considerations",
-            "Strategic Impact and Future Trajectory",
-            "Conclusion and Strategic Next Steps",
-        ]
+        ],
+        "informational": [
+            "Introduction",
+            "Understanding {topic}",
+            "Key Factors and Considerations",
+            "How {topic} Works in Practice",
+            "What This Means for You",
+            "Conclusion and Next Steps",
+        ],
+        "extras": [
+            "Common Questions and Expert Insights",
+            "Industry Best Practices and Standards",
+            "Case Studies and Real-World Examples",
+            "Resources and Further Reading",
+        ],
+    },
+    "vi": {
+        "howto": [
+            "Giới thiệu",
+            "Những điều cần biết trước khi bắt đầu",
+            "Bước 1: Tìm hiểu yêu cầu về {topic}",
+            "Bước 2: Chuẩn bị giấy tờ và thông tin",
+            "Bước 3: Nộp hồ sơ",
+            "Bước 4: Quy trình xử lý và nhận kết quả",
+            "Mẹo để quá trình diễn ra suôn sẻ",
+            "Kết luận và bước tiếp theo",
+        ],
+        "comparison": [
+            "Giới thiệu",
+            "Tổng quan về {topic}",
+            "Điểm khác biệt chính",
+            "So sánh chi tiết: Đặc điểm và yêu cầu",
+            "Lựa chọn nào phù hợp với bạn",
+            "Kết luận và khuyến nghị",
+        ],
+        "technical": [
+            "Tổng quan kiến trúc hệ thống",
+            "Các thành phần kỹ thuật cốt lõi",
+            "Luồng dữ liệu và quy trình xử lý",
+            "Khung bảo mật và tuân thủ",
+            "Ý nghĩa thực tiễn và kết quả",
+            "Kết luận và bước tiếp theo",
+        ],
+        "informational": [
+            "Giới thiệu",
+            "Tìm hiểu về {topic}",
+            "Các yếu tố và lưu ý quan trọng",
+            "{topic} hoạt động như thế nào trong thực tế",
+            "Điều này có ý nghĩa gì với bạn",
+            "Kết luận và bước tiếp theo",
+        ],
+        "extras": [
+            "Câu hỏi thường gặp và ý kiến chuyên gia",
+            "Các tiêu chuẩn và thực hành tốt nhất",
+            "Ví dụ thực tế",
+            "Tài liệu tham khảo",
+        ],
+    },
+}
 
-    if parsed.length == "long":
-        # Insert an extra depth section before the conclusion
-        outline.insert(-1, "Common Questions and Expert Insights")
+
+def _build_topic_aware_outline(parsed: ParsedPrompt) -> list[str]:
+    """Build an outline that reflects the user's actual INTENT and LANGUAGE.
+
+    Framework selection:
+      A) How-to / Guide / Step-by-step  → practical steps outline
+      B) Informational / Explainer       → concept-first outline
+      C) Comparison / Versus             → side-by-side outline
+      D) Technical / Architecture        → system/tech outline (ONLY when user explicitly asks)
+      E) General fallback                → balanced editorial outline
+    
+    Language-aware: Headings match the language of the user's prompt.
+    """
+    topic = re.sub(r"\s+", " ", parsed.topic).strip()
+    
+    # Detect language from the raw prompt (the actual user input)
+    lang = _detect_prompt_language(parsed.raw_prompt)
+    templates = _OUTLINE_TEMPLATES.get(lang, _OUTLINE_TEMPLATES["en"])
+    
+    # Shorten topic for headings — max 8 words
+    topic_words = topic.split()
+    short_topic = " ".join(topic_words[:8]) if len(topic_words) > 8 else topic
+
+    prompt_lower = re.sub(r"\s+", " ", parsed.raw_prompt).strip().lower()
+
+    # ── Intent Detection from prompt ──────────────────────────────
+
+    # A) How-to / Guide / Step-by-step
+    howto_signals = [
+        "step-by-step", "step by step", "how to", "how do i", "how can i",
+        "guide", "walkthrough", "checklist", "tutorial", "instructions",
+        "apply for", "applying for", "get a ", "getting a ",
+        "huong dan", "hướng dẫn", "cach ", "cách ",
+        "tung buoc", "từng bước", "làm sao", "làm thế nào",
+    ]
+    is_howto = any(signal in prompt_lower for signal in howto_signals)
+
+    # B) Comparison / Versus
+    comparison_signals = [
+        " vs ", " versus ", "compare", "comparison", "difference between",
+        "so sanh", "so sánh", "khac nhau", "khác nhau", "sự khác biệt",
+    ]
+    is_comparison = any(signal in prompt_lower for signal in comparison_signals)
+
+    # C) Technical / Architecture (ONLY when user explicitly asks about tech)
+    tech_signals = [
+        "architecture", "backend", "api", "system design", "infrastructure",
+        "database", "microservice", "protocol", "algorithm", "data flow",
+        "kien truc", "kiến trúc", "hệ thống", "bảo mật", "mã hóa",
+    ]
+    is_technical = any(signal in prompt_lower for signal in tech_signals)
+
+    # ── Build Outline Based on Detected Intent ───────────────────
+
+    if is_howto and not is_technical:
+        template_key = "howto"
+    elif is_comparison:
+        template_key = "comparison"
+    elif is_technical:
+        template_key = "technical"
+    else:
+        template_key = "informational"
+    
+    outline = [h.format(topic=short_topic) for h in templates[template_key]]
+
+    # ── Adjust outline length if target_sections is specified ────
+    if hasattr(parsed, "target_sections") and parsed.target_sections > 0:
+        target = max(2, parsed.target_sections)
+
+        if target < len(outline):
+            outline = outline[:target - 1] + [outline[-1]]
+        elif target > len(outline):
+            extras = list(templates["extras"])
+            while len(outline) < target and extras:
+                outline.insert(-1, extras.pop(0))
+            while len(outline) < target:
+                outline.insert(-1, f"Analysis: Aspect {len(outline)}")
+
+    elif parsed.length == "long":
+        outline.insert(-1, templates["extras"][0])
 
     return outline
 
 
 def generate_outline(parsed: ParsedPrompt) -> list[str]:
+    # Police check topics have a specialized step-by-step outline
     if _is_police_check_topic(parsed.topic):
         if _prefers_step_structure(parsed):
             if parsed.length == "short":
@@ -758,10 +895,29 @@ def generate_outline(parsed: ParsedPrompt) -> list[str]:
             if parsed.length == "long":
                 outline.insert(2, "What to Expect")
             return outline
+        else:
+            if parsed.length == "short":
+                return [
+                    "Introduction",
+                    "Understanding the National Police Check",
+                    "Risk, Compliance, and Candidate Experience",
+                    "Operational Priorities for Employers",
+                ]
 
-        # Build a topic-aware outline from the user's actual question
-        return _build_topic_aware_outline(parsed)
+            outline = [
+                "Introduction",
+                "Understanding the National Police Check",
+                "Role-Based Screening and Risk Governance",
+                "Operational Delivery and Candidate Experience",
+                "Employer Responsibilities and Compliance Controls",
+                "Conclusion and Next Actions",
+            ]
 
+            if parsed.length == "long":
+                outline.insert(4, "Building a Scalable Verification Program")
+            return outline
+
+    # All other topics — use the dynamic intent-aware outline builder
     return _build_topic_aware_outline(parsed)
 
 
@@ -820,16 +976,16 @@ def generate_blog_output(
         sections.extend(
             [
                 GeneratedBlog.Section(
-                    heading="Implementation Checklist",
+                    heading="Practical Checklist",
                     body=(
-                        f"Execution checklist for {parsed.audience}:\n"
-                        "1) Define screening scope and policy boundaries.\n"
-                        "2) Standardize required documents and consent steps.\n"
-                        "3) Communicate timelines to candidates and hiring managers.\n"
-                        "4) Track onboarding and compliance KPIs continuously."
+                        f"Action checklist for {parsed.audience}:\n"
+                        "1) Identify the specific requirements for your situation.\n"
+                        "2) Gather all necessary documents and information.\n"
+                        "3) Follow the correct process for your state or territory.\n"
+                        "4) Keep records of your application and any reference numbers."
                     ),
-                    image_url=build_section_image_url(parsed.topic, "implementation checklist"),
-                    image_alt="Implementation checklist",
+                    image_url=build_section_image_url(parsed.topic, "practical checklist"),
+                    image_alt="Practical checklist",
                 )
             ]
         )

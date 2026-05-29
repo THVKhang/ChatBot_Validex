@@ -166,88 +166,192 @@ class ResilientLLM:
             raise
 
 
-def build_resilient_llm(settings: Any) -> ResilientLLM | None:
-    """Factory function that builds a ResilientLLM from app settings.
+# ── Helper to build OpenAI + Gemini pair ──────────────────────────────
+def _build_openai_gemini_pair(
+    settings: Any,
+    openai_model: str,
+    google_model: str,
+    temperature: float,
+    max_tokens: int,
+) -> tuple[Any, str, Any, str]:
+    """Build primary (OpenAI/Groq) + fallback (Gemini) LLM pair.
+    Returns (primary_llm, primary_name, fallback_llm, fallback_name).
+    """
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError:
+        ChatOpenAI = None
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+    except ImportError:
+        ChatGoogleGenerativeAI = None
 
-    Initializes both primary (Groq/OpenAI) and fallback (Gemini) models,
-    then wraps them in the resilience layer.
+    openai_llm = None
+    openai_name = "unknown"
+    google_llm = None
+    google_name = "unknown"
+
+    if settings.openai_api_key and ChatOpenAI is not None:
+        try:
+            kwargs = {
+                "model": openai_model,
+                "api_key": settings.openai_api_key,
+                "temperature": temperature,
+                "max_retries": 0,
+                "timeout": 30.0,
+                "max_tokens": max_tokens,
+            }
+            if hasattr(settings, "openai_base_url") and settings.openai_base_url:
+                kwargs["base_url"] = settings.openai_base_url
+            openai_llm = ChatOpenAI(**kwargs)
+            openai_name = openai_model
+        except Exception as exc:
+            logger.warning("Failed to init OpenAI %s: %s", openai_model, exc)
+
+    if settings.google_api_key and ChatGoogleGenerativeAI is not None:
+        try:
+            gmodel = google_model if google_model.startswith("models/") else f"models/{google_model}"
+            google_llm = ChatGoogleGenerativeAI(
+                model=gmodel,
+                google_api_key=settings.google_api_key,
+                temperature=temperature,
+                max_retries=1,
+                timeout=45.0,
+                max_output_tokens=max_tokens,
+            )
+            google_name = gmodel
+        except Exception as exc:
+            logger.warning("Failed to init Google %s: %s", google_model, exc)
+
+    # Swap primary and fallback if Google provider is selected
+    provider = getattr(settings, "llm_provider", "auto").lower()
+    if provider == "google":
+        primary_llm, primary_name = google_llm, google_name
+        fallback_llm, fallback_name = openai_llm, openai_name
+    else:
+        primary_llm, primary_name = openai_llm, openai_name
+        fallback_llm, fallback_name = google_llm, google_name
+
+    return primary_llm, primary_name, fallback_llm, fallback_name
+
+
+def build_resilient_llm(settings: Any) -> ResilientLLM | None:
+    """Factory: builds the MAIN ResilientLLM (used by Writer for creative generation).
+
+    Temperature is set to writer_temperature (default 0.7 for creative prose).
     """
     if not settings.use_live_llm:
         return None
 
-    try:
-        from langchain_openai import ChatOpenAI
-    except ImportError:
-        ChatOpenAI = None  # type: ignore[misc, assignment]
-
-    try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-    except ImportError:
-        ChatGoogleGenerativeAI = None  # type: ignore[misc, assignment]
-
-    primary_llm = None
-    fallback_llm = None
-    primary_name = settings.model_name or "unknown"
-    fallback_name = "unknown"
-
-    # 1. Initialize Primary (Groq/OpenAI)
-    if settings.openai_api_key and ChatOpenAI is not None:
-        try:
-            openai_kwargs = {
-                "model": settings.model_name,
-                "api_key": settings.openai_api_key,
-                "temperature": 0.2,
-                "max_retries": 0,  # We handle retries ourselves
-                "timeout": 30.0,
-            }
-            if hasattr(settings, "openai_base_url") and settings.openai_base_url:
-                openai_kwargs["base_url"] = settings.openai_base_url
-                
-            primary_llm = ChatOpenAI(**openai_kwargs)
-            primary_name = settings.model_name
-            logger.info("Primary LLM initialized: %s", primary_name)
-        except Exception as exc:
-            logger.warning("Failed to initialize primary LLM: %s", exc)
-
-    # 2. Initialize Fallback (Google Gemini)
-    if settings.google_api_key and ChatGoogleGenerativeAI is not None:
-        try:
-            preferred_model = settings.google_model_name or "models/gemini-2.5-flash"
-            if not preferred_model.startswith("models/"):
-                preferred_model = f"models/{preferred_model}"
-
-            fallback_llm = ChatGoogleGenerativeAI(
-                model=preferred_model,
-                google_api_key=settings.google_api_key,
-                temperature=0.2,
-                max_retries=1,
-                timeout=45.0,
-            )
-            fallback_name = preferred_model
-            logger.info("Fallback LLM initialized: %s", fallback_name)
-        except Exception as exc:
-            logger.warning("Failed to initialize fallback LLM: %s", exc)
+    writer_temp = getattr(settings, "writer_temperature", 0.7)
+    primary_llm, primary_name, fallback_llm, fallback_name = _build_openai_gemini_pair(
+        settings,
+        openai_model=settings.model_name,
+        google_model=settings.google_model_name or "models/gemini-2.5-flash",
+        temperature=writer_temp,
+        max_tokens=2048,
+    )
 
     if not primary_llm and not fallback_llm:
         logger.error("No LLM could be initialized!")
         return None
 
-    # If only one model available, it becomes both primary and sole option
     if not primary_llm:
-        primary_llm = fallback_llm
-        primary_name = fallback_name
+        primary_llm, primary_name = fallback_llm, fallback_name
         fallback_llm = None
 
     resilient = ResilientLLM(
-        primary=primary_llm,
-        fallback=fallback_llm,
-        primary_model_name=primary_name,
-        fallback_model_name=fallback_name,
+        primary=primary_llm, fallback=fallback_llm,
+        primary_model_name=primary_name, fallback_model_name=fallback_name,
         budget_threshold=0.85,
     )
-
     logger.info(
-        "ResilientLLM ready: Primary=%s, Fallback=%s",
-        primary_name, fallback_name if fallback_llm else "NONE",
+        "ResilientLLM ready: Primary=%s (temp=%.1f), Fallback=%s",
+        primary_name, writer_temp, fallback_name if fallback_llm else "NONE",
     )
+    return resilient
+
+
+def build_resilient_fast_llm(settings: Any) -> ResilientLLM | None:
+    """Factory: builds a FAST ResilientLLM for planning/review (low temperature)."""
+    if not settings.use_live_llm:
+        return None
+
+    fast_model = getattr(settings, "fast_model_name", settings.model_name)
+    fast_google = getattr(settings, "google_fast_model_name", settings.google_model_name or "models/gemini-2.5-flash")
+
+    primary_llm, primary_name, fallback_llm, fallback_name = _build_openai_gemini_pair(
+        settings,
+        openai_model=fast_model,
+        google_model=fast_google,
+        temperature=0.2,
+        max_tokens=2048,
+    )
+
+    if not primary_llm and not fallback_llm:
+        logger.error("No Fast LLM could be initialized!")
+        return None
+
+    if not primary_llm:
+        primary_llm, primary_name = fallback_llm, fallback_name
+        fallback_llm = None
+
+    resilient = ResilientLLM(
+        primary=primary_llm, fallback=fallback_llm,
+        primary_model_name=primary_name, fallback_model_name=fallback_name,
+        budget_threshold=0.85,
+    )
+    logger.info("Fast ResilientLLM ready: Primary=%s, Fallback=%s", primary_name, fallback_name if fallback_llm else "NONE")
+    return resilient
+
+
+def build_editor_llm(settings: Any) -> ResilientLLM | None:
+    """Factory: builds a SEPARATE LLM for the Editor node — breaks the Debate Agent Problem.
+
+    Strategy:
+        1. If EDITOR_MODEL_NAME is set → use a completely different model (best fix)
+        2. Otherwise → use same model but with editor_temperature (0.1 strict) = divergence mode
+
+    This ensures the Editor has a genuinely different perspective from the Writer,
+    preventing the self-validation bias inherent in same-model Writer↔Editor loops.
+    """
+    if not settings.use_live_llm:
+        return None
+
+    editor_temp = getattr(settings, "editor_temperature", 0.1)
+    editor_model = getattr(settings, "editor_model_name", "").strip()
+    editor_google = getattr(settings, "editor_google_model_name", "").strip()
+
+    # Determine which models to use for editor
+    openai_model = editor_model or settings.model_name
+    google_model = editor_google or settings.google_model_name or "models/gemini-2.5-flash"
+
+    primary_llm, primary_name, fallback_llm, fallback_name = _build_openai_gemini_pair(
+        settings,
+        openai_model=openai_model,
+        google_model=google_model,
+        temperature=editor_temp,
+        max_tokens=1024,  # Editor needs less output than Writer
+    )
+
+    if not primary_llm and not fallback_llm:
+        logger.warning("No Editor LLM could be initialized, will fall back to primary")
+        return None
+
+    if not primary_llm:
+        primary_llm, primary_name = fallback_llm, fallback_name
+        fallback_llm = None
+
+    # Tag the name so logs clearly show divergence
+    if not editor_model and not editor_google:
+        primary_name = f"{primary_name}@temp{editor_temp}"
+
+    resilient = ResilientLLM(
+        primary=primary_llm, fallback=fallback_llm,
+        primary_model_name=primary_name, fallback_model_name=fallback_name,
+        budget_threshold=0.90,
+    )
+
+    mode = "mixed-model" if editor_model or editor_google else "divergence"
+    logger.info("Editor ResilientLLM ready: %s mode=%s (Debate Agent fix active)", primary_name, mode)
     return resilient

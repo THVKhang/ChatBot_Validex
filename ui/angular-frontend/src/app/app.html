@@ -1,231 +1,487 @@
-<div class="sentinel-layout" [class.dark-mode]="darkMode">
-  <aside class="side-nav">
-    <div class="brand-block">
-      <h2>{{ title }}</h2>
-      <p>Blog Intelligence Platform</p>
-    </div>
+<div class="os-root" [class.dark-mode]="darkMode" (click)="closeDockPopups()">
 
-    <nav class="menu-links">
-      <a href="#" [class.active]="activeMenu === 'new'" (click)="$event.preventDefault(); clearSession(); setMenu('new')">
-        <span class="material-symbols-outlined">add_circle</span> New Chat
-      </a>
-      <a href="#" [class.active]="activeMenu === 'history'" (click)="$event.preventDefault(); setMenu('history')">
-        <span class="material-symbols-outlined">history</span> History
-      </a>
-      <a href="#" [class.active]="activeMenu === 'saved'" (click)="$event.preventDefault(); setMenu('saved')">
-        <span class="material-symbols-outlined">folder_special</span> Saved Reports
-      </a>
-      <a href="#" [class.active]="activeMenu === 'settings'" (click)="$event.preventDefault(); setMenu('settings')">
-        <span class="material-symbols-outlined">settings</span> Settings
-      </a>
-      <a href="#" *ngIf="isAdmin" [class.active]="activeMenu === 'admin'" (click)="$event.preventDefault(); setMenu('admin')">
-        <span class="material-symbols-outlined">admin_panel_settings</span> Admin
-      </a>
-    </nav>
+  <!-- OS Window Container -->
+  <div class="os-window">
 
-    <section class="reports-list" *ngIf="activeMenu === 'saved'">
-      <p>Saved Reports</p>
-      <div class="reports-loading" *ngIf="reportsLoading">Loading...</div>
-      <div class="report-row" *ngFor="let report of reports">
-        <button class="report-item" type="button" (click)="openReport(report.id)">
-          <strong>{{ report.title || 'Untitled report' }}</strong>
-          <span>{{ report.draft_preview }}</span>
-        </button>
-        <button class="report-delete" type="button" title="Delete report" [disabled]="deletingReportId === report.id" (click)="deleteReport(report.id)">
-          <span class="material-symbols-outlined">delete</span>
-        </button>
+    <!-- Window Title Bar -->
+    <header class="os-title-bar">
+      <div class="traffic-lights">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
       </div>
-      <div class="reports-empty" *ngIf="!reportsLoading && !reports.length">No saved reports yet.</div>
-    </section>
-
-    <section class="sessions-list" *ngIf="activeMenu === 'history'">
-      <p>Recent Chats</p>
-      <div class="reports-loading" *ngIf="sessionsLoading">Loading...</div>
-      <div class="report-row" *ngFor="let session of sessions">
-        <button class="report-item" type="button" (click)="openSession(session.session_id)">
-          <strong>{{ session.title }}</strong>
-          <span>{{ session.turn_count }} message(s)</span>
-        </button>
+      <div class="os-title">
+        <span class="material-symbols-outlined">terminal</span>
+        Blog Intelligence OS
       </div>
-      <div class="reports-empty" *ngIf="!sessionsLoading && !sessions.length">No chat history.</div>
-    </section>
+      <div class="title-bar-spacer"></div>
+    </header>
 
-    <!-- Admin Dashboard Panel -->
-    <section class="admin-panel" *ngIf="activeMenu === 'admin' && isAdmin">
-      <p>Admin Dashboard</p>
+    <!-- Main Workspace -->
+    <div class="os-workspace">
 
-      <div class="admin-section">
-        <strong><span class="material-symbols-outlined">token</span> Token Usage</strong>
-        <div *ngIf="tokenUsageData?.current?.models?.length">
-          <div class="token-card" *ngFor="let m of tokenUsageData.current.models">
-            <div class="token-model-name">{{ m.model }}</div>
-            <div class="token-bar-bg">
-              <div class="token-bar-fill" [style.width.%]="m.usage_percent" [class.warning]="m.usage_percent > 70" [class.danger]="m.usage_percent > 90"></div>
+      <!-- Auth Modal (unchanged) -->
+      <div class="modal-overlay" *ngIf="showAuthModal">
+        <div class="modal-content auth-modal">
+          <div class="modal-header">
+            <h3>{{ authMode === 'login' ? 'Log In' : 'Register' }}</h3>
+            <button class="btn-close" (click)="closeAuthModal()">×</button>
+          </div>
+          <div class="modal-body">
+            <p class="error" *ngIf="authError">{{ authError }}</p>
+            <div class="field-group">
+              <label>Username</label>
+              <input type="text" [(ngModel)]="authUsername" placeholder="Enter username">
             </div>
-            <div class="token-stats">
-              <span>{{ m.total_tokens | number }} / {{ m.daily_limit | number }}</span>
-              <span class="token-pct">{{ m.usage_percent }}%</span>
+            <div class="field-group">
+              <label>Password</label>
+              <input type="password" [(ngModel)]="authPassword" placeholder="Enter password">
             </div>
-            <div class="token-meta">Requests: {{ m.request_count }} | Errors: {{ m.error_count }}</div>
+            <button class="btn primary full-width" (click)="submitAuth()" [disabled]="authLoading">
+              {{ authLoading ? 'Please wait...' : (authMode === 'login' ? 'Log In' : 'Register') }}
+            </button>
+            <div class="auth-toggle">
+              <a href="#" (click)="$event.preventDefault(); authMode = (authMode === 'login' ? 'register' : 'login')">
+                {{ authMode === 'login' ? 'Need an account? Register' : 'Already have an account? Log In' }}
+              </a>
+            </div>
           </div>
         </div>
-        <div *ngIf="!tokenUsageData?.current?.models?.length" class="reports-empty">No usage data yet.</div>
       </div>
 
-      <div class="admin-section">
-        <strong><span class="material-symbols-outlined">group</span> Users ({{ adminUsers.length }})</strong>
-        <div class="admin-user-row" *ngFor="let user of adminUsers">
-          <span class="user-name">{{ user.username }}</span>
-          <span class="user-badge" *ngIf="user.is_admin">Admin</span>
-          <span class="user-sessions">{{ user.session_count || 0 }} sessions</span>
-        </div>
-        <div *ngIf="!adminUsers.length" class="reports-empty">No users.</div>
-      </div>
-
-      <div class="admin-section">
-        <strong><span class="material-symbols-outlined">history</span> Crawl History</strong>
-        <div class="crawl-row" *ngFor="let crawl of crawlHistory">
-          <div class="crawl-date">{{ crawl.created_at | date:'short' }}</div>
-          <div class="crawl-stats">
-            <span>+{{ crawl.discovery_approved || 0 }} discovered</span>
-            <span>{{ crawl.chunks_total || 0 }} chunks</span>
-            <span *ngIf="crawl.errors_total" class="crawl-errors">{{ crawl.errors_total }} errors</span>
+      <!-- HITL Review Split View -->
+      <div class="hitl-review-container" *ngIf="selectedReview">
+        <div class="hitl-header">
+          <h2>Reviewing: {{ selectedReview.topic }}</h2>
+          <div class="hitl-actions">
+            <button class="btn success" (click)="approveReview(selectedReview.run_id)">
+              <span class="material-symbols-outlined">check_circle</span> Approve
+            </button>
+            <button class="btn danger" (click)="rejectReview(selectedReview.run_id)">
+              <span class="material-symbols-outlined">cancel</span> Reject
+            </button>
+            <button class="btn secondary" (click)="selectedReview = null">Close</button>
           </div>
         </div>
-        <div *ngIf="!crawlHistory.length" class="reports-empty">No crawl history.</div>
+        <div class="hitl-split-view">
+          <div class="hitl-pane content-pane">
+            <h3>Generated Draft</h3>
+            <div class="msg-markdown" [innerHTML]="selectedReview.draft | markdown"></div>
+          </div>
+          <div class="hitl-pane meta-pane">
+            <h3>AI Evaluation Metrics</h3>
+            <div class="metric-card">
+              <span class="metric-label">Status</span>
+              <span class="metric-value" [class.warning]="selectedReview.status !== 'ACCEPTED'">{{ selectedReview.status }}</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Created At</span>
+              <span class="metric-value">{{ selectedReview.created_at | date:'medium' }}</span>
+            </div>
+            <div class="issues-list" *ngIf="selectedReview.issues?.length">
+              <h4>Structural Issues Detected</h4>
+              <ul>
+                <li *ngFor="let issue of selectedReview.issues" class="issue-item">
+                  <span class="material-symbols-outlined">warning</span>
+                  {{ issue }}
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
       </div>
-    </section>
 
-    <div class="side-actions">
-      <div class="user-profile">
-        <span *ngIf="currentUser" class="user-greeting">{{ currentUser }}</span>
-        <button class="btn secondary" type="button" *ngIf="!currentUser" (click)="openAuthModal('login')">Log In</button>
-        <button class="btn secondary" type="button" *ngIf="currentUser" (click)="logout()">Log Out</button>
-      </div>
-      <button class="icon-btn" type="button" (click)="toggleDarkMode()" [title]="darkMode ? 'Light mode' : 'Dark mode'">
-        <span class="material-symbols-outlined">{{ darkMode ? 'light_mode' : 'dark_mode' }}</span>
-      </button>
-    </div>
-  </aside>
+      <!-- Editor Canvas / Chat Area -->
+      <div class="editor-canvas" #chatHistory *ngIf="!selectedReview">
+        <div class="ambient-glow"></div>
 
-  <!-- Auth Modal -->
-  <div class="modal-overlay" *ngIf="showAuthModal">
-    <div class="modal-content auth-modal">
-      <div class="modal-header">
-        <h3>{{ authMode === 'login' ? 'Log In' : 'Register' }}</h3>
-        <button class="btn-close" (click)="closeAuthModal()">×</button>
+        <!-- Article Paper (for displaying report) -->
+        <article class="editor-paper" *ngIf="selectedReport">
+          <div class="paper-meta">
+            <span class="meta-chip">
+              <span class="material-symbols-outlined">psychology</span>
+              {{ selectedReport.title || 'Blog' }}
+            </span>
+            <span class="meta-saved">Draft saved {{ selectedReport.created_at | date:'shortTime' }}</span>
+          </div>
+          <h1 class="paper-title">{{ selectedReport.title }}</h1>
+          <div class="paper-body" [innerHTML]="selectedReport.draft | markdown"></div>
+        </article>
+
+        <!-- Empty State / Welcome -->
+        <div class="chat-welcome" *ngIf="!messages.length && !selectedReport">
+          <h1>Validex AI</h1>
+          <p>What would you like to write about today?</p>
+          <div class="prompt-suggestions">
+            <button class="suggestion-card" *ngFor="let sample of samplePrompts" (click)="usePromptTemplate(sample)">
+              <span class="material-symbols-outlined">edit_note</span>
+              <span>{{ sample }}</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Messages -->
+        <div class="chat-messages" *ngIf="messages.length">
+          <div
+            class="chat-message"
+            *ngFor="let msg of messages; let i = index"
+            [class.user]="msg.role === 'user'"
+            [class.assistant]="msg.role === 'assistant'"
+          >
+            <div class="msg-avatar">
+              <span class="material-symbols-outlined">{{ msg.role === 'user' ? 'person' : 'smart_toy' }}</span>
+            </div>
+            <div class="msg-bubble">
+              <div *ngIf="msg.role === 'assistant' && msg.text" class="msg-markdown" [class.typing]="isTyping && i === messages.length - 1" [innerHTML]="msg.text | markdown"></div>
+              <p *ngIf="msg.role === 'user'" class="msg-text">{{ msg.text }}</p>
+              <div class="msg-footer" *ngIf="msg.role === 'assistant' && msg.text">
+                <button class="btn-regenerate" type="button" (click)="exportDraft(msg.text, 'docx')" [disabled]="loading || isTyping || !msg.text" title="Export to Word">
+                  <span class="material-symbols-outlined">description</span>
+                </button>
+                <button class="btn-regenerate" type="button" (click)="exportDraft(msg.text, 'html')" [disabled]="loading || isTyping || !msg.text" title="Export to HTML">
+                  <span class="material-symbols-outlined">html</span>
+                </button>
+                <button class="btn-regenerate" type="button" (click)="regenerateMessage(i)" [disabled]="loading || isTyping" title="Regenerate">
+                  <span class="material-symbols-outlined">refresh</span>
+                </button>
+                <button class="btn-regenerate" type="button" *ngIf="latestResponse" (click)="saveLatestReport()" [disabled]="savingReport || isTyping" title="Save">
+                  <span class="material-symbols-outlined">bookmark</span>
+                </button>
+                <div class="feedback-divider"></div>
+                <button class="btn-feedback" [class.active]="feedbackMap[i] === 1" [class.sent]="feedbackMap[i] !== undefined" (click)="submitFeedback(i, 1)" [disabled]="feedbackMap[i] !== undefined" title="Helpful">
+                  <span class="material-symbols-outlined">thumb_up</span>
+                </button>
+                <button class="btn-feedback" [class.active]="feedbackMap[i] === -1" [class.sent]="feedbackMap[i] !== undefined" (click)="submitFeedback(i, -1)" [disabled]="feedbackMap[i] !== undefined" title="Not helpful">
+                  <span class="material-symbols-outlined">thumb_down</span>
+                </button>
+              </div>
+
+              <!-- Supervisor Badge (Module 6) -->
+              <div class="supervisor-badge" *ngIf="msg.role === 'assistant' && msg.text && i === messages.length - 1 && lastComplexityLevel">
+                <span class="badge-icon">{{ lastComplexityLevel === 'complex' ? '⚡' : '🟢' }}</span>
+                <span class="badge-text">{{ lastComplexityLevel === 'complex' ? 'Complex Pipeline' : 'Standard Pipeline' }}</span>
+                <span class="badge-tooltip" *ngIf="supervisorNotes">{{ supervisorNotes }}</span>
+              </div>
+
+              <!-- Language Chip (Module 3) -->
+              <div class="language-chip" *ngIf="msg.role === 'assistant' && msg.text && i === messages.length - 1 && detectedLanguage && detectedLanguage !== 'en'">
+                {{ getLanguageLabel(detectedLanguage) }}
+              </div>
+            </div>
+          </div>
+
+          <!-- Thinking indicator + Pipeline Visualizer -->
+          <div class="chat-message assistant" *ngIf="loading && thinkingStatus">
+            <div class="msg-avatar"><span class="material-symbols-outlined">psychology</span></div>
+            <div class="msg-bubble thinking">
+              <!-- Pipeline Visualizer (Module 4) -->
+              <div class="pipeline-visualizer" *ngIf="pipelineSteps.length">
+                <div class="pipeline-step" *ngFor="let step of pipelineSteps" [class.done]="step.status === 'done'" [class.active]="step.status === 'active'" [class.pending]="step.status === 'pending'">
+                  <div class="step-icon">
+                    <span class="material-symbols-outlined" *ngIf="step.status === 'done'">check_circle</span>
+                    <span class="material-symbols-outlined step-pulse" *ngIf="step.status === 'active'">{{ step.icon }}</span>
+                    <span class="material-symbols-outlined" *ngIf="step.status === 'pending'">radio_button_unchecked</span>
+                  </div>
+                  <div class="step-label">{{ step.name }}</div>
+                  <div class="step-connector"></div>
+                </div>
+              </div>
+              <div class="thinking-header">
+                <span class="thinking-spinner material-symbols-outlined">sync</span>
+                <div class="thinking-text">
+                  <strong>{{ thinkingStatus }}</strong>
+                  <span class="thinking-detail" *ngIf="thinkingDetail">{{ thinkingDetail }}</span>
+                </div>
+              </div>
+              <div class="skeleton-shimmer-container">
+                <div class="skeleton-line title"></div>
+                <div class="skeleton-line"></div>
+                <div class="skeleton-line short"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Spacer for floating input -->
+        <div class="editor-spacer"></div>
       </div>
-      <div class="modal-body">
-        <p class="error" *ngIf="authError">{{ authError }}</p>
-        <div class="field-group">
-          <label>Username</label>
-          <input type="text" [(ngModel)]="authUsername" placeholder="Enter username">
+
+      <!-- Floating Chat Prompt (Pill shape) -->
+      <div class="floating-prompt-bar" *ngIf="!selectedReview">
+        <!-- Generation Settings (accordion) -->
+        <div class="generation-settings" [class.expanded]="!selectedReport && !latestResponse">
+          <select [(ngModel)]="selectedLanguage" [disabled]="loading">
+            <option *ngFor="let lang of languageOptions" [value]="lang.code">{{ lang.label }}</option>
+          </select>
+          <select [(ngModel)]="selectedTone" [disabled]="loading">
+            <option value="Professional">Professional</option>
+            <option value="Friendly">Friendly</option>
+            <option value="Casual">Casual</option>
+          </select>
+          <select [(ngModel)]="selectedWordCount" [disabled]="loading">
+            <option value="300 Words">~ 300 Words</option>
+            <option value="500 Words">~ 500 Words</option>
+            <option value="800 Words">~ 800 Words</option>
+          </select>
+          <select [(ngModel)]="selectedSectionCount" [disabled]="loading">
+            <option value="1">1 Section</option>
+            <option value="3">3 Sections</option>
+            <option value="5">5 Sections</option>
+          </select>
+          <select [(ngModel)]="selectedImageCount" [disabled]="loading">
+            <option value="1">1 Image</option>
+            <option value="2">2 Images</option>
+            <option value="3">3 Images</option>
+          </select>
         </div>
-        <div class="field-group">
-          <label>Password</label>
-          <input type="password" [(ngModel)]="authPassword" placeholder="Enter password">
+
+        <div class="prompt-pill">
+          <input type="file" #fileUploadInput style="display: none" (change)="onFileSelected($event)" accept=".pdf,.docx,.txt" />
+          <div class="attachment-preview" *ngIf="attachedFile">
+            <span class="material-symbols-outlined">description</span>
+            <span>{{ attachedFile }}</span>
+            <button class="btn-remove-attachment" (click)="attachedFile = null; attachedFileContent = null; fileUploadInput.value = ''">×</button>
+          </div>
+          <input
+            #promptInput
+            id="blogPrompt"
+            class="prompt-input"
+            [(ngModel)]="prompt"
+            [disabled]="loading"
+            (keydown)="onPromptKeydown($event)"
+            placeholder="Write a blog about..."
+            type="text"
+          />
+          <button class="btn-attach-pill" (click)="fileUploadInput.click()" [disabled]="loading || isUploading" title="Attach document">
+            <span class="material-symbols-outlined">{{ isUploading ? 'sync' : 'attach_file' }}</span>
+          </button>
+          <button class="btn-send-pill" [class.is-loading]="loading" (click)="sendPrompt()" [disabled]="loading || (!prompt.trim() && !attachedFileContent)" title="Send">
+            <span class="material-symbols-outlined">{{ loading ? 'square' : 'arrow_upward' }}</span>
+          </button>
         </div>
-        <button class="btn primary full-width" (click)="submitAuth()" [disabled]="authLoading">
-          {{ authLoading ? 'Please wait...' : (authMode === 'login' ? 'Log In' : 'Register') }}
-        </button>
-        <div class="auth-toggle">
-          <a href="#" (click)="$event.preventDefault(); authMode = (authMode === 'login' ? 'register' : 'login')">
-            {{ authMode === 'login' ? 'Need an account? Register' : 'Already have an account? Log In' }}
-          </a>
-        </div>
+        <p class="input-hint">Press Enter to send · Shift+Enter for new line · Validex AI can make mistakes.</p>
       </div>
+
+      <p class="error floating-error" *ngIf="errorMessage">{{ errorMessage }}</p>
     </div>
   </div>
 
-  <div class="workspace-shell">
-    <!-- Chat Area (full width, scrollable) -->
-    <div class="chat-main" #chatHistory>
-      <!-- Empty State -->
-      <div class="chat-welcome" *ngIf="!messages.length">
-        <h1>Validex AI</h1>
-        <p>What would you like to write about today?</p>
+  <!-- OS Dock Taskbar -->
+  <div class="os-dock" (click)="$event.stopPropagation()">
+    <!-- New Chat -->
+    <div class="dock-icon active" (click)="clearSession(); setMenu('new'); closeDockPopups()" title="New Chat">
+      <span class="material-symbols-outlined">terminal</span>
+      <div class="dock-active-dot"></div>
+    </div>
 
-        <div class="prompt-suggestions">
-          <button class="suggestion-card" *ngFor="let sample of samplePrompts" (click)="usePromptTemplate(sample)">
-            <span class="material-symbols-outlined">edit_note</span>
-            <span>{{ sample }}</span>
-          </button>
+    <!-- Saved Reports -->
+    <div class="dock-icon gradient-blue" (click)="toggleDockPopup('saved'); loadReports()" title="Saved Reports">
+      <span class="material-symbols-outlined">bookmark</span>
+    </div>
+    <div class="dock-popup" *ngIf="dockPopup === 'saved'" (click)="$event.stopPropagation()">
+      <h4><span class="material-symbols-outlined">bookmark</span> Saved Reports</h4>
+      <div class="dock-popup-body">
+        <div class="reports-loading" *ngIf="reportsLoading">Loading...</div>
+        <div class="dock-popup-item" *ngFor="let report of reports" (click)="openReport(report.id); closeDockPopups()">
+          <strong>{{ report.title || 'Untitled report' }}</strong>
+          <span>{{ report.draft_preview }}</span>
         </div>
+        <div class="dock-popup-empty" *ngIf="!reportsLoading && !reports.length">No saved reports yet.</div>
       </div>
+    </div>
 
-      <!-- Messages -->
-      <div class="chat-messages" *ngIf="messages.length">
-        <div
-          class="chat-message"
-          *ngFor="let msg of messages; let i = index"
-          [class.user]="msg.role === 'user'"
-          [class.assistant]="msg.role === 'assistant'"
-        >
-          <div class="msg-avatar">
-            <span class="material-symbols-outlined">{{ msg.role === 'user' ? 'person' : 'smart_toy' }}</span>
+    <!-- History -->
+    <div class="dock-icon gradient-green" (click)="toggleDockPopup('history'); loadSessions()" title="Chat History">
+      <span class="material-symbols-outlined">history</span>
+    </div>
+    <div class="dock-popup" *ngIf="dockPopup === 'history'" (click)="$event.stopPropagation()">
+      <h4><span class="material-symbols-outlined">history</span> Recent Chats</h4>
+      <div class="dock-popup-body">
+        <div class="reports-loading" *ngIf="sessionsLoading">Loading...</div>
+        <div class="dock-popup-item" *ngFor="let session of sessions" (click)="openSession(session.session_id); closeDockPopups()">
+          <strong>{{ session.title }}</strong>
+          <span>{{ session.turn_count }} message(s)</span>
+        </div>
+        <div class="dock-popup-empty" *ngIf="!sessionsLoading && !sessions.length">No chat history.</div>
+      </div>
+    </div>
+
+    <!-- Token Usage (hover to show) -->
+    <div class="dock-icon gradient-cyan" (mouseenter)="showTokenPopup = true" (mouseleave)="showTokenPopup = false" title="Token Usage">
+      <span class="material-symbols-outlined">token</span>
+    </div>
+    <div class="dock-popup token-popup" *ngIf="showTokenPopup" (mouseenter)="showTokenPopup = true" (mouseleave)="showTokenPopup = false">
+      <h4><span class="material-symbols-outlined">token</span> Token Budget</h4>
+      <div class="dock-popup-body">
+        <!-- User Budget Bar -->
+        <div class="user-budget-section" *ngIf="userBudget">
+          <div class="budget-tier-badge" [attr.data-tier]="userBudget.tier">
+            {{ userBudget.tier === 'free' ? '🆓' : userBudget.tier === 'starter' ? '🟢' : userBudget.tier === 'pro' ? '🔵' : '🟣' }}
+            {{ userBudget.tier | uppercase }} Tier
           </div>
-          <div class="msg-bubble">
-            <div *ngIf="msg.role === 'assistant' && msg.text" class="msg-markdown" [innerHTML]="msg.text | markdown"></div>
-            <p *ngIf="msg.role === 'user'" class="msg-text">{{ msg.text }}</p>
-            <div class="msg-footer" *ngIf="msg.role === 'assistant' && msg.text">
-              <button class="btn-regenerate" type="button" (click)="exportDraft(msg.text, 'docx')" [disabled]="loading || !msg.text" title="Export to Word">
-                <span class="material-symbols-outlined">description</span>
-              </button>
-              <button class="btn-regenerate" type="button" (click)="exportDraft(msg.text, 'html')" [disabled]="loading || !msg.text" title="Export to HTML">
-                <span class="material-symbols-outlined">html</span>
-              </button>
-              <button class="btn-regenerate" type="button" (click)="regenerateMessage(i)" [disabled]="loading" title="Regenerate">
-                <span class="material-symbols-outlined">refresh</span>
-              </button>
-              <button class="btn-regenerate" type="button" *ngIf="latestResponse" (click)="saveLatestReport()" [disabled]="savingReport" title="Save">
-                <span class="material-symbols-outlined">bookmark</span>
-              </button>
+          <div class="budget-bar-container">
+            <div class="budget-bar-bg">
+              <div class="budget-bar-fill"
+                [style.width.%]="userBudget.percent"
+                [class.budget-ok]="userBudget.percent < 50"
+                [class.budget-warning]="userBudget.percent >= 50 && userBudget.percent < 80"
+                [class.budget-danger]="userBudget.percent >= 80"></div>
+            </div>
+            <div class="budget-stats">
+              <span>{{ userBudget.used | number }} / {{ userBudget.total | number }} tokens</span>
+              <span class="budget-remaining" [class.low]="userBudget.remaining < userBudget.total * 0.2">
+                {{ userBudget.remaining | number }} remaining
+              </span>
+            </div>
+          </div>
+          <div class="budget-warning-banner" *ngIf="userBudget.percent >= 80 && userBudget.remaining > 0">
+            ⚠️ Budget nearly exhausted ({{ 100 - userBudget.percent | number:'1.0-0' }}% left)
+          </div>
+          <div class="budget-blocked-banner" *ngIf="userBudget.remaining <= 0">
+            🚫 Daily quota exceeded. Resets at midnight UTC.
+          </div>
+          <div class="budget-requests">{{ userBudget.requests }} requests today</div>
+        </div>
+
+        <hr class="budget-divider" *ngIf="userBudget && tokenUsageData?.current?.models?.length" />
+
+        <!-- Per-Model Usage (existing) -->
+        <div *ngIf="tokenUsageData?.current?.models?.length; else noTokenDock">
+          <div class="token-mini-card" *ngFor="let m of tokenUsageData.current.models">
+            <div class="token-mini-header">
+              <span class="token-mini-name">{{ m.model.split('/').pop() }}</span>
+              <span class="token-mini-pct" [class.warning]="m.usage_percent > 70" [class.danger]="m.usage_percent > 90">{{ m.usage_percent }}%</span>
+            </div>
+            <div class="token-bar-bg">
+              <div class="token-bar-fill" [style.width.%]="m.usage_percent" [class.warning]="m.usage_percent > 70" [class.danger]="m.usage_percent > 90"></div>
+            </div>
+            <div class="token-mini-stats">
+              <span>{{ m.total_tokens | number }} / {{ m.daily_limit | number }}</span>
+              <span>{{ m.request_count }} req</span>
             </div>
           </div>
         </div>
+        <ng-template #noTokenDock>
+          <div class="dock-popup-empty" *ngIf="!userBudget">No usage data.</div>
+        </ng-template>
+      </div>
+    </div>
 
-        <!-- Thinking indicator -->
-        <div class="chat-message assistant" *ngIf="loading && thinkingStatus">
-          <div class="msg-avatar"><span class="material-symbols-outlined">psychology</span></div>
-          <div class="msg-bubble thinking">
-            <span class="thinking-spinner material-symbols-outlined">sync</span>
-            <div class="thinking-text">
-              <strong>{{ thinkingStatus }}</strong>
-              <span class="thinking-detail" *ngIf="thinkingDetail">{{ thinkingDetail }}</span>
+    <!-- Analytics Dock Icon (Module 2) -->
+    <div class="dock-icon gradient-amber" (click)="toggleDockPopup('analytics'); loadAnalytics()" title="Analytics Dashboard">
+      <span class="material-symbols-outlined">analytics</span>
+    </div>
+    <div class="dock-popup dock-popup-wide" *ngIf="dockPopup === 'analytics'" (click)="$event.stopPropagation()">
+      <h4><span class="material-symbols-outlined">analytics</span> Analytics Dashboard</h4>
+      <div class="dock-popup-body analytics-grid">
+        <!-- Quality Gate -->
+        <div class="analytics-card">
+          <div class="analytics-card-title">Quality Gate</div>
+          <div class="analytics-pie" *ngIf="qualityTotal">
+            <div class="pie-chart" [style.background]="'conic-gradient(#22c55e ' + ((qualityEntries[0]?.value || 0) / qualityTotal * 360) + 'deg, #f59e0b ' + ((qualityEntries[0]?.value || 0) / qualityTotal * 360) + 'deg ' + (((qualityEntries[0]?.value || 0) + (qualityEntries[1]?.value || 0)) / qualityTotal * 360) + 'deg, #ef4444 0deg)'"></div>
+            <div class="pie-legend">
+              <div *ngFor="let e of qualityEntries" class="legend-item">
+                <span class="legend-dot" [class.accepted]="e.key === 'ACCEPTED'" [class.revised]="e.key === 'REVISED'" [class.rejected]="e.key === 'REJECTED'"></span>
+                {{ e.key }}: {{ e.value }}
+              </div>
             </div>
           </div>
+          <div *ngIf="!qualityTotal" class="analytics-empty">No data yet</div>
+        </div>
+        <!-- Cache Stats -->
+        <div class="analytics-card">
+          <div class="analytics-card-title">Semantic Cache</div>
+          <div class="analytics-big-number">{{ analyticsCache?.total_cached || 0 }}</div>
+          <div class="analytics-sublabel">cached responses</div>
+        </div>
+        <!-- Feedback Stats -->
+        <div class="analytics-card">
+          <div class="analytics-card-title">User Feedback</div>
+          <div class="feedback-stats" *ngIf="analyticsFeedback?.status === 'ok'">
+            <div class="feedback-stat up">
+              <span class="material-symbols-outlined">thumb_up</span>
+              {{ analyticsFeedback.thumbs_up || 0 }}
+            </div>
+            <div class="feedback-stat down">
+              <span class="material-symbols-outlined">thumb_down</span>
+              {{ analyticsFeedback.thumbs_down || 0 }}
+            </div>
+          </div>
+          <div *ngIf="analyticsFeedback?.status !== 'ok'" class="analytics-empty">No data yet</div>
         </div>
       </div>
     </div>
 
-    <!-- Input Bar (pinned to bottom, horizontal, like ChatGPT) -->
-    <div class="chat-input-bar">
-      <div class="input-container">
-        <input type="file" #fileUploadInput style="display: none" (change)="onFileSelected($event)" accept=".pdf,.docx,.txt" />
-        <button class="btn-attach" (click)="fileUploadInput.click()" [disabled]="loading || isUploading" title="Attach document">
-          <span class="material-symbols-outlined">{{ isUploading ? 'sync' : 'attach_file' }}</span>
-        </button>
-        <div class="attachment-preview" *ngIf="attachedFile">
-          <span class="material-symbols-outlined">description</span>
-          <span>{{ attachedFile }}</span>
-          <button class="btn-remove-attachment" (click)="attachedFile = null; attachedFileContent = null; fileUploadInput.value = ''">×</button>
-        </div>
-        <textarea
-          #promptInput
-          id="blogPrompt"
-          [(ngModel)]="prompt"
-          [disabled]="loading"
-          (keydown)="onPromptKeydown($event)"
-          placeholder="Write a blog about..."
-          rows="1"
-        ></textarea>
-        <button class="btn-send" (click)="sendPrompt()" [disabled]="loading || (!prompt.trim() && !attachedFileContent)" title="Send">
-          <span class="material-symbols-outlined">{{ loading ? 'hourglass_top' : 'arrow_upward' }}</span>
-        </button>
-      </div>
-      <p class="input-hint">Validex AI can make mistakes. Review important content before publishing.</p>
+    <div class="dock-divider"></div>
+
+    <!-- Dark Mode Toggle -->
+    <div class="dock-icon" (click)="toggleDarkMode()" [title]="darkMode ? 'Light mode' : 'Dark mode'">
+      <span class="material-symbols-outlined">{{ darkMode ? 'light_mode' : 'dark_mode' }}</span>
     </div>
 
-    <p class="error floating-error" *ngIf="errorMessage">{{ errorMessage }}</p>
+    <!-- Auth / User -->
+    <div class="dock-icon dock-avatar" [class.gradient-slate]="!currentUser" (click)="currentUser ? logout() : openAuthModal('login')" [title]="currentUser ? ('Logged in: ' + currentUser + ' — Click to log out') : 'Guest — Click to Log In'">
+      <span class="material-symbols-outlined" *ngIf="!currentUser">person_off</span>
+      <span class="avatar-initial" *ngIf="currentUser">{{ currentUser.charAt(0).toUpperCase() }}</span>
+    </div>
+
+    <!-- Admin (conditional) -->
+    <div class="dock-icon gradient-purple" *ngIf="isAdmin" (click)="toggleDockPopup('admin'); setMenu('admin')" title="Admin Panel">
+      <span class="material-symbols-outlined">admin_panel_settings</span>
+    </div>
+    <div class="dock-popup dock-popup-wide" *ngIf="dockPopup === 'admin'" (click)="$event.stopPropagation()">
+      <h4><span class="material-symbols-outlined">admin_panel_settings</span> Admin Dashboard</h4>
+      <div class="dock-popup-body">
+        <div class="admin-section">
+          <strong><span class="material-symbols-outlined">group</span> Users ({{ adminUsers.length }})</strong>
+          <div class="admin-user-row" *ngFor="let user of adminUsers">
+            <span class="user-name">{{ user.username }}</span>
+            <span class="user-badge" *ngIf="user.is_admin">Admin</span>
+            <span class="user-sessions">{{ user.session_count || 0 }} sessions</span>
+          </div>
+          <div *ngIf="!adminUsers.length" class="dock-popup-empty">No users.</div>
+        </div>
+        <div class="admin-section">
+          <strong><span class="material-symbols-outlined">rate_review</span> Pending Reviews</strong>
+          <div class="dock-popup-item" *ngFor="let review of pendingReviews" (click)="selectedReport = null; selectedReview = review; closeDockPopups()">
+            <strong>{{ review.topic }}</strong>
+            <span class="review-status" [class.warning]="review.status === 'REJECTED_LLM'">{{ review.status }}</span>
+          </div>
+          <div *ngIf="!pendingReviews.length" class="dock-popup-empty">No pending reviews.</div>
+        </div>
+        <!-- Blog Scheduling (Module 5) -->
+        <div class="admin-section">
+          <strong><span class="material-symbols-outlined">schedule</span> Blog Schedules</strong>
+          <div class="schedule-list">
+            <div class="schedule-item" *ngFor="let sch of schedules">
+              <div class="schedule-info">
+                <span class="schedule-topic">{{ sch.topic }}</span>
+                <span class="schedule-meta">{{ sch.language }} · {{ sch.cron }}</span>
+              </div>
+              <button class="btn-delete-mini" (click)="deleteSchedule(sch.id)" title="Delete">
+                <span class="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div *ngIf="!schedules.length" class="dock-popup-empty">No schedules.</div>
+          </div>
+          <div class="schedule-form">
+            <input type="text" [(ngModel)]="newScheduleTopic" placeholder="Blog topic..." class="schedule-input" />
+            <select [(ngModel)]="newScheduleLang" class="schedule-select">
+              <option value="en">EN</option>
+              <option value="vi">VI</option>
+              <option value="zh">ZH</option>
+            </select>
+            <select [(ngModel)]="newScheduleCron" class="schedule-select">
+              <option value="0 9 * * MON">Weekly (Mon 9am)</option>
+              <option value="0 9 * * *">Daily (9am)</option>
+              <option value="0 9 1 * *">Monthly (1st 9am)</option>
+            </select>
+            <button class="btn-add-schedule" (click)="createSchedule()" [disabled]="!newScheduleTopic.trim()">
+              <span class="material-symbols-outlined">add</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>

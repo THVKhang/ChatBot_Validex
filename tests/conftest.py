@@ -2,6 +2,8 @@ import os
 os.environ["USE_LIVE_LLM"] = "0"
 os.environ["ENABLE_PROMPT_GUARD"] = "1"
 os.environ["USE_RATE_LIMIT"] = "0"
+os.environ["JWT_SECRET_KEY"] = "test_secret_key_for_validex_chatbot_security_audit_12345"
+os.environ["CACHE_ENABLED"] = "0"
 
 import pytest
 from app.langchain_pipeline import pipeline
@@ -15,6 +17,13 @@ def _reset_circuit_breaker():
     yield
     pipeline._cb_consecutive_failures = 0
     pipeline._cb_open_until = 0.0
+
+@pytest.fixture(autouse=True)
+def _reset_settings_cache():
+    from app.config import settings
+    object.__setattr__(settings, "cache_enabled", False)
+    yield
+    object.__setattr__(settings, "cache_enabled", False)
 
 @pytest.fixture(autouse=True)
 def _mock_duckduckgo_search(monkeypatch):

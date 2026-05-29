@@ -247,119 +247,48 @@ def ingest_jsonl_to_pgvector(
 
     deleted_count = 0
 
-    # Disable auto-prepared statements for compatibility with transaction poolers.
-    with psycopg.connect(db_url, prepare_threshold=None) as conn:
-        with conn.cursor() as cur:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {table_name} (
-                    chunk_id TEXT PRIMARY KEY,
-                    chunk_hash TEXT NOT NULL,
-                    embedding_provider TEXT NOT NULL DEFAULT 'unknown',
-                    doc_id TEXT NOT NULL,
-                    source_url TEXT NOT NULL,
-                    source_domain TEXT NOT NULL,
-                    source_type TEXT NOT NULL,
-                    topic TEXT NOT NULL,
-                    region TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    authority_score DOUBLE PRECISION NOT NULL,
-                    approved BOOLEAN NOT NULL,
-                    content TEXT NOT NULL,
-                    embedding vector({safe_dimension}) NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS chunk_hash TEXT")
-            cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS embedding_provider TEXT")
+    from app.vector_repository import PGVectorRepository
+    repo = PGVectorRepository()
+    repo.initialize_schema(table_name, safe_dimension)
 
-            upsert_sql = f"""
-                INSERT INTO {table_name} (
-                    chunk_id,
-                    chunk_hash,
-                    embedding_provider,
-                    doc_id,
-                    source_url,
-                    source_domain,
-                    source_type,
-                    topic,
-                    region,
-                    title,
-                    authority_score,
-                    approved,
-                    content,
-                    embedding
-                ) VALUES (
-                    %(chunk_id)s,
-                    %(chunk_hash)s,
-                    %(embedding_provider)s,
-                    %(doc_id)s,
-                    %(source_url)s,
-                    %(source_domain)s,
-                    %(source_type)s,
-                    %(topic)s,
-                    %(region)s,
-                    %(title)s,
-                    %(authority_score)s,
-                    %(approved)s,
-                    %(content)s,
-                    %(embedding)s::vector
-                )
-                ON CONFLICT (chunk_id)
-                DO UPDATE SET
-                    chunk_hash = EXCLUDED.chunk_hash,
-                    embedding_provider = EXCLUDED.embedding_provider,
-                    doc_id = EXCLUDED.doc_id,
-                    source_url = EXCLUDED.source_url,
-                    source_domain = EXCLUDED.source_domain,
-                    source_type = EXCLUDED.source_type,
-                    topic = EXCLUDED.topic,
-                    region = EXCLUDED.region,
-                    title = EXCLUDED.title,
-                    authority_score = EXCLUDED.authority_score,
-                    approved = EXCLUDED.approved,
-                    content = EXCLUDED.content,
-                    embedding = EXCLUDED.embedding
-            """
+    # Enrich records with legal metadata before inserting
+    from app.metadata_enricher import enrich_batch
+    use_llm_enrichment = os.getenv("ENRICH_WITH_LLM", "0") == "1"
+    enrich_batch(changed_records, use_llm=use_llm_enrichment)
 
-            payloads = []
-            for item, vector in zip(changed_records, vectors):
-                payloads.append(
-                    {
-                        "chunk_id": str(item.get("chunk_id", "")),
-                        "chunk_hash": str(item.get("chunk_hash", "")) or _chunk_hash(item),
-                        "embedding_provider": str(item.get("embedding_provider", "")) or embedding_provider,
-                        "doc_id": str(item.get("doc_id", "")),
-                        "source_url": str(item.get("source_url", "")),
-                        "source_domain": str(item.get("source_domain", "")),
-                        "source_type": str(item.get("source_type", "webpage")),
-                        "topic": str(item.get("topic", "compliance")),
-                        "region": str(item.get("region", "AU")),
-                        "title": str(item.get("title", "Untitled")),
-                        "authority_score": float(item.get("authority_score", 0.5)),
-                        "approved": bool(item.get("approved", True)),
-                        "content": str(item.get("text", "")),
-                        "embedding": json.dumps(vector),
-                    }
-                )
+    payloads = []
+    for item, vector in zip(changed_records, vectors):
+        payloads.append(
+            {
+                "chunk_id": str(item.get("chunk_id", "")),
+                "chunk_hash": str(item.get("chunk_hash", "")) or _chunk_hash(item),
+                "embedding_provider": str(item.get("embedding_provider", "")) or embedding_provider,
+                "doc_id": str(item.get("doc_id", "")),
+                "source_url": str(item.get("source_url", "")),
+                "source_domain": str(item.get("source_domain", "")),
+                "source_type": str(item.get("source_type", "webpage")),
+                "topic": str(item.get("topic", "compliance")),
+                "region": str(item.get("region", "AU")),
+                "title": str(item.get("title", "Untitled")),
+                "authority_score": float(item.get("authority_score", 0.5)),
+                "approved": bool(item.get("approved", True)),
+                "content": str(item.get("text", "")),
+                "embedding": json.dumps(vector),
+                # Legal metadata (Trụ Cột 3)
+                "status": str(item.get("status", "in_force")),
+                "jurisdiction": str(item.get("jurisdiction", "Commonwealth")),
+                "document_type": str(item.get("document_type", "webpage")),
+                "act_name": str(item.get("act_name", "")),
+                "section_ref": str(item.get("section_ref", "")),
+                "effective_date": str(item.get("effective_date", "")),
+                "parent_context": str(item.get("parent_context", "")),
+            }
+        )
 
-            if payloads:
-                cur.executemany(upsert_sql, payloads)
-            if removed_chunk_ids:
-                cur.execute(
-                    f"DELETE FROM {table_name} WHERE chunk_id = ANY(%s)",
-                    (removed_chunk_ids,),
-                )
-                deleted_count = cur.rowcount or 0
-            cur.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{table_name}_topic ON {table_name}(topic)"
-            )
-            cur.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{table_name}_source_domain ON {table_name}(source_domain)"
-            )
-            conn.commit()
+    if payloads:
+        repo.upsert_records(table_name, payloads)
+    if removed_chunk_ids:
+        deleted_count = repo.delete_records(table_name, removed_chunk_ids)
 
     state_file.write_text(json.dumps({"chunk_hashes": next_state}, indent=2, ensure_ascii=False), encoding="utf-8")
 

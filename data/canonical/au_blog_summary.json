@@ -1,14 +1,117 @@
 {
-  "targets_total": 0,
-  "targets_allowed": 0,
-  "chunks_total": 229,
-  "changed_urls": 0,
+  "targets_total": 22,
+  "targets_allowed": 22,
+  "chunks_total": 257,
+  "changed_urls": 14,
   "unchanged_urls": 0,
   "local_pdf_total": 7,
   "local_pdf_processed": 0,
   "local_pdf_unchanged": 7,
-  "errors_total": 0,
-  "errors": [],
+  "filtered_chunks_total": 6,
+  "rejected_chunks_total": 731,
+  "rejected_output_path": "data\\samples\\rejected_chunks.jsonl",
+  "discovery_exit_reason": "targets_exhausted",
+  "discovered_sub_links_tried": [],
+  "discovered_sub_links_total": 0,
+  "discovered_chunks_total": 0,
+  "cleaning_rules": {
+    "min_chunk_words": 28,
+    "min_keyword_matches": 2,
+    "core_keywords": [
+      "police check",
+      "background",
+      "identity",
+      "conviction",
+      "legislation",
+      "australia",
+      "application"
+    ],
+    "au_police_check_keywords": [
+      "afp",
+      "acic",
+      "check",
+      "applicant",
+      "identity",
+      "result",
+      "conviction",
+      "screening",
+      "compliance",
+      "clearance",
+      "criminal",
+      "history",
+      "verification",
+      "employment",
+      "disclosure",
+      "legislation",
+      "regulation",
+      "wwcc",
+      "children",
+      "ndis",
+      "aged care",
+      "worker",
+      "visa",
+      "right to work",
+      "fair work",
+      "workplace",
+      "privacy",
+      "data protection",
+      "spent conviction",
+      "section",
+      "subsection",
+      "act",
+      "part",
+      "division",
+      "offence",
+      "penalty",
+      "rehabilitation",
+      "spent",
+      "waiting period"
+    ],
+    "noise_phrases": [
+      "cookie policy",
+      "subscribe now",
+      "all rights reserved",
+      "follow us on",
+      "privacy statement",
+      "last updated by admin"
+    ],
+    "require_stealth": false
+  },
+  "errors_total": 8,
+  "errors": [
+    {
+      "url": "https://validex.com.au/webapp/#/core/blogs",
+      "error": "empty content"
+    },
+    {
+      "url": "https://www.police.nsw.gov.au/online_services/national_police_check",
+      "error": "Failed to perform, curl: (60) SSL certificate problem: unable to get local issuer certificate. See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+    },
+    {
+      "url": "https://www.police.vic.gov.au/national-police-check",
+      "error": "HTTP Error 404: "
+    },
+    {
+      "url": "https://www.police.qld.gov.au/units/criminal-history-screening",
+      "error": "HTTP Error 404: "
+    },
+    {
+      "url": "https://www.kidsguardian.nsw.gov.au/working-with-children",
+      "error": "Failed to perform, curl: (6) Could not resolve host: www.kidsguardian.nsw.gov.au. See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+    },
+    {
+      "url": "https://immi.homeaffairs.gov.au/visas/working-in-australia",
+      "error": "empty content"
+    },
+    {
+      "url": "https://legislation.nsw.gov.au/view/html/inforce/current/act-1991-008",
+      "error": "empty content"
+    },
+    {
+      "url": "https://www.legislation.qld.gov.au/view/html/inforce/current/act-2004-015",
+      "error": "HTTP Error 404: "
+    }
+  ],
   "output_jsonl": "data\\canonical\\au_blog_chunks.jsonl",
   "state_path": "data\\canonical\\source_state.json"
 }

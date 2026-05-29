@@ -60,14 +60,14 @@ def test_parser_cleans_topic_with_audience_suffix():
 
 def test_parser_extracts_topic_from_regarding_marker():
     parsed = parse_user_input(
-        "Generate an in-depth editorial regarding police check procedures and background verification policies in the modern workplace."
+        "Generate an in-depth editorial regarding police check procedures and background verification policies in the modern offices."
     )
     assert "police check procedures" in parsed.topic.lower()
 
 
 def test_parser_extracts_topic_from_multiline_configured_prompt():
     parsed = parse_user_input(
-        "Generate an in-depth editorial regarding police check procedures and background verification policies in the modern workplace.\n\n"
+        "Generate an in-depth editorial regarding police check procedures and background verification policies in the modern offices.\n\n"
         "Editorial settings:\n"
         "- tone: Professional\n"
         "- target_word_count: 800 Words\n"
@@ -78,7 +78,7 @@ def test_parser_extracts_topic_from_multiline_configured_prompt():
 
 def test_parser_extracts_audience_from_multiline_configured_prompt():
     parsed = parse_user_input(
-        "Generate an in-depth editorial regarding police check procedures and background verification policies in the modern workplace.\n\n"
+        "Generate an in-depth editorial regarding police check procedures and background verification policies in the modern offices.\n\n"
         "Editorial settings:\n"
         "- tone: Professional\n"
         "- target_word_count: 800 Words\n"

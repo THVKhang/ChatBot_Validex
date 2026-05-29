@@ -1,0 +1,112 @@
+{
+  "evaluation_timestamp": "2026-05-29T07:36:33Z",
+  "metrics": {
+    "mean_precision_at_k": 1.0,
+    "mean_recall_at_k": 2.0,
+    "mean_mrr": 0.25,
+    "mean_faithfulness_score": 0.275,
+    "mean_relevance_score": 0.625
+  },
+  "query_details": [
+    {
+      "query": "How long does a national police check take in Australia?",
+      "latency_seconds": 21.32,
+      "retrieval": {
+        "precision_at_k": 1.0,
+        "recall_at_k": 2.33,
+        "reciprocal_rank": 0.0,
+        "retrieved_ids": [
+          "doc_b0a761ef2bd45b49",
+          "doc_9248a9704a733efa",
+          "doc_fa0c8f893fc564ac",
+          "doc_aecbcca67ab2b844",
+          "doc_af575b854bd7ee25",
+          "doc_5bb97b854db998c2",
+          "doc_e6d6552d65cb0a9b"
+        ]
+      },
+      "ml_judge": {
+        "faithfulness_score": 0.1,
+        "faithfulness_reason": "The retrieved context does not provide any information regarding how long a national police check takes. The generated answer provides specific timeframes (e.g., 'a few days to several weeks', '1-3 business days', '1-30 days') which are not supported by the context. While it correctly notes in one section that the context 'does not specify a typical duration', it then proceeds to hallucinate durations in other sections.",
+        "relevance_score": 0.5,
+        "relevance_reason": "Evaluation error: Error calling model 'models/gemini-2.5-flash' (RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 5, model: gemini-2.5-flash\\nPlease retry in 13.799402324s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '5'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '13s'}]}}"
+      },
+      "generation_mode": "llm"
+    },
+    {
+      "query": "What identity documents do I need to supply for a background check?",
+      "latency_seconds": 13.36,
+      "retrieval": {
+        "precision_at_k": 1.0,
+        "recall_at_k": 2.33,
+        "reciprocal_rank": 0.0,
+        "retrieved_ids": [
+          "doc_9248a9704a733efa",
+          "doc_41127d176b991e03",
+          "doc_af575b854bd7ee25",
+          "doc_6e709496fa94eb7f",
+          "doc_eb9f96c8ae58b7d4",
+          "doc_d5d94075a4ba70c4",
+          "doc_81f9bb46b8bf0e53"
+        ]
+      },
+      "ml_judge": {
+        "faithfulness_score": 0.5,
+        "faithfulness_reason": "Evaluation error: Error calling model 'models/gemini-2.5-flash' (RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 5, model: gemini-2.5-flash\\nPlease retry in 59.802706607s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '5'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '59s'}]}}",
+        "relevance_score": 0.5,
+        "relevance_reason": "Evaluation error: Error calling model 'models/gemini-2.5-flash' (RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 5, model: gemini-2.5-flash\\nPlease retry in 59.301573849s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '5'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '59s'}]}}"
+      },
+      "generation_mode": "llm"
+    },
+    {
+      "query": "What are the rules for spent convictions under Commonwealth law?",
+      "latency_seconds": 16.9,
+      "retrieval": {
+        "precision_at_k": 1.0,
+        "recall_at_k": 2.33,
+        "reciprocal_rank": 0.0,
+        "retrieved_ids": [
+          "doc_38892efe8fd33ac5",
+          "doc_96992e92776b5262",
+          "doc_1eaffb331dd001cb",
+          "doc_af575b854bd7ee25",
+          "doc_9004827bb0809331",
+          "doc_5f1863eeeb3e89f3",
+          "doc_bd922a5ff0b4a04f"
+        ]
+      },
+      "ml_judge": {
+        "faithfulness_score": 0.5,
+        "faithfulness_reason": "Evaluation error: Error calling model 'models/gemini-2.5-flash' (RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 5, model: gemini-2.5-flash\\nPlease retry in 41.817340157s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '5'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '41s'}]}}",
+        "relevance_score": 0.5,
+        "relevance_reason": "Evaluation error: Error calling model 'models/gemini-2.5-flash' (RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 5, model: gemini-2.5-flash\\nPlease retry in 41.326200717s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '5'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '41s'}]}}"
+      },
+      "generation_mode": "llm"
+    },
+    {
+      "query": "Vietnam travel visa requirements and tour packages.",
+      "latency_seconds": 7.49,
+      "retrieval": {
+        "precision_at_k": 1.0,
+        "recall_at_k": 1.0,
+        "reciprocal_rank": 1.0,
+        "retrieved_ids": [
+          "doc_c5ce8e8a4700deb3",
+          "doc_b9c60b7781b8495a",
+          "doc_9248a9704a733efa",
+          "doc_a6554229ac5a480b",
+          "doc_1a4b5bc3947bc6e4",
+          "doc_86d8d67efaafef06",
+          "doc_4716d341373aacac"
+        ]
+      },
+      "ml_judge": {
+        "faithfulness_score": 0.0,
+        "faithfulness_reason": "The generated answer extensively discusses Vietnam travel visa requirements and tour packages, including specific details about visa types, processing, exemptions, and destinations. However, the provided context documents are entirely unrelated to Vietnam travel. They discuss Australian national police checks, security clearances (AGSVA), and employment suitability screening criteria. The answer fabricates almost all information regarding Vietnam.",
+        "relevance_score": 1.0,
+        "relevance_reason": "The generated answer directly addresses the user's query about Vietnam travel visa requirements and tour packages, providing detailed information on the visa application process, eligibility criteria, and available tour packages."
+      },
+      "generation_mode": "llm"
+    }
+  ]
+}

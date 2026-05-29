@@ -1,19 +1,24 @@
-"""RAG Evaluator — Acts as a quality gate between Retrieval and Generation.
+"""RAG Evaluator — Multi-dimensional quality gate between Retrieval and Generation.
 
-Evaluates the relevance of retrieved documents to the parsed prompt.
-If the context score is below a threshold, it triggers a fallback web search
-to enrich the context before handing off to the Writer Node.
+Evaluates retrieved documents across 4 dimensions:
+  - Relevance: Semantic similarity to topic
+  - Coverage: How many sub-aspects of the topic are covered
+  - Diversity: How varied the source content is
+  - Freshness: Metadata-based recency score
+
+If the weighted score is below threshold, triggers Researcher retry with
+specific feedback about WHAT is missing.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 
-from app.langchain_pipeline import pipeline
 from app.parser import ParsedPrompt
 
 logger = logging.getLogger(__name__)
@@ -21,104 +26,236 @@ logger = logging.getLogger(__name__)
 
 class EvaluationResult(BaseModel):
     """Structured output for context evaluation."""
-    score: float = Field(description="Relevance score from 0.0 to 1.0")
+    score: float = Field(description="Weighted score from 0.0 to 1.0")
+    relevance: float = Field(default=0.0, description="Semantic relevance 0-1")
+    coverage: float = Field(default=0.0, description="Topic coverage 0-1")
+    diversity: float = Field(default=0.0, description="Source diversity 0-1")
+    freshness: float = Field(default=0.0, description="Recency score 0-1")
     reasoning: str = Field(description="Brief reasoning for the score")
-    needs_enrichment: bool = Field(description="True if score < 0.3 or missing key info")
+    missing_aspects: list[str] = Field(default_factory=list, description="Sub-topics not covered")
+    needs_enrichment: bool = Field(description="True if weighted score < threshold")
 
 
 class RAGEvaluator:
-    """Evaluates RAG context relevance and enriches if necessary."""
+    """Multi-dimensional RAG context evaluator."""
 
-    def __init__(self, threshold: float = 0.3) -> None:
+    # Weights for final score
+    W_RELEVANCE = 0.40
+    W_COVERAGE = 0.30
+    W_DIVERSITY = 0.20
+    W_FRESHNESS = 0.10
+
+    def __init__(self, threshold: float = 0.45) -> None:
         self.threshold = threshold
 
+    # ── Metric 1: Relevance (semantic similarity) ──────────────────
+    def _score_relevance(self, topic: str, docs: list[Document]) -> float:
+        """Cosine similarity between topic and doc contents."""
+        try:
+            from app.local_semantics import get_embedding, get_embeddings, batch_cosine_similarity
+
+            topic_emb = get_embedding(topic)
+            doc_texts = [doc.page_content[:500] for doc in docs[:5]]
+            doc_embs = get_embeddings(doc_texts)
+
+            sims = batch_cosine_similarity(topic_emb, doc_embs)
+            max_sim = float(max(sims))
+            avg_sim = float(sum(sims) / len(sims))
+
+            # Map raw similarity (typically 0.1-0.6) to 0.0-1.0
+            return min(1.0, max(0.0, (max_sim * 2.0) + (avg_sim * 0.5)))
+        except Exception as exc:
+            logger.error("Relevance scoring failed: %s", exc)
+            return 0.5
+
+    # ── Metric 2: Coverage (sub-aspect check) ──────────────────────
+    def _generate_sub_aspects(self, topic: str) -> list[str]:
+        """Generate sub-aspects a good article about this topic should cover."""
+        # Common article aspects
+        base_aspects = [
+            f"what is {topic}",
+            f"how {topic} works",
+            f"requirements for {topic}",
+            f"benefits of {topic}",
+            f"process and steps for {topic}",
+        ]
+        return base_aspects
+
+    def _score_coverage(self, topic: str, docs: list[Document]) -> tuple[float, list[str]]:
+        """Check how many sub-aspects are covered by at least one doc.
+        Returns (score, list_of_missing_aspects).
+        """
+        try:
+            from app.local_semantics import get_embedding, get_embeddings, batch_cosine_similarity
+
+            sub_aspects = self._generate_sub_aspects(topic)
+            if not sub_aspects:
+                return 0.5, []
+
+            doc_texts = [doc.page_content[:600] for doc in docs[:5]]
+            if not doc_texts:
+                return 0.0, sub_aspects
+
+            doc_embs = get_embeddings(doc_texts)
+
+            covered = 0
+            missing = []
+            for aspect in sub_aspects:
+                aspect_emb = get_embedding(aspect)
+                sims = batch_cosine_similarity(aspect_emb, doc_embs)
+                best_sim = float(max(sims))
+                if best_sim >= 0.25:
+                    covered += 1
+                else:
+                    missing.append(aspect)
+
+            score = covered / len(sub_aspects)
+            return score, missing
+        except Exception as exc:
+            logger.error("Coverage scoring failed: %s", exc)
+            return 0.5, []
+
+    # ── Metric 3: Diversity (content variety) ──────────────────────
+    def _score_diversity(self, docs: list[Document]) -> float:
+        """Measure how diverse the retrieved docs are (low similarity = high diversity)."""
+        if len(docs) <= 1:
+            return 0.5
+
+        try:
+            from app.local_semantics import get_embeddings, batch_cosine_similarity
+
+            doc_texts = [doc.page_content[:400] for doc in docs[:5]]
+            doc_embs = get_embeddings(doc_texts)
+
+            # Calculate average pairwise similarity
+            total_sim = 0.0
+            pair_count = 0
+            for i in range(len(doc_embs)):
+                for j in range(i + 1, len(doc_embs)):
+                    import numpy as np
+                    sim = float(np.dot(doc_embs[i], doc_embs[j]))
+                    total_sim += sim
+                    pair_count += 1
+
+            if pair_count == 0:
+                return 0.5
+
+            avg_pairwise_sim = total_sim / pair_count
+            # Low pairwise similarity = high diversity → invert
+            diversity = 1.0 - min(1.0, max(0.0, avg_pairwise_sim))
+            return diversity
+        except Exception as exc:
+            logger.error("Diversity scoring failed: %s", exc)
+            return 0.5
+
+    # ── Metric 4: Freshness (metadata-based) ──────────────────────
+    def _score_freshness(self, docs: list[Document]) -> float:
+        """Score based on document recency metadata."""
+        from datetime import datetime
+
+        scores = []
+        now = datetime.now()
+
+        for doc in docs[:5]:
+            last_updated = doc.metadata.get("last_updated", "")
+            if not last_updated:
+                scores.append(0.5)  # Unknown = neutral
+                continue
+            try:
+                doc_date = datetime.fromisoformat(str(last_updated).replace("Z", "+00:00"))
+                days_old = (now - doc_date.replace(tzinfo=None)).days
+                # < 30 days = 1.0, 30-180 = 0.7, 180-365 = 0.5, > 365 = 0.3
+                if days_old < 30:
+                    scores.append(1.0)
+                elif days_old < 180:
+                    scores.append(0.7)
+                elif days_old < 365:
+                    scores.append(0.5)
+                else:
+                    scores.append(0.3)
+            except (ValueError, TypeError):
+                scores.append(0.5)
+
+        return sum(scores) / len(scores) if scores else 0.5
+
+    # ── Main Evaluation ────────────────────────────────────────────
     def evaluate_context(
         self,
         parsed: ParsedPrompt,
         docs: list[Document],
     ) -> EvaluationResult:
-        """Evaluate if the retrieved documents adequately cover the topic."""
+        """Multi-dimensional evaluation of retrieved context."""
         if not docs:
             logger.warning("RAG Evaluator: No documents retrieved")
             return EvaluationResult(
                 score=0.0,
                 reasoning="No documents available in context.",
+                missing_aspects=[f"everything about {parsed.topic}"],
                 needs_enrichment=True,
             )
 
-        if pipeline._llm is None:
-            # Fallback heuristic: assume good if we have docs and no LLM to check
-            return EvaluationResult(score=0.5, reasoning="LLM disabled, heuristic pass", needs_enrichment=False)
+        if not parsed.topic:
+            return EvaluationResult(score=0.5, reasoning="Empty topic", needs_enrichment=False)
 
-        doc_summary = "\n".join([f"- {d.metadata.get('title', 'Unknown')}: {d.page_content[:150]}" for d in docs[:5]])
-        
-        prompt = (
-            f"You are evaluating the relevance of retrieved documents for a blog topic.\n"
-            f"Topic: {parsed.topic}\n"
-            f"Intent: {parsed.intent}\n\n"
-            f"Retrieved Documents:\n{doc_summary}\n\n"
-            "Score how well these documents cover the topic from 0.0 to 1.0. "
-            "Return a JSON object with: 'score' (float), 'reasoning' (string), "
-            "'needs_enrichment' (boolean - true if score < 0.3)."
+        # Score each dimension
+        relevance = self._score_relevance(parsed.topic, docs)
+        coverage, missing_aspects = self._score_coverage(parsed.topic, docs)
+        diversity = self._score_diversity(docs)
+        freshness = self._score_freshness(docs)
+
+        # Weighted final score
+        weighted = (
+            self.W_RELEVANCE * relevance
+            + self.W_COVERAGE * coverage
+            + self.W_DIVERSITY * diversity
+            + self.W_FRESHNESS * freshness
         )
 
-        try:
-            # Use structured output for reliable JSON parsing
-            structured_llm = pipeline._llm.with_structured_output(EvaluationResult)
-            result = structured_llm.invoke(prompt)
-            if isinstance(result, EvaluationResult):
-                logger.info("RAG Evaluator: score=%.2f, needs_enrichment=%s", result.score, result.needs_enrichment)
-                return result
-        except Exception as exc:
-            logger.warning("RAG Evaluator failed: %s", exc)
+        needs_enrichment = weighted < self.threshold
 
-        # Fallback to heuristic
-        return EvaluationResult(score=0.5, reasoning="Evaluation failed, using heuristic", needs_enrichment=False)
+        reasoning = (
+            f"rel={relevance:.2f} cov={coverage:.2f} "
+            f"div={diversity:.2f} fresh={freshness:.2f} → "
+            f"weighted={weighted:.2f} (threshold={self.threshold})"
+        )
+
+        logger.info(
+            "RAG Evaluator: %s | missing=%s | enrich=%s",
+            reasoning, missing_aspects[:3], needs_enrichment,
+        )
+
+        return EvaluationResult(
+            score=weighted,
+            relevance=relevance,
+            coverage=coverage,
+            diversity=diversity,
+            freshness=freshness,
+            reasoning=reasoning,
+            missing_aspects=missing_aspects,
+            needs_enrichment=needs_enrichment,
+        )
 
     def enrich_context(self, parsed: ParsedPrompt, current_docs: list[Document]) -> list[Document]:
         """Trigger web search to enrich context if original retrieval was poor."""
         logger.info("RAG Evaluator enriching context for topic: %s", parsed.topic)
         try:
-            from app.agents.researcher_node import researcher_node
-            from app.graph_state import GraphState
-            
-            # Create a dummy state just for the researcher to fetch more via web
-            mock_state = GraphState(
-                prompt=parsed.topic,
-                parsed=parsed.model_dump(),
-                retrieved_docs=[],  # Start fresh for web search
-                session=None,       # type: ignore
-            )
-            # Temporarily force researcher to bypass DB and go straight to web
-            result_state = researcher_node(mock_state)
-            new_docs_data = result_state.get("retrieved_docs", [])
-            
-            new_docs = [
-                Document(
-                    page_content=d["content"],
-                    metadata={
-                        "doc_id": d["doc_id"],
-                        "score": d["score"],
-                        "source": d.get("source", "web_search"),
-                        "title": d.get("title", ""),
-                        "source_url": d.get("source_url", ""),
-                    }
-                )
-                for d in new_docs_data
-            ]
-            
+            from app.agents.researcher_node import _web_search_with_scraping
+
+            web_docs = _web_search_with_scraping(parsed.topic, max_results=3)
+
             # Combine without duplicates
             seen_urls = {d.metadata.get("source_url") for d in current_docs if d.metadata.get("source_url")}
             enriched_docs = list(current_docs)
-            for d in new_docs:
+            for d in web_docs:
                 if d.metadata.get("source_url") not in seen_urls:
                     enriched_docs.append(d)
-                    
+
             logger.info("RAG Evaluator added %d new docs from enrichment", len(enriched_docs) - len(current_docs))
             return enriched_docs
-            
+
         except Exception as exc:
             logger.error("RAG Evaluator context enrichment failed: %s", exc)
             return current_docs
 
-rag_evaluator = RAGEvaluator(threshold=0.3)
+
+rag_evaluator = RAGEvaluator(threshold=0.45)
