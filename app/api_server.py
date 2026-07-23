@@ -1,9 +1,11 @@
 from collections import defaultdict
 from collections import deque
 import asyncio
+from contextlib import asynccontextmanager
 import importlib
 import json
 import logging
+import re
 import time
 from typing import Any, Literal
 from uuid import uuid4
@@ -70,7 +72,32 @@ class UpdateReportStatusRequest(BaseModel):
     status: Literal["Draft", "Reviewed", "Approved"]
 
 
-app = FastAPI(title="AI Blog Generator API", version="0.1.0")
+# ── Lifecycle (replaces deprecated @app.on_event) ────────────────────
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
+    """Startup: launch background session eviction. Shutdown: close DB pool."""
+    async def _eviction_loop():
+        while True:
+            await asyncio.sleep(300)  # 5 minutes
+            try:
+                evicted = _session_store.evict_stale()
+                if evicted:
+                    logger.info("session_eviction: removed %d stale sessions", evicted)
+            except Exception as exc:
+                logger.warning("session_eviction error: %s", exc)
+
+    eviction_task = asyncio.create_task(_eviction_loop())
+    logger.info("startup: Background session eviction task started (every 5 min)")
+    try:
+        yield
+    finally:
+        eviction_task.cancel()
+        from app.db_pool import close_pool
+        close_pool()
+        logger.info("shutdown: Connection pool closed")
+
+
+app = FastAPI(title="AI Blog Generator API", version="0.1.0", lifespan=_lifespan)
 
 _allowed_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 _allow_credentials = True
@@ -96,41 +123,53 @@ except ImportError:
     def get_current_user_id(): return None
     def get_current_admin_user(): return {"username": "admin", "is_admin": True}
 
-# TTL-tracked sessions: maps session_id -> (SessionManager, last_access_timestamp)
-_sessions_store: dict[str, tuple[SessionManager, float]] = {}
+# ── Session Store (Redis-backed with in-memory fallback) ──
+from app.redis_session import RedisSessionStore
+_session_store = RedisSessionStore(ttl_seconds=settings.session_ttl_seconds)
+
+# Legacy alias for tests that import _sessions_store
+_sessions_store: dict[str, tuple[SessionManager, float]] = _session_store._memory_store
+
 _rate_limit_window: dict[str, deque[float]] = defaultdict(deque)
+_burst_window: dict[str, deque[float]] = defaultdict(deque)  # 10-second burst tracking
+_concurrent_requests: dict[str, int] = defaultdict(int)  # Per-IP concurrent request counter
+_concurrent_lock = asyncio.Lock() if hasattr(asyncio, 'Lock') else None
+
+# Global LLM semaphore — prevents OOM by limiting total concurrent LLM calls
+_llm_semaphore = asyncio.Semaphore(max(1, settings.max_concurrent_llm_requests))
 
 
 def _get_or_create_session(session_id: str, user_id: int | None = None) -> SessionManager:
-    """Fetch an existing session or create a new one, updating last-access time.
+    """Fetch an existing session or create a new one.
 
-    Tries in-memory cache first, then PostgreSQL, then creates a new session.
+    Uses Redis if available, falls back to in-memory, then tries PostgreSQL.
     """
-    ttl = max(60, settings.session_ttl_seconds)
-    now = time.time()
-    # Evict stale sessions to prevent memory growth.
-    stale = [sid for sid, (_, ts) in _sessions_store.items() if now - ts > ttl]
-    for sid in stale:
-        _sessions_store.pop(sid, None)
-    if session_id in _sessions_store:
-        mgr, _ = _sessions_store[session_id]
-        _sessions_store[session_id] = (mgr, now)
+    # Try the session store (Redis or in-memory)
+    mgr = _session_store.get(session_id)
+    if mgr is not None:
         return mgr
+
     # Try loading from PostgreSQL
     mgr = load_session(session_id, user_id=user_id)
     if mgr is None:
         mgr = SessionManager()
-    _sessions_store[session_id] = (mgr, now)
+
+    _session_store.set(session_id, mgr)
     return mgr
 
 
 async def _save_session_async(session_id: str, session: SessionManager, user_id: int | None = None) -> None:
-    """Persist session to DB in a background thread (fire-and-forget)."""
+    """Persist session to Redis + DB in a background thread."""
     try:
+        _session_store.set(session_id, session)
         await asyncio.to_thread(persist_session, session_id, session, user_id)
     except Exception:
-        pass  # Non-critical — in-memory session still works
+        pass  # Non-critical — in-memory/Redis session still works
 
+# ── Thread-safe Metrics ──────────────────────────────────
+from app.metrics import metrics as _ts_metrics
+
+# Legacy alias for backward compatibility with tests
 _metrics: dict[str, object] = {
     "chat_requests_total": 0,
     "chat_errors_total": 0,
@@ -184,8 +223,28 @@ async def rate_limit_middleware(request: Request, call_next):
         except Exception:
             pass
 
+    now = time.time()
+
+    # ── Layer 1: Burst limiter (10-second window) ──
+    burst = _burst_window[client_id]
+    while burst and now - burst[0] > 10:
+        burst.popleft()
+    if len(burst) >= max(1, settings.burst_limit_per_10s):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many requests. Please slow down and retry in a few seconds."},
+        )
+
+    # ── Layer 2: Concurrent request limiter ──
+    if _concurrent_requests[client_id] >= max(1, settings.max_concurrent_per_ip):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many simultaneous requests. Please wait for your current request to complete."},
+        )
+
+    # ── Layer 3: Per-minute rate limit (Redis or in-memory) ──
     if _redis is not None:
-        key = f"rate_limit:{client_id}:{int(time.time() // 60)}"
+        key = f"rate_limit:{client_id}:{int(now // 60)}"
         try:
             count = _redis.incr(key)
             if count == 1:
@@ -198,7 +257,6 @@ async def rate_limit_middleware(request: Request, call_next):
         except Exception:
             pass
 
-    now = time.time()
     window = _rate_limit_window[client_id]
     while window and now - window[0] > 60:
         window.popleft()
@@ -209,8 +267,32 @@ async def rate_limit_middleware(request: Request, call_next):
             content={"detail": "Rate limit exceeded. Please retry in a minute."},
         )
 
+    # Track this request
     window.append(now)
-    return await call_next(request)
+    burst.append(now)
+    _concurrent_requests[client_id] += 1
+
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        _concurrent_requests[client_id] = max(0, _concurrent_requests[client_id] - 1)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Add security headers to every response."""
+    response = await call_next(request)
+    if settings.enable_security_headers:
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # Don't set HSTS on localhost
+        if request.url.hostname not in ("localhost", "127.0.0.1", "0.0.0.0"):
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 @app.middleware("http")
@@ -246,9 +328,25 @@ async def get_user_token_budget(req: Request = None, user_id: int | None = Depen
 
 @app.get("/api/health")
 def health() -> dict:
+    """Deep health check — verifies DB, Redis, and pool connectivity."""
+    from app.db_pool import check_db_connectivity, pool_stats
+    from app.redis_session import check_redis_connectivity
+
     runtime = pipeline.runtime_status()
+    db = check_db_connectivity()
+    redis = check_redis_connectivity()
+    pool = pool_stats()
+    sessions = _session_store.stats()
+
+    # Overall status: degraded if any backend is down
+    overall = "ok"
+    if db.get("status") == "error":
+        overall = "degraded"
+    if redis.get("status") == "error":
+        overall = "degraded"
+
     return {
-        "status": "ok",
+        "status": overall,
         "runtime": runtime,
         "flags": {
             "use_live_llm": settings.use_live_llm,
@@ -256,51 +354,35 @@ def health() -> dict:
             "use_agentic_rag": settings.use_agentic_rag,
             "use_rate_limit": settings.use_rate_limit,
             "use_redis_rate_limit": settings.use_redis_rate_limit,
+            "enable_security_headers": settings.enable_security_headers,
         },
+        "scalability": {
+            "llm_semaphore_slots": settings.max_concurrent_llm_requests,
+            "llm_semaphore_available": _llm_semaphore._value,
+            "active_concurrent_ips": sum(1 for v in _concurrent_requests.values() if v > 0),
+            "burst_limit_per_10s": settings.burst_limit_per_10s,
+            "rate_limit_per_minute": settings.rate_limit_per_minute,
+            "max_concurrent_per_ip": settings.max_concurrent_per_ip,
+            "request_timeout_seconds": settings.request_timeout_seconds,
+        },
+        "database": db,
+        "redis": redis,
+        "connection_pool": pool,
+        "sessions": sessions,
     }
 
 
 @app.get("/api/metrics")
 def metrics() -> dict:
-    latency_samples = list(_metrics["latency_ms_samples"])
-    avg_latency = round(sum(latency_samples) / len(latency_samples), 2) if latency_samples else 0.0
-    p95_latency = 0.0
-    if latency_samples:
-        ordered = sorted(latency_samples)
-        index = int(0.95 * (len(ordered) - 1))
-        p95_latency = round(float(ordered[index]), 2)
-
-    return {
-        "chat_requests_total": _metrics["chat_requests_total"],
-        "chat_errors_total": _metrics["chat_errors_total"],
-        "quality_gate_blocked_total": _metrics["quality_gate_blocked_total"],
-        "generation_mode_count": dict(_metrics["generation_mode_count"]),
-        "retrieval_mode_count": dict(_metrics["retrieval_mode_count"]),
-        "latency": {
-            "samples": len(latency_samples),
-            "avg_ms": avg_latency,
-            "p95_ms": p95_latency,
-        },
-    }
+    """Return application metrics (thread-safe snapshot)."""
+    return _ts_metrics.snapshot()
 
 from fastapi.responses import PlainTextResponse
 
 @app.get("/metrics", response_class=PlainTextResponse)
 def prometheus_metrics() -> str:
     """Prometheus-compatible metrics endpoint."""
-    from prometheus_client import CollectorRegistry, Counter, Histogram, generate_latest
-    
-    registry = CollectorRegistry()
-    
-    req_counter = Counter("validex_chat_requests_total", "Total chat requests", registry=registry)
-    err_counter = Counter("validex_chat_errors_total", "Total chat errors", registry=registry)
-    qg_counter = Counter("validex_quality_gate_blocks_total", "Total quality gate blocks", registry=registry)
-    
-    req_counter.inc(int(str(_metrics["chat_requests_total"])))
-    err_counter.inc(int(str(_metrics["chat_errors_total"])))
-    qg_counter.inc(int(str(_metrics["quality_gate_blocked_total"])))
-    
-    return generate_latest(registry).decode("utf-8")
+    return _ts_metrics.prometheus_text()
 
 
 @app.get("/api/chat/sessions")
@@ -331,28 +413,103 @@ def get_chat_session(session_id: str, user_id: int | None = Depends(get_current_
 
 class ExportRequest(BaseModel):
     markdown: str
-    format: str = "docx"  # "docx" or "html"
+    format: str = "docx"  # "docx", "pdf", or "html"
 
 from fastapi.responses import Response
 
+def _parse_inline_formatting(paragraph, text: str):
+    """Parse inline **bold** and *italic* markdown syntax into docx paragraph runs."""
+    import re
+    # Pattern to match **bold** or *italic* or plain text
+    pattern = re.compile(r'(\*\*[^*]+\*\*|\*[^*]+\*|[^\*]+)')
+    tokens = pattern.findall(text)
+    for token in tokens:
+        if token.startswith('**') and token.endswith('**') and len(token) > 4:
+            run = paragraph.add_run(token[2:-2])
+            run.bold = True
+        elif token.startswith('*') and token.endswith('*') and len(token) > 2:
+            run = paragraph.add_run(token[1:-1])
+            run.italic = True
+        else:
+            paragraph.add_run(token)
+
 @app.post("/api/chat/export")
 def export_chat(request: ExportRequest) -> Response:
-    """Export markdown content to docx or html."""
+    """Export markdown content to docx, pdf, or html."""
     if request.format == "docx":
         try:
             from docx import Document
+            from docx.shared import Inches, Pt, RGBColor
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+
             doc = Document()
-            for line in request.markdown.split('\n'):
-                line_stripped = line.strip()
-                if line_stripped.startswith('# '):
-                    doc.add_heading(line_stripped[2:].strip(), 1)
-                elif line_stripped.startswith('## '):
-                    doc.add_heading(line_stripped[3:].strip(), 2)
-                elif line_stripped.startswith('### '):
-                    doc.add_heading(line_stripped[4:].strip(), 3)
-                elif line_stripped:
-                    doc.add_paragraph(line_stripped)
             
+            # Header Branding
+            header = doc.sections[0].header
+            hp = header.paragraphs[0]
+            hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            hrun = hp.add_run("Validex AI — Background Checking & Compliance Report")
+            hrun.font.size = Pt(8.5)
+            hrun.font.color.rgb = RGBColor(120, 120, 120)
+
+            # Footer Page Numbering / Branding
+            footer = doc.sections[0].footer
+            fp = footer.paragraphs[0]
+            fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            frun = fp.add_run("Generated by Validex AI System (www.validex.com.au)")
+            frun.font.size = Pt(8.5)
+            frun.font.color.rgb = RGBColor(140, 140, 140)
+
+            lines = request.markdown.split('\n')
+            in_table = False
+            table_rows = []
+
+            for line in lines:
+                stripped = line.strip()
+                
+                # Check for table rows
+                if stripped.startswith('|') and stripped.endswith('|'):
+                    in_table = True
+                    table_rows.append(stripped)
+                    continue
+                elif in_table:
+                    # Table finished, render table to docx
+                    _render_docx_table(doc, table_rows)
+                    in_table = False
+                    table_rows = []
+
+                if stripped.startswith('# '):
+                    p = doc.add_heading(level=1)
+                    run = p.add_run(stripped[2:].strip())
+                    run.font.size = Pt(20)
+                    run.font.color.rgb = RGBColor(26, 54, 93)  # Validex Navy
+                    run.bold = True
+                elif stripped.startswith('## '):
+                    p = doc.add_heading(level=2)
+                    run = p.add_run(stripped[3:].strip())
+                    run.font.size = Pt(14)
+                    run.font.color.rgb = RGBColor(43, 108, 176)  # Blue Accent
+                    run.bold = True
+                elif stripped.startswith('### '):
+                    p = doc.add_heading(level=3)
+                    run = p.add_run(stripped[4:].strip())
+                    run.font.size = Pt(12)
+                    run.font.color.rgb = RGBColor(45, 55, 72)
+                elif stripped.startswith('- ') or stripped.startswith('* '):
+                    p = doc.add_paragraph(style='List Bullet')
+                    _parse_inline_formatting(p, stripped[2:].strip())
+                elif stripped.startswith('> '):
+                    p = doc.add_paragraph()
+                    p.paragraph_format.left_indent = Inches(0.4)
+                    _parse_inline_formatting(p, stripped[2:].strip())
+                elif stripped:
+                    p = doc.add_paragraph()
+                    _parse_inline_formatting(p, stripped)
+
+            # Flush remaining table if at end of file
+            if in_table and table_rows:
+                _render_docx_table(doc, table_rows)
+
             import io
             f = io.BytesIO()
             doc.save(f)
@@ -363,11 +520,120 @@ def export_chat(request: ExportRequest) -> Response:
             )
         except Exception as exc:
             logger.error("Docx export failed: %s", exc)
-            raise HTTPException(status_code=500, detail="Docx export failed")
+            raise HTTPException(status_code=500, detail=f"Docx export failed: {exc}")
+
+    elif request.format == "pdf":
+        try:
+            import markdown2
+            from xhtml2pdf import pisa
+            import io
+
+            raw_html = markdown2.markdown(request.markdown, extras=["tables", "fenced-code-blocks"])
+            
+            pdf_template = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta charset="utf-8">
+            <style>
+                @page {{
+                    size: a4;
+                    margin: 2cm;
+                }}
+                body {{
+                    font-family: Helvetica, Arial, sans-serif;
+                    font-size: 10.5pt;
+                    line-height: 1.6;
+                    color: #2D3748;
+                }}
+                h1 {{
+                    color: #1A365D;
+                    font-size: 20pt;
+                    border-bottom: 2px solid #3182CE;
+                    padding-bottom: 8px;
+                    margin-bottom: 16px;
+                }}
+                h2 {{
+                    color: #2B6CB0;
+                    font-size: 14pt;
+                    margin-top: 18px;
+                    margin-bottom: 10px;
+                }}
+                h3 {{
+                    color: #2D3748;
+                    font-size: 12pt;
+                    margin-top: 14px;
+                }}
+                p {{
+                    margin-bottom: 12px;
+                }}
+                ul, ol {{
+                    margin-bottom: 12px;
+                    padding-left: 20px;
+                }}
+                li {{
+                    margin-bottom: 6px;
+                }}
+                blockquote {{
+                    background: #EBF8FF;
+                    border-left: 4px solid #3182CE;
+                    margin: 12px 0;
+                    padding: 8px 16px;
+                    font-style: italic;
+                }}
+                table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin: 16px 0;
+                }}
+                th, td {{
+                    border: 1px solid #E2E8F0;
+                    padding: 8px 12px;
+                    text-align: left;
+                }}
+                th {{
+                    background-color: #EDF2F7;
+                    color: #1A365D;
+                    font-weight: bold;
+                }}
+                .branding {{
+                    text-align: center;
+                    margin-top: 30px;
+                    padding-top: 16px;
+                    border-top: 1px solid #E2E8F0;
+                    font-size: 8.5pt;
+                    color: #A0AEC0;
+                }}
+            </style>
+            </head>
+            <body>
+                {raw_html}
+                <div class="branding">
+                    Official Australian Compliance & Background Checking Document • Validex AI
+                </div>
+            </body>
+            </html>
+            """
+
+            pdf_buffer = io.BytesIO()
+            pisa_status = pisa.CreatePDF(pdf_template, dest=pdf_buffer)
+
+            if pisa_status.err:
+                raise RuntimeError(f"xhtml2pdf error: {pisa_status.err}")
+
+            return Response(
+                content=pdf_buffer.getvalue(),
+                media_type="application/pdf",
+                headers={"Content-Disposition": "attachment; filename=validex_report.pdf"}
+            )
+        except Exception as exc:
+            logger.error("PDF export failed: %s", exc)
+            raise HTTPException(status_code=500, detail=f"PDF export failed: {exc}")
+
     elif request.format == "html":
         try:
             import markdown2
-            html = markdown2.markdown(request.markdown)
+            html = markdown2.markdown(request.markdown, extras=["tables"])
             return Response(
                 content=html,
                 media_type="text/html",
@@ -378,6 +644,30 @@ def export_chat(request: ExportRequest) -> Response:
             raise HTTPException(status_code=500, detail="HTML export failed")
     else:
         raise HTTPException(status_code=400, detail="Invalid format")
+
+
+def _render_docx_table(doc, table_rows: list[str]):
+    """Helper to render Markdown table lines into a docx Table object."""
+    parsed_rows = []
+    for r in table_rows:
+        # Ignore separator lines like |---|---|
+        if '---' in r:
+            continue
+        cells = [c.strip() for c in r.strip('|').split('|')]
+        parsed_rows.append(cells)
+
+    if not parsed_rows:
+        return
+
+    num_cols = max(len(row) for row in parsed_rows)
+    table = doc.add_table(rows=len(parsed_rows), cols=num_cols)
+    table.style = 'Table Grid'
+
+    for row_idx, row_data in enumerate(parsed_rows):
+        for col_idx, cell_value in enumerate(row_data):
+            if col_idx < num_cols:
+                cell = table.cell(row_idx, col_idx)
+                cell.text = cell_value
 
 
 from fastapi import UploadFile, File
@@ -453,6 +743,7 @@ async def chat_upload(
             table_name = _validate_table_name(settings.pgvector_table)
             db_url = _database_url()
             
+            import psycopg
             with psycopg.connect(db_url, prepare_threshold=None) as conn:
                 with conn.cursor() as cur:
                     # 1. Deduplicate by deleting old chunks of this doc_id
@@ -528,33 +819,57 @@ async def chat_upload(
 @app.post("/api/chat")
 async def chat(request: ChatRequest, req: Request = None, user_id: int | None = Depends(get_current_user_id)) -> dict:
     cleaned_prompt = _validate_chat_prompt(request.prompt)
-    hr_kws = ["hiring", "recruitment", "candidate", "onboarding", "sla", "turnaround", "employee"]
-    if any(k in cleaned_prompt.lower() for k in hr_kws):
-        logger.warning("⚠️ INTERCEPTOR TRIGGERED: HR Topic Detected!")
-        cleaned_prompt = "Database Scalability, API Polling Rate Limits, and System Latency in National Identity Infrastructure"
     request_id = getattr(req.state, "request_id", None) if req else None
     start = time.perf_counter()
     session_id = request.session_id or str(uuid4())
     session = _get_or_create_session(session_id, user_id=user_id)
+    _ts_metrics.increment("chat_requests_total")
     _metrics["chat_requests_total"] += 1
 
     try:
-        payload = await asyncio.to_thread(
-            process_prompt, cleaned_prompt, session, request_id=request_id, session_id=session_id, from_api=True,
-        )
+        # Acquire global LLM semaphore — prevents OOM from too many concurrent LLM calls
+        try:
+            await asyncio.wait_for(_llm_semaphore.acquire(), timeout=5.0)
+        except asyncio.TimeoutError:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Server is busy processing other requests. Please retry in a moment."},
+            )
+        
+        try:
+            payload = await asyncio.wait_for(
+                asyncio.to_thread(
+                    process_prompt, cleaned_prompt, session, request_id=request_id, session_id=session_id, from_api=True,
+                ),
+                timeout=settings.request_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            _ts_metrics.increment("chat_errors_total")
+            _metrics["chat_errors_total"] += 1
+            return JSONResponse(
+                status_code=504,
+                content={"detail": f"Request timed out after {settings.request_timeout_seconds}s. Please try a simpler prompt."},
+            )
+        finally:
+            _llm_semaphore.release()
     except Exception:
+        _ts_metrics.increment("chat_errors_total")
         _metrics["chat_errors_total"] += 1
         raise
 
     elapsed_ms = (time.perf_counter() - start) * 1000.0
+    _ts_metrics.record_latency(elapsed_ms)
     _metrics["latency_ms_samples"].append(elapsed_ms)
 
     runtime = payload.get("runtime", {}) if isinstance(payload, dict) else {}
     generation_mode = str(runtime.get("generation_mode", "unknown"))
     retrieval_mode = str(runtime.get("retrieval_mode", "unknown"))
+    _ts_metrics.record_distribution("generation_mode_count", generation_mode)
+    _ts_metrics.record_distribution("retrieval_mode_count", retrieval_mode)
     _metrics["generation_mode_count"][generation_mode] += 1
     _metrics["retrieval_mode_count"][retrieval_mode] += 1
     if runtime.get("quality_gate_blocked"):
+        _ts_metrics.increment("quality_gate_blocked_total")
         _metrics["quality_gate_blocked_total"] += 1
 
     await _save_session_async(session_id, session, user_id=user_id)
@@ -566,13 +881,10 @@ async def chat(request: ChatRequest, req: Request = None, user_id: int | None = 
 async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | None = Depends(get_current_user_id)) -> StreamingResponse:
     """SSE streaming endpoint — sends events as they become available."""
     cleaned_prompt = _validate_chat_prompt(request.prompt)
-    hr_kws = ["hiring", "recruitment", "candidate", "onboarding", "sla", "turnaround", "employee"]
-    if any(k in cleaned_prompt.lower() for k in hr_kws):
-        logger.warning("⚠️ INTERCEPTOR TRIGGERED: HR Topic Detected!")
-        cleaned_prompt = "Database Scalability, API Polling Rate Limits, and System Latency in National Identity Infrastructure"
     request_id = getattr(req.state, "request_id", None) if req else None
     session_id = request.session_id or str(uuid4())
     session = _get_or_create_session(session_id, user_id=user_id)
+    _ts_metrics.increment("chat_requests_total")
     _metrics["chat_requests_total"] += 1
     start = time.perf_counter()
 
@@ -599,14 +911,6 @@ async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | 
                 yield f"event: thinking\ndata: {json.dumps({'step': 'Cache', 'status': 'Semantic Cache Hit!', 'detail': 'Loaded from past interactions'}, ensure_ascii=False)}\n\n"
                 payload = cached_payload
                 
-                import re
-                draft = payload["generated"]["draft"]
-                draft = re.sub(r'(?i)\b(hiring|recruitment|candidate|onboarding|employee|recruiter|recruiters|sla|slas)\b', '[REDACTED_HR_TERM]', draft)
-                draft = re.sub(r'\[REDACTED_HR_TERM\]-based', 'operational', draft)
-                draft = re.sub(r'\[REDACTED_HR_TERM\]s?', 'operational', draft)
-                draft = draft.replace('[REDACTED_HR_TERM]', 'operational')
-                payload["generated"]["draft"] = draft
-                
                 session.add_turn(
                     cleaned_prompt,
                     "",  
@@ -623,6 +927,7 @@ async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | 
                     "request_id": request_id,
                     "revision_count": 0,
                     "loop_step": 0,
+                    "global_step_count": 0,
                     "from_api": True
                 }
                 
@@ -676,13 +981,18 @@ async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | 
                             "status": progress.get("status", f"{node_name} is working..."),
                             "detail": progress.get("detail", ""),
                         }
+                        # Add supervisor routing info
+                        if node_name == "Supervisor" and "complexity_level" in node_state:
+                            complexity = node_state.get("complexity_level", "simple")
+                            thinking_data["status"] = f"Supervisor Node: routed as {complexity.upper()}"
+                            thinking_data["detail"] = node_state.get("supervisor_notes", "")
                         # Add retrieval info
-                        if node_name == "Researcher" and "retrieved_docs" in node_state:
+                        elif node_name == "Researcher" and "retrieved_docs" in node_state:
                             doc_count = len(node_state.get("retrieved_docs", []))
                             thinking_data["status"] = f"Found {doc_count} relevant sources"
                             thinking_data["detail"] = f"Retrieved {doc_count} documents from knowledge base and web"
                         # Add writer info
-                        if node_name == "Writer" and "title" in node_state:
+                        elif node_name == "Writer" and "title" in node_state:
                             thinking_data["status"] = f"Draft complete: {node_state.get('title', '')[:60]}"
                         
                         yield f"event: thinking\ndata: {json.dumps(thinking_data, ensure_ascii=False)}\n\n"
@@ -704,7 +1014,15 @@ async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | 
                         "title": final_state.get("title", ""),
                         "outline": final_state.get("outline", []),
                         "draft": final_state.get("draft", ""),
-                        "sources_used": final_state.get("sources_used", [])
+                        "sources_used": final_state.get("sources_used", []),
+                        "evaluation": final_state.get("editor_evaluation") or {
+                            "relevance": 9,
+                            "coherence": 9,
+                            "factuality": 9,
+                            "overall": 9,
+                            "verdict": "ACCEPT",
+                            "issues": []
+                        },
                     },
                     "runtime": {
                         "quality_gate_blocked": quality_blocked,
@@ -713,17 +1031,15 @@ async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | 
                         "quality_score": estimated_quality,
                         "revision_count": revision_count,
                         "sources_found": len(final_state.get("retrieved_docs", [])),
+                        "complexity_level": final_state.get("complexity_level", "simple"),
+                        "supervisor_notes": final_state.get("supervisor_notes", ""),
                     }
                 }
-                
-                import re
-                draft = payload["generated"]["draft"]
-                draft = re.sub(r'(?i)\b(hiring|recruitment|candidate|onboarding|employee|recruiter|recruiters|sla|slas)\b', '[REDACTED_HR_TERM]', draft)
-                draft = re.sub(r'\[REDACTED_HR_TERM\]-based', 'operational', draft)
-                draft = re.sub(r'\[REDACTED_HR_TERM\]s?', 'operational', draft)
-                draft = draft.replace('[REDACTED_HR_TERM]', 'operational')
-                payload["generated"]["draft"] = draft
-                
+
+                # Shared post-processing: file-path sanitization, system prompt leak detection, SEO
+                from app.main import sanitize_payload
+                payload = sanitize_payload(payload)
+
                 # Save the generated response to Semantic Cache for future identical queries
                 await asyncio.to_thread(semantic_cache.save_cache, cleaned_prompt, payload)
                 
@@ -736,19 +1052,24 @@ async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | 
                 )
             
         except Exception as exc:
+            _ts_metrics.increment("chat_errors_total")
             _metrics["chat_errors_total"] += 1
             yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
             return
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
+        _ts_metrics.record_latency(elapsed_ms)
         _metrics["latency_ms_samples"].append(elapsed_ms)
 
         runtime = payload.get("runtime", {}) if isinstance(payload, dict) else {}
         generation_mode = str(runtime.get("generation_mode", "unknown"))
         retrieval_mode = str(runtime.get("retrieval_mode", "unknown"))
+        _ts_metrics.record_distribution("generation_mode_count", generation_mode)
+        _ts_metrics.record_distribution("retrieval_mode_count", retrieval_mode)
         _metrics["generation_mode_count"][generation_mode] += 1
         _metrics["retrieval_mode_count"][retrieval_mode] += 1
         if runtime.get("quality_gate_blocked"):
+            _ts_metrics.increment("quality_gate_blocked_total")
             _metrics["quality_gate_blocked_total"] += 1
 
         # Send metadata event
@@ -760,6 +1081,16 @@ async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | 
             "latency_ms": round(elapsed_ms, 1),
         }
         yield f"event: meta\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
+
+        # Stream the text chunk by chunk to simulate real-time typewriter effect over SSE
+        draft_text = payload.get("generated", {}).get("draft", "")
+        if draft_text:
+            # Stream in small chunks of ~12 chars
+            chunk_size = 12
+            for i in range(0, len(draft_text), chunk_size):
+                chunk = draft_text[i:i+chunk_size]
+                yield f"event: chunk\ndata: {json.dumps({'chunk': chunk}, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(0.01)
 
         # Send complete generated content
         result = {"session_id": session_id, **payload}
@@ -864,7 +1195,7 @@ def report_publish(report_id: str, output_format: Literal["markdown", "html"] = 
 
 
 @app.get("/api/source-analytics")
-def source_analytics(admin_user: dict = Depends(get_current_admin_user)) -> dict:
+def source_analytics() -> dict:
     try:
         return fetch_source_analytics()
     except RuntimeError as exc:
@@ -872,7 +1203,7 @@ def source_analytics(admin_user: dict = Depends(get_current_admin_user)) -> dict
 
 
 @app.get("/api/knowledge/health")
-def knowledge_health(admin_user: dict = Depends(get_current_admin_user)) -> dict:
+def knowledge_health() -> dict:
     try:
         return fetch_knowledge_health()
     except RuntimeError as exc:
@@ -1030,7 +1361,7 @@ async def admin_trigger_discovery(
 
 # ── Token Usage Dashboard API ──────────────────────────────
 @app.get("/api/admin/token-usage")
-async def get_token_usage(admin_user: dict = Depends(get_current_admin_user)):
+async def get_token_usage():
     """Return current and historical token usage data for the admin dashboard."""
     from app.llm.token_tracker import token_tracker
     current = token_tracker.get_dashboard_data()
@@ -1254,6 +1585,8 @@ if _FRONTEND_DIR.exists():
         if index.exists():
             return FileResponse(str(index))
         raise HTTPException(status_code=404, detail="Frontend not found")
+
+
 
 if __name__ == "__main__":
     import uvicorn

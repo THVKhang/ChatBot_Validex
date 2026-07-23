@@ -165,13 +165,46 @@ def _extractive_summarize(text: str, topic: str, max_output: int = 400) -> str:
 
 
 def _score_doc_relevance(doc_text: str, topic: str) -> float:
-    """Quick heuristic relevance score (0-1) without calling LLM."""
+    """Quick heuristic relevance score (0-1) without calling LLM.
+    
+    Includes topic isolation: penalizes docs about different check types
+    to prevent WWCC contamination in police check articles and vice versa.
+    """
     topic_words = set(re.findall(r"\w+", topic.lower()))
     doc_words = set(re.findall(r"\w+", doc_text[:500].lower()))
     if not topic_words:
         return 0.5
     overlap = len(topic_words & doc_words)
-    return min(1.0, overlap / max(1, len(topic_words)))
+    base_score = min(1.0, overlap / max(1, len(topic_words)))
+    
+    # ── Topic Isolation Penalty ──
+    # Prevent cross-contamination between different check types
+    topic_lower = topic.lower()
+    doc_lower = doc_text[:1000].lower()
+    
+    # Define topic boundaries
+    is_police_check_query = any(t in topic_lower for t in ["police check", "criminal history", "national police"])
+    is_wwcc_query = any(t in topic_lower for t in ["working with children", "wwcc", "child-related"])
+    is_ndis_query = any(t in topic_lower for t in ["ndis", "disability"])
+    
+    # Penalize off-topic documents
+    if is_police_check_query and not is_wwcc_query:
+        wwcc_signals = sum(1 for s in ["working with children", "wwcc", "child-related work", "worker screening act"]
+                          if s in doc_lower)
+        if wwcc_signals >= 2:
+            base_score *= 0.4  # Heavy penalty for WWCC-heavy docs
+            
+    if is_wwcc_query and not is_police_check_query:
+        police_signals = sum(1 for s in ["criminal history check", "nationally coordinated", "acic"]
+                           if s in doc_lower)
+        if police_signals >= 2 and "children" not in doc_lower:
+            base_score *= 0.4
+            
+    if is_ndis_query:
+        if "children" in doc_lower and "ndis" not in doc_lower:
+            base_score *= 0.5
+    
+    return base_score
 
 
 def _deduplicate_docs(docs: list[Document], threshold: float = 0.8) -> list[Document]:
@@ -322,9 +355,14 @@ class ResearcherAgentNode(BaseAgentNode):
         expanded_queries = _expand_query(topic)
         all_documents: list[Document] = []
         
+        complexity_level = state.get("complexity_level", "simple")
         first_decision = None
         for i, query in enumerate(expanded_queries):
-            payload = {"effective_topic": query, "retrieval_top_k": recommended_top_k}
+            payload = {
+                "effective_topic": query,
+                "retrieval_top_k": recommended_top_k,
+                "complexity_level": complexity_level
+            }
             try:
                 bundle = pipeline._retrieve(payload)
                 if i == 0:

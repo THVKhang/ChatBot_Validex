@@ -18,6 +18,61 @@ from app.local_nli import verify_facts_nli
 logger = logging.getLogger(__name__)
 
 
+def _resolve_image_placeholders(draft: str, topic: str) -> str:
+    """Replace ![IMAGE:keyword] placeholders AND fix fake Unsplash URLs with real image URLs."""
+    from app.generator import build_section_image_url
+
+    # ── Pass 1: Resolve ![IMAGE:keyword] placeholders ──
+    placeholder_pattern = re.compile(r'!\[IMAGE:([^\]]+)\]')
+    matches = list(placeholder_pattern.finditer(draft))
+    for match in reversed(matches):
+        keyword = match.group(1).strip()
+        image_url, alt_text = _fetch_real_image(keyword, topic)
+        replacement = f"![{alt_text}]({image_url})"
+        draft = draft[:match.start()] + replacement + draft[match.end():]
+        logger.info(f"Writer: Resolved placeholder '{keyword}' → {image_url[:80]}...")
+
+    # ── Pass 2: Fix fake/hallucinated Unsplash URLs ──
+    # LLM sometimes ignores instructions and generates fake URLs like:
+    # ![alt](https://images.unsplash.com/photo-XXXXX?w=800)
+    fake_url_pattern = re.compile(
+        r'!\[([^\]]*)\]\((https://images\.unsplash\.com/photo-[A-Z0-9X]{3,}[^\)]*)\)'
+    )
+    fake_matches = list(fake_url_pattern.finditer(draft))
+    for match in reversed(fake_matches):
+        alt = match.group(1).strip()
+        fake_url = match.group(2)
+        # Only fix if URL contains obvious placeholder patterns
+        if 'XXXXX' in fake_url or 'photo-X' in fake_url or re.search(r'photo-[A-Z]{5,}', fake_url):
+            keyword = alt or topic
+            image_url, alt_text = _fetch_real_image(keyword, topic)
+            replacement = f"![{alt_text}]({image_url})"
+            draft = draft[:match.start()] + replacement + draft[match.end():]
+            logger.info(f"Writer: Fixed fake URL for '{alt}' → {image_url[:80]}...")
+
+    return draft
+
+
+def _fetch_real_image(keyword: str, topic: str) -> tuple[str, str]:
+    """Fetch a real image URL from Unsplash API, fallback to Picsum."""
+    from app.generator import build_section_image_url
+    image_url = None
+    alt_text = keyword
+
+    try:
+        result = pipeline._search_unsplash_image(keyword)
+        if result and result[0]:
+            image_url = result[0]
+            alt_text = result[1] or keyword
+    except Exception:
+        pass
+
+    if not image_url:
+        image_url = build_section_image_url(topic, keyword)
+
+    return (image_url, alt_text)
+
+
 def _plan_outline(parsed: ParsedPrompt, docs: list[Document]) -> list[dict]:
     """Stage 1: LLM generates a detailed outline with key points per section."""
     # Use fast LLM for planning
@@ -33,6 +88,31 @@ def _plan_outline(parsed: ParsedPrompt, docs: list[Document]) -> list[dict]:
     # Determine section count from user settings
     target_sections = parsed.target_sections if parsed.target_sections > 0 else 5
 
+    # Detect if user wants step-by-step format
+    prompt_lower = parsed.raw_prompt.lower()
+    is_howto = any(signal in prompt_lower for signal in [
+        "step-by-step", "step by step", "how to", "how do i", "how can i",
+        "guide", "walkthrough", "tutorial", "apply for", "applying for",
+    ])
+
+    if is_howto:
+        format_instruction = (
+            "CRITICAL FORMAT RULES:\n"
+            "1. Structure the outline as NUMBERED STEPS (Step 1, Step 2, Step 3, etc.)\n"
+            "2. Each step must be a concrete, actionable instruction the reader can follow\n"
+            "3. Steps should be in chronological order of the actual process\n"
+            "4. First section = Introduction, Last section = Conclusion\n"
+            "5. DO NOT create generic headings like 'Key Factors' or 'What This Means for You'\n"
+            "6. Example step headings: 'Step 1: Determine Which Type of Check You Need', "
+            "'Step 2: Prepare Your 100-Point ID Documents', 'Step 3: Choose an Accredited Provider'\n"
+        )
+    else:
+        format_instruction = (
+            "CRITICAL FORMAT RULES:\n"
+            "1. Make headings specific and compelling, not generic\n"
+            "2. First section = Introduction, Last section = Conclusion and Strategic Next Steps\n"
+        )
+
     prompt = (
         f"You are planning a blog article about: {parsed.topic}\n"
         f"Audience: {parsed.audience} | Tone: {parsed.tone} | Length: {parsed.length}\n"
@@ -43,10 +123,12 @@ def _plan_outline(parsed: ParsedPrompt, docs: list[Document]) -> list[dict]:
         '- "heading": section heading\n'
         '- "key_points": array of 2-3 key points to cover\n'
         '- "relevant_sources": which sources to cite\n\n'
-        "CRITICAL RULES:\n"
-        f"1. Include {target_sections}-{target_sections + 2} sections to ensure the final blog exceeds 700 words.\n"
-        "2. The final section MUST be exactly headed: \"Conclusion and Strategic Next Steps\".\n"
-        "3. Make other headings specific and compelling, not generic.\n"
+        f"{format_instruction}\n"
+        f"Include {target_sections}-{target_sections + 2} sections to ensure the final blog exceeds 700 words.\n"
+        f"TOPIC FOCUS: Stay strictly on '{parsed.topic}'. Do NOT mix in information about different types of checks "
+        "unless the user explicitly asks for comparison. For example, if the topic is 'police check', do NOT "
+        "include Working With Children Check (WWCC) details unless directly relevant.\n"
+        "Each section must cover DIFFERENT aspects — do NOT repeat the same facts across sections.\n"
         "Return ONLY the JSON array."
     )
 
@@ -67,22 +149,50 @@ def _plan_outline(parsed: ParsedPrompt, docs: list[Document]) -> list[dict]:
 
 def _self_review(draft: str, parsed: ParsedPrompt, docs: list[Document]) -> str:
     """Stage 3: LLM self-reviews and improves the draft before Editor."""
-    # Use fast LLM for review
-    llm_to_use = getattr(pipeline, "_fast_llm", pipeline._llm) or pipeline._llm
+    # Use main LLM (0.7 temperature) for review to maintain vocabulary flexibility and prose quality
+    llm_to_use = getattr(pipeline, "_llm", None) or pipeline._llm
     if llm_to_use is None or not draft:
         return draft
 
     doc_titles = [d.metadata.get("title", "Source") for d in docs[:5]]
 
+    # Detect if step-by-step was requested
+    prompt_lower = parsed.raw_prompt.lower()
+    is_howto = any(signal in prompt_lower for signal in [
+        "step-by-step", "step by step", "how to", "guide", "apply for",
+    ])
+
+    format_check = ""
+    if is_howto:
+        format_check = (
+            "6. FORMAT COMPLIANCE: The title promises a step-by-step guide. "
+            "VERIFY the draft has numbered steps (Step 1, Step 2, etc.). "
+            "If it does NOT, REWRITE the body sections as numbered steps. "
+            "Each step should be a concrete, actionable instruction.\n"
+        )
+
     prompt = (
-        "You are an editorial reviewer. Review this blog draft and improve it.\n\n"
+        "You are a senior editorial reviewer. Review this blog draft and IMPROVE it.\n\n"
         "Check for:\n"
         "1. ACCURACY: Are all claims supported by the available sources? Remove unsupported claims. "
         "CRITICAL FACT: Australian National Police Checks (ACIC) do NOT have an expiry date. They are point-in-time checks.\n"
         "2. CITATIONS: Does every factual statement have a [Source: ...] citation?\n"
         "3. COHERENCE: Do sections flow logically? Are transitions smooth?\n"
         "4. COMPLETENESS: Are all key aspects of the topic covered?\n"
-        "5. TONE: Is the tone consistent and appropriate for the target audience?\n\n"
+        "5. TONE: Is the tone consistent and appropriate for the target audience?\n"
+        f"{format_check}"
+        "7. NO REPETITION: If the SAME fact, statistic, or phrase appears in multiple sections, "
+        "REMOVE the duplicates. Each section must present UNIQUE information. "
+        "Common repetition: 'ACIC facilitates NPCS' or '5 million checks per year' — "
+        "these should appear ONCE, not in every section.\n"
+        "8. TOPIC FOCUS: Stay strictly on the main topic. "
+        "Do NOT mix in unrelated check types. For example, if the topic is 'police check', "
+        "do NOT include Working With Children Check (WWCC) details.\n"
+        "9. NO FILE PATHS: If you see any 'file://C:/' or local disk paths, REMOVE them entirely.\n"
+        "10. READABILITY: The blog MUST be readable at a Grade 8-10 level (Flesch-Kincaid). "
+        "Replace long, complex sentences with short ones (max 20 words). "
+        "Replace jargon with plain language. Break dense paragraphs into shorter ones. "
+        "Use bullet points or numbered lists to simplify complex information.\n\n"
         f"Topic: {parsed.topic}\n"
         f"Audience: {parsed.audience}\n"
         f"Tone: {parsed.tone}\n"
@@ -112,14 +222,18 @@ def _inject_outline_into_instructions(parsed: ParsedPrompt, outline: list[dict])
     if not outline:
         return parsed
 
-    outline_text = "FOLLOW THIS EXACT OUTLINE:\n"
+    outline_text = (
+        "MANDATORY OUTLINE — YOU MUST USE THESE EXACT HEADINGS IN ORDER.\n"
+        "Each section MUST cover ONLY its assigned key points. Do NOT repeat information across sections.\n"
+        "Do NOT add extra sections or change the heading text.\n\n"
+    )
     for i, section in enumerate(outline, 1):
         heading = section.get("heading", f"Section {i}")
         key_points = section.get("key_points", [])
         points_str = "; ".join(key_points) if key_points else ""
         outline_text += f"{i}. {heading}"
         if points_str:
-            outline_text += f" — Cover: {points_str}"
+            outline_text += f" — Cover ONLY: {points_str}"
         outline_text += "\n"
 
     if parsed.custom_instructions:
@@ -178,14 +292,41 @@ class WriterAgentNode(BaseAgentNode):
             for d in retrieved_docs
         ]
     
-        # Handle editor feedback (revision loop)
+        # Handle editor feedback (revision loop) — Reinforcement Learning
         feedback = state.get("editor_feedback")
         if feedback:
             logger.info(f"Writer incorporating editor feedback: {feedback}")
+            
+            # ── Targeted readability reinforcement ──
+            # When editor detects R01 (FK Grade too high) or R02 (Flesch too low),
+            # inject specific rewriting rules instead of vague "fix readability"
+            readability_boost = ""
+            if "R01:" in feedback or "R02:" in feedback:
+                readability_boost = (
+                    "\n\nREADABILITY REWRITE RULES (MANDATORY):\n"
+                    "- Split ALL sentences longer than 20 words into 2 shorter sentences.\n"
+                    "- Replace multi-syllable jargon with plain words "
+                    "(e.g., 'utilise' → 'use', 'facilitate' → 'help', 'implementation' → 'setup').\n"
+                    "- Convert dense paragraphs into bullet-point lists where possible.\n"
+                    "- Use active voice only (e.g., 'The system checks...' NOT 'Checks are performed by...').\n"
+                    "- Target Flesch-Kincaid Grade Level 8-10. Write as if explaining to a smart 14-year-old.\n"
+                )
+            
+            # ── Repetition reinforcement ──
+            repetition_boost = ""
+            if "E01:repetition" in feedback:
+                repetition_boost = (
+                    "\n\nREPETITION FIX RULES (MANDATORY):\n"
+                    "- Scan for any phrase repeated 3+ times across sections.\n"
+                    "- Replace repeated phrases with synonyms or rephrase entirely.\n"
+                    "- Each section must present unique information. Do NOT restate facts from other sections.\n"
+                )
+            
+            revision_instruction = f"EDITOR FEEDBACK: {feedback}{readability_boost}{repetition_boost}"
             if parsed.custom_instructions:
-                parsed.custom_instructions = f"EDITOR FEEDBACK: {feedback}\n\nORIGINAL INSTRUCTIONS: {parsed.custom_instructions}"
+                parsed.custom_instructions = f"{revision_instruction}\n\nORIGINAL INSTRUCTIONS: {parsed.custom_instructions}"
             else:
-                parsed.custom_instructions = f"EDITOR FEEDBACK: {feedback}"
+                parsed.custom_instructions = revision_instruction
     
         # Get previous draft for continuation mode
         previous_draft = None
@@ -212,17 +353,22 @@ class WriterAgentNode(BaseAgentNode):
                     "Apply the user's requested changes to the blog. Rules:\n"
                     "1. Keep all existing content that the user did NOT ask to change.\n"
                     "2. Only modify what the user explicitly asked for.\n"
-                    "3. If the user asks to add images, insert relevant Unsplash markdown images at appropriate positions.\n"
-                    "   Format: ![description](https://images.unsplash.com/photo-XXXXX?w=800&h=400&fit=crop)\n"
-                    "   Use real Unsplash photo IDs that match the topic.\n"
-                    "4. Maintain the same markdown format, heading structure, and tone.\n"
-                    "5. Output ONLY the modified blog post. No commentary.\n"
+                    "3. If the user asks to add images, insert a placeholder in this EXACT format:\n"
+                    "   ![IMAGE:search keyword here]\n"
+                    "   The search keyword should describe the image content (e.g., 'police officer checking documents').\n"
+                    "   Place the placeholder at an appropriate position in the blog.\n"
+                    "   Do NOT use any URL — just use the placeholder format above.\n"
+                    "4. Keep ALL existing images (lines starting with ![) unchanged.\n"
+                    "5. Maintain the same markdown format, heading structure, and tone.\n"
+                    "6. Output ONLY the modified blog post. No commentary.\n"
                 )
                 try:
                     response = llm_to_use.invoke(edit_prompt)
                     edited_draft = getattr(response, "content", str(response)).strip()
                     # Validate the edit produced something reasonable
                     if len(edited_draft) > len(previous_draft) * 0.3 and ("##" in edited_draft or "#" in edited_draft):
+                        # ── Resolve image placeholders to real URLs ──
+                        edited_draft = _resolve_image_placeholders(edited_draft, parsed.topic)
                         logger.info(f"Writer: Edit applied successfully ({len(previous_draft)} → {len(edited_draft)} chars)")
                         # Extract title from the edited draft
                         import re as _re
@@ -292,11 +438,11 @@ class WriterAgentNode(BaseAgentNode):
                 return {
                     "title": "Need More Context",
                     "outline": [
-                        "Xac dinh lai chu de trong pham vi dataset",
-                        "Bo sung tai lieu lien quan vao data/raw",
-                        "Chay ingest de cap nhat data/processed va metadata",
+                        "Refine your topic to match the available dataset",
+                        "Add relevant documents to the knowledge base",
+                        "Re-run ingestion to update processed data and metadata",
                     ],
-                    "draft": "Query hien tai nam ngoai pham vi dataset RAG hien co. (Hybrid fallback is disabled)",
+                    "draft": "This query is outside the scope of the current knowledge base. (Hybrid fallback is disabled)",
                     "sources_used": [],
                     "previous_draft": state.get("draft", ""),
                     "loop_step": loop_step,
@@ -313,6 +459,7 @@ class WriterAgentNode(BaseAgentNode):
             "sources_used": generated.sources_used if ret_status not in {"low_confidence", "out_of_domain", "no_match"} else [],
             "previous_draft": state.get("draft", ""),  # Comparison Gate: store draft before revision
             "loop_step": loop_step,
+            "global_step_count": state.get("global_step_count", 0) + 1,
         }
 
 writer_node = WriterAgentNode()

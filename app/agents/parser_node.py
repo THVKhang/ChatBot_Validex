@@ -18,7 +18,8 @@ def _llm_parse_intent(prompt: str) -> dict | None:
     except Exception:
         return None
 
-    if pipeline._llm is None:
+    llm_to_use = getattr(pipeline, "_fast_llm", pipeline._llm) or pipeline._llm
+    if llm_to_use is None:
         return None
 
     # Only send the first line (user message) — strip editorial settings
@@ -34,7 +35,7 @@ def _llm_parse_intent(prompt: str) -> dict | None:
 
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
-        response = pipeline._llm.invoke([
+        response = llm_to_use.invoke([
             SystemMessage(content=system),
             HumanMessage(content=f'"{user_message}"'),
         ])

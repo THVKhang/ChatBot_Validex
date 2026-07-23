@@ -23,6 +23,7 @@ class PromptValidationResult:
 
 # Patterns that suggest prompt injection attempts
 _INJECTION_PATTERNS: list[re.Pattern[str]] = [
+    # ── Classic injection ──
     re.compile(r"ignore\s+(all\s+)?(previous|above|prior)\s+(instructions?|prompts?|rules?|context)", re.IGNORECASE),
     re.compile(r"(disregard|forget|override)\s+(all\s+)?(previous|above|prior|your)\s+(instructions?|prompts?|rules?|context|guidelines)", re.IGNORECASE),
     re.compile(r"^system\s*:", re.IGNORECASE | re.MULTILINE),
@@ -35,6 +36,24 @@ _INJECTION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"(base64|hex|rot13|utf-8|unicode)\s+(decode|encode|translate)", re.IGNORECASE),
     re.compile(r"[\u200B-\u200D\uFEFF]", re.UNICODE), # Zero-width characters (homoglyph/stuffing attack)
     re.compile(r"(\w)\1{20,}"), # Token stuffing (repeating same character 20+ times)
+
+    # ── Prompt Extraction attacks ──
+    re.compile(r"(repeat|reveal|show|display|print|output|dump|echo|tell|give)\s+(me\s+)?(your\s+)?(system\s+|initial\s+|internal\s+)?(prompt|instructions?|rules?|guidelines|configuration)", re.IGNORECASE),
+    re.compile(r"what\s+(are|is)\s+your\s+(system\s+)?(prompt|instructions?|rules?|initial\s+message)", re.IGNORECASE),
+    re.compile(r"(output|print|show|display)\s+(everything|all|text)\s+(above|before|preceding)", re.IGNORECASE),
+    re.compile(r"(copy|paste|repeat)\s+(the\s+)?(text|content|message)\s+(above|before|from\s+the\s+start)", re.IGNORECASE),
+    re.compile(r"(begin|start)\s+(your\s+)?(response|reply|output)\s+with\s+(the|your)\s+(system|initial)", re.IGNORECASE),
+    re.compile(r"translate\s+(your\s+)?(system\s+)?(prompt|instructions?)\s+(to|into)\s+", re.IGNORECASE),
+    re.compile(r"(summarize|summarise|rephrase|paraphrase)\s+(your\s+)?(system\s+)?(prompt|instructions?|rules?)", re.IGNORECASE),
+
+    # ── Jailbreak patterns ──
+    re.compile(r"\bDAN\b.*\b(mode|prompt|jailbreak)", re.IGNORECASE),
+    re.compile(r"(developer|debug|god|admin|root)\s+mode", re.IGNORECASE),
+    re.compile(r"(bypass|disable|turn\s+off)\s+(safety|content\s+filter|guardrail|restriction)", re.IGNORECASE),
+    re.compile(r"(remove|disable)\s+(all\s+)?(limitation|restriction|filter|censorship)", re.IGNORECASE),
+
+    # ── Code fence / markdown escape attacks ──
+    re.compile(r"```\s*(system|prompt|instructions?|config)", re.IGNORECASE),
 ]
 
 # Control characters that shouldn't appear in prompts (except normal whitespace)

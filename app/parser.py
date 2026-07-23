@@ -27,19 +27,10 @@ LANGUAGE_MAP = {
 }
 
 def _detect_language(text: str) -> str:
-    """Detect language from text using Unicode character ranges."""
-    # Vietnamese diacritics
-    if re.search(r'[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]', text, re.IGNORECASE):
-        return "vi"
-    # Chinese characters
-    if re.search(r'[\u4e00-\u9fff]', text):
-        return "zh"
-    # Korean characters
-    if re.search(r'[\uac00-\ud7a3]', text):
-        return "ko"
-    # Japanese (Hiragana/Katakana)
-    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
-        return "ja"
+    """Detect language from text using Unicode character ranges.
+
+    Always returns 'en' as the chatbot is designed to only generate English content.
+    """
     return "en"
 
 
@@ -241,10 +232,11 @@ def _extract_modifiers(prompt: str) -> dict:
 
 
 def sanitize_topic_for_tech_pivot(raw_topic: str) -> bool:
-    """Interceptor to brutally check for HR topics."""
-    hr_triggers = ["candidate", "hiring", "recruitment", "onboarding", "sla", "turnaround", "employee", "workplace", "screening"]
+    """Interceptor to check for pure HR topics (not background screening domain)."""
+    import re
+    hr_triggers = [r"\bcandidate\b", r"\bhiring\b", r"\brecruitment\b", r"\bonboarding\b", r"\bsla\b", r"\bturnaround\b", r"\bemployee\b"]
     topic_lower = raw_topic.lower()
-    return any(trigger in topic_lower for trigger in hr_triggers)
+    return any(re.search(trigger, topic_lower) for trigger in hr_triggers)
 
 def parse_prompt(prompt: str) -> ParsedPrompt:
     prompt_lower = prompt.lower()

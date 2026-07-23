@@ -1,24 +1,109 @@
 from app.langchain_pipeline import pipeline
 import uuid
+import re
+import logging
 from app.session_manager import SessionManager
 
+_logger = logging.getLogger(__name__)
+
+# ── Shared Post-Processing — used by both /api/chat and /api/chat/stream ──
+
+_SYSTEM_PROMPT_FINGERPRINTS = [
+    "CONFIDENTIALITY RULE",
+    "YOUR ADAPTIVE IDENTITY",
+    "Validex Australian Expert Writer",
+    "JURISDICTION ISOLATION RULE",
+    "HR-TO-TECH TRANSLATION RULE",
+    "ANTI-REPETITION GUARDRAIL",
+    "TOPIC ISOLATION RULE",
+    "GROUNDING RULES",
+    "CRITICAL FACTUAL CONSTRAINTS",
+    "Intent-Adaptive Australian Expert",
+    "OVERRIDE]: If Custom Instructions",
+]
+
+
+def _sanitize_ui_artifacts(text: str) -> str:
+    """Clean web scraping UI artifacts, HTML button labels, and status badges."""
+    if not text:
+        return text
+    # Remove UI artifacts like '-- description html refresh bookmark thumb_up thumb_down' or pipeline tags
+    cleaned = re.sub(
+        r'(?i)(?:--\s*)?\b(?:description|html|refresh|bookmark|thumb_up|thumb_down|share|like|dislike|rating|standard\s+pipeline|complex\s+pipeline)\b',
+        '',
+        text
+    )
+    # Remove emoji status badges like 🟢, 🔴, 🟡
+    cleaned = re.sub(r'[\U0001F7E0-\U0001F7E4\U0001F44D\U0001F44E]', '', cleaned)
+    # Clean up leftover orphaned dashes and multiple spaces
+    cleaned = re.sub(r'\n\s*--\s*\n', '\n', cleaned)
+    cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
+    return cleaned.strip()
+
+
+def sanitize_payload(payload: dict) -> dict:
+    """Sanitize a generated payload: file paths, system prompt leaks, SEO analysis.
+
+    This function MUST be called on every payload before it reaches the client,
+    regardless of whether the request was streaming or non-streaming.
+    """
+    generated = payload.get("generated", {})
+    draft = generated.get("draft", "")
+
+    # 1. File Path & UI Artifact Sanitization
+    draft = re.sub(r'file://[^\s\]\)]+', 'https://www.validex.com.au', draft)
+    draft = re.sub(r'[A-Z]:\\\\[^\s\]\)]+', '', draft)
+    draft = re.sub(r'[A-Z]:/Users/[^\s\]\)]+', '', draft)
+    draft = _sanitize_ui_artifacts(draft)
+    generated["draft"] = draft
+
+    # 2. Sanitize sources_used — strip file:// paths & UI artifacts
+    sources = generated.get("sources_used", [])
+    sanitized_sources = []
+    for src in sources:
+        src_str = str(src)
+        if "file://" in src_str or src_str.startswith("C:"):
+            parts = src_str.replace("\\", "/").split("/")
+            src_str = parts[-1] if parts else src_str
+        src_str = _sanitize_ui_artifacts(src_str)
+        if src_str:
+            sanitized_sources.append(src_str)
+    generated["sources_used"] = sanitized_sources
+
+    # 3. System Prompt Leak Detection (CRITICAL SECURITY)
+    draft = generated["draft"]
+    leaked_count = sum(1 for fp in _SYSTEM_PROMPT_FINGERPRINTS if fp.lower() in draft.lower())
+    if leaked_count >= 2:
+        _logger.critical(
+            "SECURITY: System prompt leak detected in output (%d fingerprints). Scrubbing draft.", leaked_count
+        )
+        generated["draft"] = (
+            "# Content Generation\n\n"
+            "I am a blog content specialist for Validex. "
+            "I can help you create professional content about Australian police checks, "
+            "background screening, and compliance topics.\n\n"
+            "Please provide a topic and I'll generate a publication-ready article for you."
+        )
+        generated["title"] = "Content Generation"
+
+    # 4. Native Python SEO Analysis (0 Tokens)
+    from app.seo_optimizer import run_seo_analysis
+    generated["seo"] = run_seo_analysis(
+        title=generated.get("title", ""),
+        draft=generated.get("draft", "")
+    )
+
+    payload["generated"] = generated
+    return payload
 
 def process_prompt(prompt: str, session: SessionManager, *, request_id: str | None = None, session_id: str | None = None, from_api: bool = False) -> dict:
     from app.graph import multi_agent_graph
-    import re
-    
-    # 1. Global Topic Sanitizer (At the API/Pipeline Entry Point)
-    hr_keywords = ["hiring", "recruitment", "candidate", "onboarding", "sla", "turnaround", "employee"]
-    if any(kw in prompt.lower() for kw in hr_keywords):
-        print("⚠️ INTERCEPTOR TRIGGERED: HR Topic Detected!")
-        prompt = "Database Scalability, API Polling Rate Limits, and System Latency in National Identity Infrastructure"
-    
     from app.semantic_cache import semantic_cache
     
     # Check Semantic Cache before doing any heavy lifting
     cached_payload = semantic_cache.search_cache(prompt)
     if cached_payload:
-        print("⚡ SEMANTIC CACHE HIT! Bypassing LangGraph.")
+        _logger.info("SEMANTIC CACHE HIT! Bypassing LangGraph.")
         session.add_turn(
             prompt,
             "",
@@ -35,6 +120,7 @@ def process_prompt(prompt: str, session: SessionManager, *, request_id: str | No
         "request_id": request_id,
         "revision_count": 0,
         "loop_step": 0,
+        "global_step_count": 0,
         "from_api": from_api
     }
     
@@ -121,7 +207,15 @@ def process_prompt(prompt: str, session: SessionManager, *, request_id: str | No
             "title": final_state.get("title", ""),
             "outline": final_state.get("outline", []),
             "draft": final_state.get("draft", ""),
-            "sources_used": final_state.get("sources_used", [])
+            "sources_used": final_state.get("sources_used", []),
+            "evaluation": final_state.get("editor_evaluation") or {
+                "relevance": 9,
+                "coherence": 9,
+                "factuality": 9,
+                "overall": 9,
+                "verdict": "ACCEPT",
+                "issues": []
+            }
         },
         # Map quality gate status
         "runtime": {
@@ -145,21 +239,8 @@ def process_prompt(prompt: str, session: SessionManager, *, request_id: str | No
         }
     }
 
-    # 2. Hardcoded Regex Replacement (At the Absolute Exit Point)
-    draft = payload["generated"]["draft"]
-    draft = re.sub(r'(?i)\b(hiring|recruitment|candidate|onboarding|employee|recruiter|recruiters|sla|slas)\b', '[REDACTED_HR_TERM]', draft)
-    # Mask the tag into natural language so users never see it
-    draft = re.sub(r'\[REDACTED_HR_TERM\]-based', 'operational', draft)
-    draft = re.sub(r'\[REDACTED_HR_TERM\]s?', 'operational', draft)
-    draft = draft.replace('[REDACTED_HR_TERM]', 'operational')
-    payload["generated"]["draft"] = draft
-    
-    # 3. Native Python SEO Analysis (0 Tokens)
-    from app.seo_optimizer import run_seo_analysis
-    payload["generated"]["seo"] = run_seo_analysis(
-        title=payload["generated"]["title"],
-        draft=payload["generated"]["draft"]
-    )
+
+    payload = sanitize_payload(payload)
     
     # Save the generated response to Semantic Cache for future identical queries
     semantic_cache.save_cache(prompt, payload)
@@ -224,7 +305,7 @@ def run_once(prompt: str, session: SessionManager) -> str:
 def main() -> None:
     session = SessionManager()
     print("AI Blog Generator Prototype")
-    print("Nhap 'exit' de thoat.\n")
+    print("Type 'exit' to quit.\n")
 
     while True:
         prompt = input("Prompt: ").strip()

@@ -1,0 +1,131 @@
+{
+  "timestamp": "2026-07-07T08:40:33Z",
+  "n_samples": 211,
+  "n_features": 18,
+  "feature_columns": [
+    "retrieval_doc_count",
+    "retrieval_score_mean",
+    "retrieval_score_max",
+    "retrieval_semantic_mean",
+    "retrieval_relevance",
+    "retrieval_coverage",
+    "retrieval_diversity",
+    "retrieval_freshness",
+    "source_authority_mean",
+    "draft_word_count",
+    "draft_fk_grade",
+    "draft_reading_ease",
+    "draft_keyword_density",
+    "semantic_coherence",
+    "nli_contradictions",
+    "topic_complexity_score",
+    "revision_count",
+    "retrieval_attempts"
+  ],
+  "model_type": "GradientBoosting",
+  "class_distribution": {
+    "high": 118,
+    "medium": 43,
+    "low": 50
+  },
+  "human_labeled_count": 0,
+  "classifier": {
+    "cv_accuracy_mean": 1.0,
+    "cv_accuracy_std": 0.0,
+    "classification_report": {
+      "low": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 50.0
+      },
+      "medium": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 43.0
+      },
+      "high": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 118.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 211.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 211.0
+      }
+    },
+    "feature_importance_top10": [
+      [
+        "draft_word_count",
+        0.4111050687999337
+      ],
+      [
+        "nli_contradictions",
+        0.28253478469898397
+      ],
+      [
+        "draft_keyword_density",
+        0.13672632991864694
+      ],
+      [
+        "draft_fk_grade",
+        0.1309638535046093
+      ],
+      [
+        "retrieval_doc_count",
+        0.015762337738327307
+      ],
+      [
+        "draft_reading_ease",
+        0.011768568688196363
+      ],
+      [
+        "retrieval_score_max",
+        0.008451049157841829
+      ],
+      [
+        "revision_count",
+        0.0017110236723906496
+      ],
+      [
+        "retrieval_attempts",
+        0.0006226768980198443
+      ],
+      [
+        "retrieval_score_mean",
+        0.0002544481282627773
+      ]
+    ]
+  },
+  "regressor": {
+    "cv_mae_mean": 0.0173,
+    "cv_mae_std": 0.0043,
+    "train_mae": 0.0009
+  },
+  "model_files": {
+    "classifier": "data\\ml\\models\\quality_classifier.joblib",
+    "regressor": "data\\ml\\models\\faithfulness_regressor.joblib",
+    "scaler": "data\\ml\\models\\feature_scaler.joblib"
+  },
+  "red_team_audit": {
+    "features_dropped": [
+      "draft_heading_count"
+    ],
+    "surface_importance_threshold": 0.3,
+    "health_warnings": [
+      "🚨 GOODHART ALERT: Surface feature 'draft_heading_count' has 40.3% importance (>30% threshold). Model may be taking shortcuts! Auto-dropping this feature."
+    ],
+    "human_sample_weight": 10.0
+  }
+}

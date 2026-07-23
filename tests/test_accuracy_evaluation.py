@@ -24,7 +24,7 @@ def test_pipeline_accuracy_missing_data_fallbacks():
 def test_pipeline_citation_accuracy():
     """Verify that when context documents are supplied, the pipeline correctly appends
 
-    citations in the expected '[Nguồn: doc_id | URL: source_url]' format.
+    citations in the expected '[Source: doc_id | URL: source_url]' format.
     """
     gen_blog = GeneratedBlog(
         title="Validex System Overview",
@@ -49,9 +49,9 @@ def test_pipeline_citation_accuracy():
     
     refined = pipeline._enforce_grounding_and_citations(gen_blog, test_docs)
     assert refined is not None
-    assert "[Nguồn: doc_test_101 | URL: https://validex.com.au]" in refined.draft
-    assert "## Danh mục nguồn tham khảo" in refined.draft
-    assert "- [Nguồn: doc_test_101 | URL: https://validex.com.au]" in refined.draft
+    assert "[Source: doc_test_101 | URL: https://validex.com.au]" in refined.draft
+    assert "## References" in refined.draft
+    assert "- [Source: doc_test_101 | URL: https://validex.com.au]" in refined.draft
 
 
 def test_pipeline_accuracy_no_hallucinations_fictional():

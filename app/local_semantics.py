@@ -20,9 +20,16 @@ def get_model() -> Any:
     if _MODEL is None:
         try:
             from sentence_transformers import SentenceTransformer
-            logger.info("Loading Local Semantic Model (all-MiniLM-L6-v2)...")
-            # all-MiniLM-L6-v2 is fast, lightweight (~90MB), and accurate for semantic search
-            _MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+            import os
+            
+            # Prioritize fine-tuned Validex model
+            finetuned_path = os.path.join("data", "models", "bge-base-finetuned-validex")
+            if os.path.isdir(finetuned_path) and os.path.isfile(os.path.join(finetuned_path, "config.json")):
+                logger.info("Loading FINE-TUNED Validex Semantic Model (%s)...", finetuned_path)
+                _MODEL = SentenceTransformer(finetuned_path)
+            else:
+                logger.info("Loading fallback Local Semantic Model (all-MiniLM-L6-v2)...")
+                _MODEL = SentenceTransformer("all-MiniLM-L6-v2")
             logger.info("Local Semantic Model loaded successfully.")
         except ImportError:
             logger.error("Failed to load sentence_transformers. Please install it.")

@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-07-07T07:55:35Z",
+  "base_model": "BAAI/bge-base-en-v1.5",
+  "output_dir": "data/models/bge-base-finetuned-validex",
+  "training_triplets": 351,
+  "dev_triplets": 40,
+  "epochs": 3,
+  "batch_size": 16,
+  "learning_rate": 2e-05,
+  "training_time_seconds": 1523.1,
+  "before": {
+    "recall_at_k": 0.7857,
+    "mrr_at_k": 0.7381,
+    "top_k": 5,
+    "total_queries": 14,
+    "hits": 11
+  },
+  "after": {
+    "recall_at_k": 0.8571,
+    "mrr_at_k": 0.8214,
+    "top_k": 5,
+    "total_queries": 14,
+    "hits": 12
+  },
+  "improvement": {
+    "recall_delta": 0.0714,
+    "mrr_delta": 0.0833
+  }
+}

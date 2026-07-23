@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-07-07T07:34:15Z",
+  "base_model": "cross-encoder/ms-marco-MiniLM-L-12-v2",
+  "output_dir": "data/models/reranker-finetuned-validex",
+  "training_pairs": 39,
+  "dev_pairs": 7,
+  "epochs": 3,
+  "training_time_seconds": 33.1,
+  "before": {
+    "accuracy": 0.75,
+    "avg_pos_score": 1.6994,
+    "avg_neg_score": -9.2207,
+    "avg_score_gap": 10.92
+  },
+  "after": {
+    "accuracy": 0.75,
+    "avg_pos_score": 2.3252,
+    "avg_neg_score": -8.4581,
+    "avg_score_gap": 10.7833
+  },
+  "improvement": {
+    "accuracy_delta": 0.0,
+    "score_gap_delta": -0.1367
+  }
+}

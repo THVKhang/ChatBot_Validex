@@ -1,0 +1,17 @@
+Identity verification is a critical step in the Australian police check application process. The system used by most accredited bodies follows a points-based model, commonly referred to as the 100-point identity check, to confirm that the applicant is who they claim to be.
+
+The 100-point system assigns point values to different categories of identity documents. Applicants must present documents totalling at least 100 points from specified categories. The three main categories are commencement of identity documents, primary documents, and secondary documents.
+
+Commencement of identity documents establish the basis of the applicant's identity in Australia. These include an Australian birth certificate, Australian citizenship certificate, or a current passport (Australian or foreign). A commencement document is typically worth 70 points and is mandatory for all applications.
+
+Primary documents are government-issued documents that confirm identity and are commonly used in the community. These include a current Australian driver licence, a current Australian passport, a Medicare card, or a current proof of age card. Primary documents are generally worth 40 points each.
+
+Secondary documents provide supporting evidence of identity. These include utility bills, bank statements, a current lease agreement, an Australian tax assessment notice, or a current student ID card. Secondary documents are usually worth 25 points each.
+
+For online police check applications through providers like Validex, identity verification increasingly uses digital verification technology. This involves capturing images of identity documents, extracting data using optical character recognition (OCR), and performing a live selfie comparison using facial recognition. Digital verification can be completed in minutes and provides a higher level of assurance than manual document review.
+
+Common mistakes that cause identity verification failures include providing expired documents, using documents with different name spellings, submitting poor quality images or scans, and not providing a commencement document. Applicants who have changed their name must provide evidence of the name change, such as a marriage certificate or change of name certificate.
+
+For applicants who cannot complete digital verification — for example, if they do not have a suitable device or their documents cannot be read digitally — alternative manual verification pathways are available, though these typically extend processing times.
+
+Employers should clearly communicate identity requirements to applicants before they begin the police check process. Providing a checklist of acceptable documents, along with guidance on image quality and name consistency, can significantly reduce verification failures and resubmissions.

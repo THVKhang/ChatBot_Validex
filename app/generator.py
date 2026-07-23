@@ -381,23 +381,42 @@ def _clean_evidence_snippet(snippet: str) -> str:
 
 
 def _supporting_facts(docs: list[RetrievedDoc], limit: int = 6) -> list[str]:
+    """Extract supporting evidence from retrieved documents.
+
+    Extracts longer snippets (up to 500 chars) and includes metadata
+    citations (act_name, section_ref) when available for authoritative sourcing.
+    """
     if not docs:
         return []
 
     facts: list[str] = []
     for item in docs:
-        snippet = _clean_text(item.content, 180)
+        snippet = _clean_text(item.content, 500)
         if not _looks_english(snippet):
             continue
 
         if snippet.lower().startswith("faq:"):
             snippet = snippet.split(":", 1)[1].strip()
 
+        # Strip context prefix like [Source Title]\n...
+        if snippet.startswith("[") and "]\n" in snippet[:100]:
+            bracket_end = snippet.index("]\n")
+            snippet = snippet[bracket_end + 2:].strip()
+
         # Filter out garbage scraper snippets
         if _is_garbage_snippet(snippet):
             continue
 
         snippet = _clean_evidence_snippet(snippet)
+
+        # Add metadata citation if available (act_name, section_ref)
+        metadata = getattr(item, 'metadata', {}) if hasattr(item, 'metadata') else {}
+        act_name = metadata.get('act_name', '') if isinstance(metadata, dict) else ''
+        section_ref = metadata.get('section_ref', '') if isinstance(metadata, dict) else ''
+        if act_name and section_ref:
+            snippet = f"{snippet} (Ref: {act_name}, {section_ref})"
+        elif act_name:
+            snippet = f"{snippet} (Ref: {act_name})"
 
         if snippet in facts:
             continue
@@ -603,18 +622,47 @@ def _section_body(parsed: ParsedPrompt, heading: str, evidence_fact: str | None)
 
 
 def build_sections(parsed: ParsedPrompt, outline: list[str], docs: list[RetrievedDoc]) -> list[GeneratedBlog.Section]:
-    supporting_facts = _supporting_facts(docs, limit=max(6, len(outline)))
+    # Extract evidence from docs
+    evidence_limit = max(len(outline) * 2, 10)
+    supporting_facts = _supporting_facts(docs, limit=evidence_limit)
     sections: list[GeneratedBlog.Section] = []
+
+    # Distribute facts evenly across sections (round-robin)
+    # Skip introduction and conclusion for evidence injection
+    content_headings = []
+    for i, raw_heading in enumerate(outline):
+        heading = raw_heading.split(":", 1)[-1].strip() if ":" in raw_heading else raw_heading.strip()
+        h_lower = heading.lower()
+        is_structural = (
+            h_lower in ("introduction",)
+            or "conclusion" in h_lower
+            or "get started" in h_lower
+            or "checklist" in h_lower
+        )
+        content_headings.append((i, heading, not is_structural))
+
+    # Map facts to content sections
+    fact_assignment: dict[int, str | None] = {}
+    content_indices = [i for i, _, is_content in content_headings if is_content]
+    for fact_idx, fact in enumerate(supporting_facts):
+        if content_indices:
+            section_idx = content_indices[fact_idx % len(content_indices)]
+            # Combine with existing if already assigned
+            if section_idx in fact_assignment and fact_assignment[section_idx]:
+                fact_assignment[section_idx] += " Additionally, " + fact[0].lower() + fact[1:]
+            else:
+                fact_assignment[section_idx] = fact
+
     for index, raw_heading in enumerate(outline):
         heading = raw_heading.split(":", 1)[-1].strip() if ":" in raw_heading else raw_heading.strip()
         if not heading:
             continue
 
-        section_fact = supporting_facts[index] if index < len(supporting_facts) else None
+        evidence = fact_assignment.get(index)
         sections.append(
             GeneratedBlog.Section(
                 heading=heading,
-                body=_section_body(parsed, heading, section_fact),
+                body=_section_body(parsed, heading, evidence),
                 image_url=build_section_image_url(parsed.topic, heading),
                 image_alt=f"{heading} illustration",
             )
@@ -666,32 +714,9 @@ def format_title(topic: str) -> str:
 
 def _detect_prompt_language(text: str) -> str:
     """Detect the primary language of the user's prompt.
-    
-    Returns: 'vi' for Vietnamese, 'en' for English, 'zh' for Chinese, 'ko' for Korean, 'ja' for Japanese.
+
+    Always returns 'en' as the system is configured to output only English for foreign users.
     """
-    text_lower = text.lower()
-    
-    # Vietnamese detection — diacritics and common Vietnamese words
-    vi_markers = [
-        "ư", "ơ", "ă", "đ", "ê", "ô", "â",  # Vietnamese-specific chars
-        "của", "là", "và", "các", "cho", "với", "được", "không",
-        "thế nào", "tại sao", "bao lâu", "hướng dẫn", "cách",
-        "làm sao", "như thế", "gì", "bao nhiêu",
-    ]
-    vi_count = sum(1 for marker in vi_markers if marker in text_lower)
-    if vi_count >= 2:
-        return "vi"
-    
-    # Chinese detection
-    if re.search(r'[\u4e00-\u9fff]{2,}', text):
-        return "zh"
-    # Korean detection
-    if re.search(r'[\uac00-\ud7af]{2,}', text):
-        return "ko"
-    # Japanese detection  
-    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]{2,}', text):
-        return "ja"
-    
     return "en"
 
 
@@ -701,7 +726,7 @@ _OUTLINE_TEMPLATES = {
         "howto": [
             "Introduction",
             "What You Need to Know Before Starting",
-            "Step 1: Understand the Requirements for {topic}",
+            "Step 1: Understand the Requirements",
             "Step 2: Gather Your Documents and Information",
             "Step 3: Submit Your Application",
             "Step 4: What Happens Next — Processing and Results",
@@ -726,9 +751,9 @@ _OUTLINE_TEMPLATES = {
         ],
         "informational": [
             "Introduction",
-            "Understanding {topic}",
+            "Overview of {topic}",
             "Key Factors and Considerations",
-            "How {topic} Works in Practice",
+            "Practical Guidance on {topic}",
             "What This Means for You",
             "Conclusion and Next Steps",
         ],
@@ -737,48 +762,6 @@ _OUTLINE_TEMPLATES = {
             "Industry Best Practices and Standards",
             "Case Studies and Real-World Examples",
             "Resources and Further Reading",
-        ],
-    },
-    "vi": {
-        "howto": [
-            "Giới thiệu",
-            "Những điều cần biết trước khi bắt đầu",
-            "Bước 1: Tìm hiểu yêu cầu về {topic}",
-            "Bước 2: Chuẩn bị giấy tờ và thông tin",
-            "Bước 3: Nộp hồ sơ",
-            "Bước 4: Quy trình xử lý và nhận kết quả",
-            "Mẹo để quá trình diễn ra suôn sẻ",
-            "Kết luận và bước tiếp theo",
-        ],
-        "comparison": [
-            "Giới thiệu",
-            "Tổng quan về {topic}",
-            "Điểm khác biệt chính",
-            "So sánh chi tiết: Đặc điểm và yêu cầu",
-            "Lựa chọn nào phù hợp với bạn",
-            "Kết luận và khuyến nghị",
-        ],
-        "technical": [
-            "Tổng quan kiến trúc hệ thống",
-            "Các thành phần kỹ thuật cốt lõi",
-            "Luồng dữ liệu và quy trình xử lý",
-            "Khung bảo mật và tuân thủ",
-            "Ý nghĩa thực tiễn và kết quả",
-            "Kết luận và bước tiếp theo",
-        ],
-        "informational": [
-            "Giới thiệu",
-            "Tìm hiểu về {topic}",
-            "Các yếu tố và lưu ý quan trọng",
-            "{topic} hoạt động như thế nào trong thực tế",
-            "Điều này có ý nghĩa gì với bạn",
-            "Kết luận và bước tiếp theo",
-        ],
-        "extras": [
-            "Câu hỏi thường gặp và ý kiến chuyên gia",
-            "Các tiêu chuẩn và thực hành tốt nhất",
-            "Ví dụ thực tế",
-            "Tài liệu tham khảo",
         ],
     },
 }
@@ -802,9 +785,17 @@ def _build_topic_aware_outline(parsed: ParsedPrompt) -> list[str]:
     lang = _detect_prompt_language(parsed.raw_prompt)
     templates = _OUTLINE_TEMPLATES.get(lang, _OUTLINE_TEMPLATES["en"])
     
-    # Shorten topic for headings — max 8 words
-    topic_words = topic.split()
-    short_topic = " ".join(topic_words[:8]) if len(topic_words) > 8 else topic
+    # Shorten topic for headings — max 5 words, strip filler and question patterns
+    cleaned_topic = re.sub(r'(?i)^(how to |guide (for|to) |apply(ing)? for |step[- ]by[- ]step )', '', topic).strip()
+    # Normalize full question sentences into clean noun phrases (e.g. "Do police checks expire?" -> "Police Check Expiry & Validity")
+    if re.search(r'(?i)^(do|does|is|are|can|how|what|when|where|why)\b', cleaned_topic):
+        cleaned_topic = re.sub(r'(?i)^(do|does|is|are|can|how|what|when|where|why)\s+', '', cleaned_topic).strip()
+        cleaned_topic = re.sub(r'\?$', '', cleaned_topic).strip()
+        if "expire" in cleaned_topic.lower() and "expiry" not in cleaned_topic.lower():
+            cleaned_topic = re.sub(r'(?i)\bexpire\b', 'Expiry & Validity', cleaned_topic).strip()
+    
+    topic_words = cleaned_topic.split()
+    short_topic = " ".join(topic_words[:5]) if len(topic_words) > 5 else cleaned_topic
 
     prompt_lower = re.sub(r"\s+", " ", parsed.raw_prompt).strip().lower()
 

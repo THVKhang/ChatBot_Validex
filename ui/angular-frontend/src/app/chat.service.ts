@@ -16,7 +16,7 @@ import { ReportStatus } from './chat.models';
 import { ChatSessionSummary, ChatSessionHistory } from './chat.models';
 
 export interface StreamEvent {
-  type: 'meta' | 'done' | 'error' | 'thinking';
+  type: 'meta' | 'done' | 'error' | 'thinking' | 'chunk';
   data: any;
 }
 
@@ -131,7 +131,7 @@ export class ChatService {
     return this.http.get<ChatSessionHistory>(`${this.apiBase}/chat/sessions/${sessionId}`);
   }
 
-  exportChat(markdown: string, format: 'docx' | 'html' = 'docx'): Observable<Blob> {
+  exportChat(markdown: string, format: 'docx' | 'pdf' | 'html' = 'docx'): Observable<Blob> {
     return this.http.post(
       `${this.apiBase}/chat/export`,
       { markdown, format },

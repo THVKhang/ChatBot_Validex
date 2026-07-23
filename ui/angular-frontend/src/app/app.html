@@ -11,10 +11,15 @@
         <span class="dot green"></span>
       </div>
       <div class="os-title">
-        <span class="material-symbols-outlined">terminal</span>
-        Blog Intelligence OS
+        <span class="material-symbols-outlined">smart_toy</span>
+        Validex AI
       </div>
       <div class="title-bar-spacer"></div>
+      <div class="validex-mode-selector">
+        <select [(ngModel)]="selectedValidexVersion">
+          <option *ngFor="let v of validexVersions" [value]="v">Validex {{v}}</option>
+        </select>
+      </div>
     </header>
 
     <!-- Main Workspace -->
@@ -108,15 +113,19 @@
           <div class="paper-body" [innerHTML]="selectedReport.draft | markdown"></div>
         </article>
 
-        <!-- Empty State / Welcome -->
+        <!-- Empty State / Welcome with Robot -->
         <div class="chat-welcome" *ngIf="!messages.length && !selectedReport">
-          <h1>Validex AI</h1>
-          <p>What would you like to write about today?</p>
-          <div class="prompt-suggestions">
-            <button class="suggestion-card" *ngFor="let sample of samplePrompts" (click)="usePromptTemplate(sample)">
-              <span class="material-symbols-outlined">edit_note</span>
-              <span>{{ sample }}</span>
-            </button>
+          <div class="welcome-content">
+            <div class="welcome-text">
+              <h1>Validex AI</h1>
+              <p>Your intelligent assistant for police check & compliance content</p>
+              <div class="prompt-suggestions">
+                <button class="suggestion-card" *ngFor="let sample of samplePrompts" (click)="usePromptTemplate(sample)">
+                  <span class="material-symbols-outlined">edit_note</span>
+                  <span>{{ sample }}</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -128,19 +137,99 @@
             [class.user]="msg.role === 'user'"
             [class.assistant]="msg.role === 'assistant'"
           >
-            <div class="msg-avatar">
-              <span class="material-symbols-outlined">{{ msg.role === 'user' ? 'person' : 'smart_toy' }}</span>
+            <div class="msg-avatar" [class.assistant]="msg.role === 'assistant'">
+              <span class="material-symbols-outlined" [class.waving]="msg.role === 'assistant'">{{ msg.role === 'user' ? 'person' : 'smart_toy' }}</span>
             </div>
             <div class="msg-bubble">
-              <div *ngIf="msg.role === 'assistant' && msg.text" class="msg-markdown" [class.typing]="isTyping && i === messages.length - 1" [innerHTML]="msg.text | markdown"></div>
+              <!-- Rich Text Editor Toolbar -->
+              <div class="editor-toolbar" *ngIf="msg.role === 'assistant' && msg.text && isEditorToolbarVisible(i)">
+                <div class="toolbar-group">
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('bold')" title="Bold (Ctrl+B)">
+                    <span class="material-symbols-outlined">format_bold</span>
+                  </button>
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('italic')" title="Italic (Ctrl+I)">
+                    <span class="material-symbols-outlined">format_italic</span>
+                  </button>
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('underline')" title="Underline (Ctrl+U)">
+                    <span class="material-symbols-outlined">format_underlined</span>
+                  </button>
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('strikeThrough')" title="Strikethrough">
+                    <span class="material-symbols-outlined">strikethrough_s</span>
+                  </button>
+                </div>
+                <div class="toolbar-divider"></div>
+                <div class="toolbar-group">
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); formatHeading('H1')" title="Heading 1">
+                    H1
+                  </button>
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); formatHeading('H2')" title="Heading 2">
+                    H2
+                  </button>
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); formatHeading('H3')" title="Heading 3">
+                    H3
+                  </button>
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); formatHeading('P')" title="Paragraph">
+                    <span class="material-symbols-outlined">format_paragraph</span>
+                  </button>
+                </div>
+                <div class="toolbar-divider"></div>
+                <div class="toolbar-group">
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('insertUnorderedList')" title="Bullet List">
+                    <span class="material-symbols-outlined">format_list_bulleted</span>
+                  </button>
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('insertOrderedList')" title="Numbered List">
+                    <span class="material-symbols-outlined">format_list_numbered</span>
+                  </button>
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('formatBlock', 'blockquote')" title="Blockquote">
+                    <span class="material-symbols-outlined">format_quote</span>
+                  </button>
+                </div>
+                <div class="toolbar-divider"></div>
+                <div class="toolbar-group">
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); insertLink()" title="Insert Link">
+                    <span class="material-symbols-outlined">link</span>
+                  </button>
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('removeFormat')" title="Clear Formatting">
+                    <span class="material-symbols-outlined">format_clear</span>
+                  </button>
+                </div>
+                <div class="toolbar-divider"></div>
+                <div class="toolbar-group">
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('undo')" title="Undo (Ctrl+Z)">
+                    <span class="material-symbols-outlined">undo</span>
+                  </button>
+                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('redo')" title="Redo (Ctrl+Y)">
+                    <span class="material-symbols-outlined">redo</span>
+                  </button>
+                </div>
+              </div>
+
+              <div *ngIf="msg.role === 'assistant' && msg.text"
+                   class="msg-markdown"
+                   [class.typing]="isTyping && i === messages.length - 1"
+                   [class.editable-content]="isContentEditable(i)"
+                   [attr.contenteditable]="isContentEditable(i) ? 'true' : null"
+                   [id]="'msg-content-' + i"
+                   [innerHTML]="msg.text | markdown"></div>
               <p *ngIf="msg.role === 'user'" class="msg-text">{{ msg.text }}</p>
               <div class="msg-footer" *ngIf="msg.role === 'assistant' && msg.text">
-                <button class="btn-regenerate" type="button" (click)="exportDraft(msg.text, 'docx')" [disabled]="loading || isTyping || !msg.text" title="Export to Word">
+                <button class="btn-regenerate" [class.toolbar-active]="isEditorToolbarVisible(i)" type="button" (click)="toggleEditorToolbar(i)" [disabled]="loading || isTyping" title="Edit / Format">
+                  <span class="material-symbols-outlined">edit_note</span>
+                </button>
+                <div class="feedback-divider"></div>
+                <button class="btn-regenerate btn-export" type="button" (click)="exportDraft(msg.text, 'docx')" [disabled]="loading || isTyping || !msg.text" title="Export to Word (.docx)">
                   <span class="material-symbols-outlined">description</span>
+                  <span class="btn-export-label">Word</span>
                 </button>
-                <button class="btn-regenerate" type="button" (click)="exportDraft(msg.text, 'html')" [disabled]="loading || isTyping || !msg.text" title="Export to HTML">
+                <button class="btn-regenerate btn-export" type="button" (click)="exportDraft(msg.text, 'pdf')" [disabled]="loading || isTyping || !msg.text" title="Export to PDF">
+                  <span class="material-symbols-outlined">picture_as_pdf</span>
+                  <span class="btn-export-label">PDF</span>
+                </button>
+                <button class="btn-regenerate btn-export" type="button" (click)="exportDraft(msg.text, 'html')" [disabled]="loading || isTyping || !msg.text" title="Export to HTML">
                   <span class="material-symbols-outlined">html</span>
+                  <span class="btn-export-label">HTML</span>
                 </button>
+                <div class="feedback-divider"></div>
                 <button class="btn-regenerate" type="button" (click)="regenerateMessage(i)" [disabled]="loading || isTyping" title="Regenerate">
                   <span class="material-symbols-outlined">refresh</span>
                 </button>
@@ -172,7 +261,9 @@
 
           <!-- Thinking indicator + Pipeline Visualizer -->
           <div class="chat-message assistant" *ngIf="loading && thinkingStatus">
-            <div class="msg-avatar"><span class="material-symbols-outlined">psychology</span></div>
+            <div class="msg-avatar assistant">
+              <span class="material-symbols-outlined waving">psychology</span>
+            </div>
             <div class="msg-bubble thinking">
               <!-- Pipeline Visualizer (Module 4) -->
               <div class="pipeline-visualizer" *ngIf="pipelineSteps.length">
@@ -208,32 +299,7 @@
 
       <!-- Floating Chat Prompt (Pill shape) -->
       <div class="floating-prompt-bar" *ngIf="!selectedReview">
-        <!-- Generation Settings (accordion) -->
-        <div class="generation-settings" [class.expanded]="!selectedReport && !latestResponse">
-          <select [(ngModel)]="selectedLanguage" [disabled]="loading">
-            <option *ngFor="let lang of languageOptions" [value]="lang.code">{{ lang.label }}</option>
-          </select>
-          <select [(ngModel)]="selectedTone" [disabled]="loading">
-            <option value="Professional">Professional</option>
-            <option value="Friendly">Friendly</option>
-            <option value="Casual">Casual</option>
-          </select>
-          <select [(ngModel)]="selectedWordCount" [disabled]="loading">
-            <option value="300 Words">~ 300 Words</option>
-            <option value="500 Words">~ 500 Words</option>
-            <option value="800 Words">~ 800 Words</option>
-          </select>
-          <select [(ngModel)]="selectedSectionCount" [disabled]="loading">
-            <option value="1">1 Section</option>
-            <option value="3">3 Sections</option>
-            <option value="5">5 Sections</option>
-          </select>
-          <select [(ngModel)]="selectedImageCount" [disabled]="loading">
-            <option value="1">1 Image</option>
-            <option value="2">2 Images</option>
-            <option value="3">3 Images</option>
-          </select>
-        </div>
+
 
         <div class="prompt-pill">
           <input type="file" #fileUploadInput style="display: none" (change)="onFileSelected($event)" accept=".pdf,.docx,.txt" />
@@ -414,6 +480,42 @@
 
     <div class="dock-divider"></div>
 
+    <!-- Generation Settings -->
+    <div class="dock-icon gradient-amber" (click)="toggleDockPopup('settings')" title="Blog Settings">
+      <span class="material-symbols-outlined">tune</span>
+    </div>
+    <div class="dock-popup dock-popup-wide" *ngIf="dockPopup === 'settings'" (click)="$event.stopPropagation()">
+      <h4><span class="material-symbols-outlined">tune</span> Blog Settings</h4>
+      <div class="dock-popup-body settings-popup-body">
+        <div class="setting-row">
+          <label>Language</label>
+          <select [(ngModel)]="selectedLanguage">
+            <option *ngFor="let lang of languageOptions" [value]="lang.code">{{ lang.label }}</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label>Tone</label>
+          <select [(ngModel)]="selectedTone">
+            <option value="Professional">Professional</option>
+            <option value="Friendly">Friendly</option>
+            <option value="Casual">Casual</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label>Word Count</label>
+          <input type="number" [(ngModel)]="customWordCount" placeholder="e.g. 500" min="100" max="5000" step="100" />
+        </div>
+        <div class="setting-row">
+          <label>Sections</label>
+          <input type="number" [(ngModel)]="customSectionCount" placeholder="e.g. 3" min="1" max="20" />
+        </div>
+        <div class="setting-row">
+          <label>Images</label>
+          <input type="number" [(ngModel)]="customImageCount" placeholder="e.g. 2" min="0" max="10" />
+        </div>
+      </div>
+    </div>
+
     <!-- Dark Mode Toggle -->
     <div class="dock-icon" (click)="toggleDarkMode()" [title]="darkMode ? 'Light mode' : 'Dark mode'">
       <span class="material-symbols-outlined">{{ darkMode ? 'light_mode' : 'dark_mode' }}</span>
@@ -484,4 +586,51 @@
       </div>
     </div>
   </div>
+
+  <!-- Auth Modal -->
+  <div class="modal-backdrop" *ngIf="showAuthModal" (click)="closeAuthModal()">
+    <div class="auth-modal" (click)="$event.stopPropagation()">
+      <button class="auth-close" (click)="closeAuthModal()">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+      <div class="auth-header">
+        <span class="material-symbols-outlined auth-icon">shield_person</span>
+        <h2>{{ authMode === 'login' ? 'Welcome Back' : 'Create Account' }}</h2>
+        <p>{{ authMode === 'login' ? 'Sign in to your Validex account' : 'Register a new Validex account' }}</p>
+      </div>
+
+      <!-- Success message -->
+      <div class="auth-success" *ngIf="authSuccess">
+        <span class="material-symbols-outlined">check_circle</span>
+        <span>{{ authSuccess }}</span>
+      </div>
+
+      <div class="auth-error" *ngIf="authError">
+        <span class="material-symbols-outlined">error</span>
+        <span>{{ authError }}</span>
+      </div>
+
+      <div class="auth-form">
+        <div class="auth-field">
+          <label>Username</label>
+          <input type="text" [(ngModel)]="authUsername" placeholder="Enter username" (keydown.enter)="submitAuth()" />
+        </div>
+        <div class="auth-field">
+          <label>Password</label>
+          <input type="password" [(ngModel)]="authPassword" placeholder="Enter password (min 6 chars)" (keydown.enter)="submitAuth()" />
+        </div>
+        <button class="auth-submit" (click)="submitAuth()" [disabled]="authLoading">
+          <span class="material-symbols-outlined" *ngIf="authLoading">sync</span>
+          <span *ngIf="!authLoading">{{ authMode === 'login' ? 'Sign In' : 'Register' }}</span>
+          <span *ngIf="authLoading">Please wait...</span>
+        </button>
+      </div>
+
+      <div class="auth-switch">
+        <span *ngIf="authMode === 'login'">Don't have an account? <a (click)="authMode = 'register'; authError = ''; authSuccess = ''">Register</a></span>
+        <span *ngIf="authMode === 'register'">Already have an account? <a (click)="authMode = 'login'; authError = ''; authSuccess = ''">Sign In</a></span>
+      </div>
+    </div>
+  </div>
+
 </div>

@@ -36,6 +36,16 @@ class VectorStoreRepository(ABC):
         """Perform hybrid search (similarity + keyword search) combining them using Reciprocal Rank Fusion (RRF)."""
         pass
 
+    @abstractmethod
+    def upsert_parents(self, table_name: str, parents: List[Dict[str, Any]]) -> None:
+        """Upsert parent documents into the parents table."""
+        pass
+
+    @abstractmethod
+    def get_parent_content(self, table_name: str, parent_id: str) -> str | None:
+        """Retrieve full parent text by parent_id."""
+        pass
+
 
 class PGVectorRepository(VectorStoreRepository):
     """PostgreSQL PGVector database implementation of the VectorStoreRepository interface."""
@@ -71,9 +81,21 @@ class PGVectorRepository(VectorStoreRepository):
                         section_ref TEXT NOT NULL DEFAULT '',
                         effective_date TEXT NOT NULL DEFAULT '',
                         parent_context TEXT NOT NULL DEFAULT '',
+                        parent_id TEXT,
                         last_verified_at TIMESTAMPTZ,
                         superseded_by TEXT DEFAULT NULL,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                # Create the parents table to hold the full parent chunks
+                cur.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {table_name}_parents (
+                        parent_id TEXT PRIMARY KEY,
+                        content TEXT NOT NULL,
+                        doc_id TEXT NOT NULL,
+                        metadata TEXT NOT NULL DEFAULT '{{}}'
                     )
                     """
                 )
@@ -87,12 +109,14 @@ class PGVectorRepository(VectorStoreRepository):
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS section_ref TEXT NOT NULL DEFAULT ''")
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS effective_date TEXT NOT NULL DEFAULT ''")
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS parent_context TEXT NOT NULL DEFAULT ''")
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS parent_id TEXT")
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS last_verified_at TIMESTAMPTZ")
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS superseded_by TEXT")
                 # Indexes
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_topic ON {table_name}(topic)")
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_source_domain ON {table_name}(source_domain)")
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_status ON {table_name}(status)")
+                cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_parent_id ON {table_name}(parent_id)")
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_jurisdiction ON {table_name}(jurisdiction)")
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_status_jurisdiction ON {table_name}(status, jurisdiction)")
                 conn.commit()
@@ -101,6 +125,11 @@ class PGVectorRepository(VectorStoreRepository):
         if not records:
             return
 
+        # Ensure parent_id is present in all records (even if None) to avoid key errors in cursor
+        for r in records:
+            if "parent_id" not in r:
+                r["parent_id"] = None
+
         upsert_sql = f"""
             INSERT INTO {table_name} (
                 chunk_id, chunk_hash, embedding_provider,
@@ -108,14 +137,14 @@ class PGVectorRepository(VectorStoreRepository):
                 topic, region, title, authority_score, approved,
                 content, embedding,
                 status, jurisdiction, document_type, act_name,
-                section_ref, effective_date, parent_context
+                section_ref, effective_date, parent_context, parent_id
             ) VALUES (
                 %(chunk_id)s, %(chunk_hash)s, %(embedding_provider)s,
                 %(doc_id)s, %(source_url)s, %(source_domain)s, %(source_type)s,
                 %(topic)s, %(region)s, %(title)s, %(authority_score)s, %(approved)s,
                 %(content)s, %(embedding)s::vector,
                 %(status)s, %(jurisdiction)s, %(document_type)s, %(act_name)s,
-                %(section_ref)s, %(effective_date)s, %(parent_context)s
+                %(section_ref)s, %(effective_date)s, %(parent_context)s, %(parent_id)s
             )
             ON CONFLICT (chunk_id)
             DO UPDATE SET
@@ -138,7 +167,8 @@ class PGVectorRepository(VectorStoreRepository):
                 act_name = EXCLUDED.act_name,
                 section_ref = EXCLUDED.section_ref,
                 effective_date = EXCLUDED.effective_date,
-                parent_context = EXCLUDED.parent_context
+                parent_context = EXCLUDED.parent_context,
+                parent_id = EXCLUDED.parent_id
         """
 
         with self.db_manager.get_connection(prepare_threshold=None) as conn:
@@ -192,7 +222,7 @@ class PGVectorRepository(VectorStoreRepository):
                             chunk_id, 
                             doc_id, content, source_url, source_domain, source_type, 
                             topic, region, title, authority_score, approved,
-                            jurisdiction, act_name, section_ref, parent_context, status,
+                            jurisdiction, act_name, section_ref, parent_context, status, parent_id,
                             1 - (embedding <=> %s::vector) AS similarity,
                             RANK() OVER (ORDER BY embedding <=> %s::vector) AS semantic_rank
                         FROM {table_name}
@@ -205,7 +235,7 @@ class PGVectorRepository(VectorStoreRepository):
                             chunk_id, 
                             doc_id, content, source_url, source_domain, source_type, 
                             topic, region, title, authority_score, approved,
-                            jurisdiction, act_name, section_ref, parent_context, status,
+                            jurisdiction, act_name, section_ref, parent_context, status, parent_id,
                             ts_rank(fts_content, websearch_to_tsquery('english', %s)) AS similarity,
                             RANK() OVER (ORDER BY ts_rank(fts_content, websearch_to_tsquery('english', %s)) DESC) AS keyword_rank
                         FROM {table_name}
@@ -217,13 +247,13 @@ class PGVectorRepository(VectorStoreRepository):
                     SELECT 
                         chunk_id, doc_id, content, source_url, source_domain, source_type, 
                         topic, region, title, authority_score, approved,
-                        jurisdiction, act_name, section_ref, parent_context, status,
+                        jurisdiction, act_name, section_ref, parent_context, status, parent_id,
                         similarity, semantic_rank, keyword_rank,
                         COALESCE(1.0 / (60 + semantic_rank), 0.0) + COALESCE(1.0 / (60 + keyword_rank), 0.0) AS rrf_score
                     FROM (
-                        SELECT chunk_id, doc_id, content, source_url, source_domain, source_type, topic, region, title, authority_score, approved, jurisdiction, act_name, section_ref, parent_context, status, similarity, NULL::int AS semantic_rank, keyword_rank FROM keyword_search
+                        SELECT chunk_id, doc_id, content, source_url, source_domain, source_type, topic, region, title, authority_score, approved, jurisdiction, act_name, section_ref, parent_context, status, parent_id, similarity, NULL::int AS semantic_rank, keyword_rank FROM keyword_search
                         UNION ALL
-                        SELECT chunk_id, doc_id, content, source_url, source_domain, source_type, topic, region, title, authority_score, approved, jurisdiction, act_name, section_ref, parent_context, status, similarity, semantic_rank, NULL::int AS keyword_rank FROM semantic_search
+                        SELECT chunk_id, doc_id, content, source_url, source_domain, source_type, topic, region, title, authority_score, approved, jurisdiction, act_name, section_ref, parent_context, status, parent_id, similarity, semantic_rank, NULL::int AS keyword_rank FROM semantic_search
                     ) combined
                     ORDER BY rrf_score DESC
                     LIMIT %s;
@@ -251,12 +281,41 @@ class PGVectorRepository(VectorStoreRepository):
                 "section_ref": row[13],
                 "parent_context": row[14],
                 "status": row[15],
-                "similarity": row[16],
-                "semantic_rank": row[17],
-                "keyword_rank": row[18],
-                "rrf_score": row[19],
+                "parent_id": row[16],
+                "similarity": row[17],
+                "semantic_rank": row[18],
+                "keyword_rank": row[19],
+                "rrf_score": row[20],
             })
         return results
+
+    def upsert_parents(self, table_name: str, parents: List[Dict[str, Any]]) -> None:
+        if not parents:
+            return
+        upsert_sql = f"""
+            INSERT INTO {table_name}_parents (
+                parent_id, content, doc_id, metadata
+            ) VALUES (
+                %(parent_id)s, %(content)s, %(doc_id)s, %(metadata)s
+            )
+            ON CONFLICT (parent_id)
+            DO UPDATE SET
+                content = EXCLUDED.content,
+                doc_id = EXCLUDED.doc_id,
+                metadata = EXCLUDED.metadata
+        """
+        with self.db_manager.get_connection(prepare_threshold=None) as conn:
+            with conn.cursor() as cur:
+                cur.executemany(upsert_sql, parents)
+                conn.commit()
+
+    def get_parent_content(self, table_name: str, parent_id: str) -> str | None:
+        sql = f"SELECT content FROM {table_name}_parents WHERE parent_id = %s"
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (parent_id,))
+                row = cur.fetchone()
+                return row[0] if row else None
 
     def mark_repealed(
         self,

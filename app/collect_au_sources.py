@@ -579,10 +579,95 @@ class HtmlParserStrategy(ContentParserStrategy):
     def __init__(self, table_parser: ContentParserStrategy | None = None):
         self.table_parser = table_parser or TableParserStrategy()
 
+    def _extract_faq_pairs(self, soup: BeautifulSoup) -> list[str]:
+        """Extract FAQ Q&A pairs as coherent chunks.
+
+        Detects common FAQ patterns:
+        - <h2/h3>Question</h2/h3> + <p>Answer</p>
+        - <dt>Question</dt><dd>Answer</dd>
+        - <details><summary>Q</summary>A</details>
+        - Accordion-style divs with heading + content
+        """
+        faq_chunks: list[str] = []
+
+        # Pattern 1: <dt>/<dd> pairs (definition lists)
+        for dl in soup.find_all("dl"):
+            dts = dl.find_all("dt")
+            dds = dl.find_all("dd")
+            for dt, dd in zip(dts, dds):
+                q = dt.get_text(" ", strip=True)
+                a = dd.get_text(" ", strip=True)
+                if q and a and len(a) > 20:
+                    faq_chunks.append(f"Q: {q}\nA: {a}")
+
+        # Pattern 2: <details>/<summary> pairs
+        for details in soup.find_all("details"):
+            summary = details.find("summary")
+            if summary:
+                q = summary.get_text(" ", strip=True)
+                summary.decompose()
+                a = details.get_text(" ", strip=True)
+                if q and a and len(a) > 20:
+                    faq_chunks.append(f"Q: {q}\nA: {a}")
+
+        # Pattern 3: heading + paragraph pairs (most common FAQ pattern)
+        if not faq_chunks:
+            headings = soup.find_all(["h2", "h3", "h4"])
+            for h in headings:
+                h_text = h.get_text(" ", strip=True)
+                # Collect all sibling paragraphs until next heading
+                answer_parts = []
+                for sibling in h.find_next_siblings():
+                    if sibling.name in ["h2", "h3", "h4"]:
+                        break
+                    if sibling.name in ["p", "ul", "ol", "li", "blockquote"]:
+                        text = sibling.get_text(" ", strip=True)
+                        if text:
+                            answer_parts.append(text)
+                if h_text and answer_parts:
+                    combined = " ".join(answer_parts)
+                    if len(combined) > 30:
+                        faq_chunks.append(f"Q: {h_text}\nA: {combined}")
+
+        return faq_chunks
+
+    def _is_faq_page(self, soup: BeautifulSoup, source_url: str) -> bool:
+        """Detect if a page is an FAQ page."""
+        if "faq" in source_url.lower():
+            return True
+        title = soup.find("title")
+        if title and "faq" in title.get_text("", strip=True).lower():
+            return True
+        h1 = soup.find("h1")
+        if h1 and "faq" in h1.get_text("", strip=True).lower():
+            return True
+        return False
+
     def parse(self, content: str, source_url: str = "") -> tuple[str, list[dict[str, str]]]:
         soup = BeautifulSoup(content, "html.parser")
         for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "form"]):
             tag.decompose()
+
+        # ── FAQ-aware extraction (Phase 1 fix) ──
+        if self._is_faq_page(soup, source_url):
+            faq_pairs = self._extract_faq_pairs(soup)
+            if faq_pairs:
+                # Group 2-3 Q&A pairs per chunk for optimal embedding size
+                grouped_chunks = []
+                current_group = []
+                current_length = 0
+                for pair in faq_pairs:
+                    if current_length + len(pair) > 2000 and current_group:
+                        grouped_chunks.append("\n\n".join(current_group))
+                        current_group = []
+                        current_length = 0
+                    current_group.append(pair)
+                    current_length += len(pair)
+                if current_group:
+                    grouped_chunks.append("\n\n".join(current_group))
+
+                merged = "\n\n".join(grouped_chunks)
+                return _clean_text(merged), []
 
         main = _select_content_root(soup)
         if main is None:
@@ -757,32 +842,210 @@ def _source_key_from_pdf_path(pdf_path: Path) -> str:
     return f"file://{pdf_path.resolve().as_posix()}"
 
 
-def _chunk_text(text: str, chunk_size: int = 1800, overlap: int = 220) -> list[str]:
-    if len(text) <= chunk_size:
-        return [text]
+def _chunk_text(text: str, chunk_size: int = 2000, overlap: int = 350,
+                source_title: str = "") -> list[str]:
+    """Semantic-aware text chunking.
 
-    try:
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=overlap,
-            separators=["\n\n", "\n", ".", "?", "!", " ", ""],
-            is_separator_regex=False,
-        )
-        return splitter.split_text(text)
-    except ImportError:
-        # Fallback to naive string slicing if langchain is not installed
-        chunks: list[str] = []
+    Improvements over naive RecursiveCharacterTextSplitter:
+    1. Heading-aware: splits at heading boundaries before character limits
+    2. Table-preserving: never cuts within markdown tables
+    3. Sentence-safe: splits at sentence boundaries, not mid-word
+    4. Context prefix: optionally prepends source title
+    5. Increased overlap (350 chars ≈ 1 paragraph) for better context
+    """
+    if not text or not text.strip():
+        return []
+
+    if len(text) <= chunk_size:
+        prefixed = f"[{source_title}]\n{text}" if source_title else text
+        return [prefixed]
+
+    # Step 1: Split into semantic segments (heading-based)
+    # Detect headings: markdown headings, numbered sections, UPPERCASE lines
+    heading_pattern = re.compile(
+        r'(?:^|\n)'
+        r'(?:'
+        r'#{1,4}\s+.+|'                       # Markdown: ## Heading
+        r'(?:Part|Division|Section|Schedule)\s+[IVXLC\d]+.+|'  # Legal structure
+        r'\d+\.\d*\s+[A-Z].+|'                 # Numbered: 1.2 Title
+        r'[A-Z][A-Z\s]{10,}$'                  # ALL CAPS headings
+        r')'
+        r'(?:\n|$)',
+        re.MULTILINE
+    )
+
+    # Step 2: Find heading positions and split into segments
+    heading_positions = [m.start() for m in heading_pattern.finditer(text)]
+
+    # Build segments from heading positions
+    segments: list[str] = []
+    if heading_positions and heading_positions[0] > 50:
+        # There's content before first heading
+        segments.append(text[:heading_positions[0]].strip())
+
+    for i, pos in enumerate(heading_positions):
+        end = heading_positions[i + 1] if i + 1 < len(heading_positions) else len(text)
+        segment = text[pos:end].strip()
+        if segment:
+            segments.append(segment)
+
+    # Fallback: if no headings found, split by double newlines (paragraphs)
+    if not segments:
+        segments = [s.strip() for s in re.split(r'\n\s*\n', text) if s.strip()]
+
+    # If still no segments, use the whole text
+    if not segments:
+        segments = [text]
+
+    # Step 3: Merge small segments and split large ones
+    chunks: list[str] = []
+    current = ""
+
+    for segment in segments:
+        # Check if segment is a markdown table — keep intact
+        is_table = bool(re.match(r'^\s*\|', segment, re.MULTILINE))
+
+        if is_table:
+            # Flush current buffer
+            if current:
+                chunks.append(current)
+                current = ""
+            # Table chunk (may exceed size — that's ok, tables are coherent)
+            chunks.append(segment)
+            continue
+
+        if len(current) + len(segment) + 2 <= chunk_size:
+            current = (current + "\n\n" + segment).strip() if current else segment
+        else:
+            if current:
+                chunks.append(current)
+            # If this segment itself is too large, split at sentence boundaries
+            if len(segment) > chunk_size:
+                sub_chunks = _split_at_sentences(segment, chunk_size, overlap)
+                chunks.extend(sub_chunks)
+                current = ""
+            else:
+                current = segment
+
+    if current:
+        chunks.append(current)
+
+    # Step 4: Add source context prefix
+    if source_title:
+        chunks = [f"[{source_title}]\n{c}" if not c.startswith("[") else c
+                  for c in chunks]
+
+    return chunks
+
+
+def _split_at_sentences(text: str, chunk_size: int, overlap: int) -> list[str]:
+    """Split text at sentence boundaries, preserving coherence.
+
+    Uses smart sentence-end detection that avoids splitting at:
+    - Abbreviations (Dr., Mr., s., No., etc.)
+    - Decimal numbers (3.14)
+    - Legal references (s.85ZM)
+    """
+    # Sentence-end pattern: period/question/exclamation followed by space + uppercase
+    # Negative lookbehind avoids splitting at common abbreviations
+    sentence_end = re.compile(
+        r'(?<![A-Z])'           # Not after single uppercase (abbreviation like "U.S.")
+        r'(?<!\b[Dd]r)'         # Not after Dr
+        r'(?<!\b[Mm]r)'         # Not after Mr
+        r'(?<!\b[Mm]rs)'        # Not after Mrs
+        r'(?<!\b[Nn]o)'         # Not after No.
+        r'(?<!\b[Vv]s)'         # Not after vs.
+        r'(?<!\b[Ss]ec)'        # Not after Sec.
+        r'(?<!\bs)'             # Not after s. (legal section ref)
+        r'(?<!\d)'              # Not after digit (decimal numbers)
+        r'[.!?]'                # Sentence-ending punctuation
+        r'\s+'
+        r'(?=[A-Z(\[])'         # Followed by capital letter or bracket
+    )
+
+    sentences = sentence_end.split(text)
+    if len(sentences) <= 1:
+        # Can't split by sentences — force split with overlap
+        chunks = []
         start = 0
         while start < len(text):
             end = min(len(text), start + chunk_size)
-            chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
+            chunks.append(text[start:end].strip())
             if end >= len(text):
                 break
             start = max(0, end - overlap)
-        return chunks
+        return [c for c in chunks if c]
+
+    chunks = []
+    current = ""
+    for sent in sentences:
+        sent = sent.strip()
+        if not sent:
+            continue
+        if len(current) + len(sent) + 2 <= chunk_size:
+            current = (current + ". " + sent).strip() if current else sent
+        else:
+            if current:
+                # Ensure sentence ends with punctuation
+                if not current.rstrip().endswith(('.', '!', '?')):
+                    current = current.rstrip() + "."
+                chunks.append(current)
+            current = sent
+
+    if current:
+        if not current.rstrip().endswith(('.', '!', '?')):
+            current = current.rstrip() + "."
+        chunks.append(current)
+
+    return [c for c in chunks if c]
+
+
+def _validate_chunk_coherence(chunk: str, min_chars: int = 100) -> bool:
+    """Phase 3: Validate that a chunk is coherent and meaningful.
+
+    A coherent chunk must:
+    1. Meet minimum character length
+    2. Contain at least one complete sentence (or be a table/list)
+    3. Not be pure whitespace or navigation text
+    """
+    stripped = chunk.strip()
+    if len(stripped) < min_chars:
+        return False
+
+    # Tables and lists are always valid
+    if re.match(r'^\s*[|\-]', stripped, re.MULTILINE):
+        return True
+    if re.match(r'^\s*Q:', stripped):
+        return True  # FAQ pair
+    if stripped.startswith('['):
+        # Breadcrumb-enriched chunk — check content after breadcrumb
+        content_start = stripped.find(']\n')
+        if content_start > 0:
+            stripped = stripped[content_start + 2:].strip()
+
+    # Must contain at least one sentence-ending punctuation
+    has_sentence = bool(re.search(r'[.!?]\s', stripped + ' '))
+    # Or has substantial word count even without punctuation (e.g. lists)
+    has_substance = len(stripped.split()) >= 15
+
+    return has_sentence or has_substance
+
+
+def _detect_pdf_legal_structure(text: str) -> bool:
+    """Phase 4: Detect if PDF content has legal structure suitable for LegalChunker."""
+    indicators = 0
+    # Check for Part/Division/Section headings
+    if re.search(r'^\s*Part\s+[IVXLC]+', text, re.MULTILINE | re.IGNORECASE):
+        indicators += 1
+    if re.search(r'^\s*Division\s+\d+', text, re.MULTILINE | re.IGNORECASE):
+        indicators += 1
+    if re.search(r'^\s*(?:Section\s+)?\d+[A-Z]*\s{2,}\S', text, re.MULTILINE):
+        indicators += 1
+    if re.search(r'\bAct\s+\d{4}\b', text):
+        indicators += 1
+    if re.search(r'^\s*\(\d+\)\s+', text, re.MULTILINE):
+        indicators += 1
+    return indicators >= 2
 
 
 def _fetch_url(url: str, timeout: int = 20) -> tuple[str, str, list[dict[str, str]], str, str]:
@@ -1032,8 +1295,9 @@ def collect_sources(
             source_type = "pdf"
 
         # Use legal-aware chunking for legislation pages (preserves Section boundaries)
+        # Phase 4: Also detect legal structure in PDF content from legislation sites
         legal_chunk_metadata: dict[int, dict] = {}
-        if _is_legislation_url(url):
+        if _is_legislation_url(url) or (extracted_type == "pdf" and _detect_pdf_legal_structure(text)):
             legal_chunks = _chunk_legal_text(text, url)
             if legal_chunks:
                 # Legal chunks include section metadata — extract text for quality check
@@ -1046,10 +1310,22 @@ def collect_sources(
                     }
             else:
                 # No section structure found — fall back to standard chunking
-                chunks = _chunk_text(text)
+                chunks = _chunk_text(text, source_title=title)
         else:
-            chunks = _chunk_text(text)
+            chunks = _chunk_text(text, source_title=title)
         for idx, chunk in enumerate(chunks, start=1):
+            # Phase 3: Post-chunking coherence validation
+            if not _validate_chunk_coherence(chunk):
+                filtered_chunks_total += 1
+                rejected_chunks.append(
+                    {
+                        "stage": "coherence_check",
+                        "source_url": url,
+                        "reason": "chunk_not_coherent",
+                        "text": chunk[:320],
+                    }
+                )
+                continue
             if not _is_quality_chunk(chunk):
                 filtered_chunks_total += 1
                 rejected_chunks.append(
@@ -1172,12 +1448,33 @@ def collect_sources(
 
                 local_pdf_processed += 1
 
-                chunks = _chunk_text(text)
                 source_domain = pdf_path.parent.name or "local"
                 title = pdf_path.stem.replace("_", " ").strip()
                 topic = _topic_from_filename(pdf_path.stem)
 
+                # Phase 4: Route PDF with legal structure through LegalChunker
+                if _detect_pdf_legal_structure(text):
+                    legal_chunks = _chunk_legal_text(text, source_key)
+                    if legal_chunks:
+                        chunks = [lc["text"] for lc in legal_chunks]
+                    else:
+                        chunks = _chunk_text(text, source_title=title)
+                else:
+                    chunks = _chunk_text(text, source_title=title)
+
                 for idx, chunk in enumerate(chunks, start=1):
+                    # Phase 3: Post-chunking coherence validation
+                    if not _validate_chunk_coherence(chunk):
+                        filtered_chunks_total += 1
+                        rejected_chunks.append(
+                            {
+                                "stage": "coherence_check",
+                                "source_url": source_key,
+                                "reason": "chunk_not_coherent",
+                                "text": chunk[:320],
+                            }
+                        )
+                        continue
                     if not _is_quality_chunk(chunk):
                         filtered_chunks_total += 1
                         rejected_chunks.append(

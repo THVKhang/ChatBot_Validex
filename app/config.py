@@ -19,10 +19,10 @@ def _normalize_pgvector_table(value: str | None) -> str:
 
 @dataclass(frozen=True)
 class Settings:
-    model_name: str = os.getenv("MODEL_NAME", "gpt-4o-mini")
-    fast_model_name: str = os.getenv("FAST_MODEL_NAME", "llama3-8b-8192")
-    google_model_name: str = os.getenv("GOOGLE_MODEL_NAME", "models/gemini-2.5-flash")
-    google_fast_model_name: str = os.getenv("GOOGLE_FAST_MODEL_NAME", "models/gemini-1.5-flash-8b")
+    model_name: str = os.getenv("LLM_MODEL_PRO", os.getenv("MODEL_NAME", "gpt-4o-mini"))
+    fast_model_name: str = os.getenv("LLM_MODEL_FAST", os.getenv("FAST_MODEL_NAME", "llama-3.1-8b-instant"))
+    google_model_name: str = os.getenv("LLM_MODEL_PRO", os.getenv("GOOGLE_MODEL_NAME", "models/gemini-2.5-flash"))
+    google_fast_model_name: str = os.getenv("LLM_MODEL_FAST", os.getenv("GOOGLE_FAST_MODEL_NAME", "models/gemini-2.0-flash-lite"))
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     google_embedding_model: str = os.getenv("GOOGLE_EMBEDDING_MODEL", "models/text-embedding-004")
     llm_provider: str = os.getenv("LLM_PROVIDER", "auto")
@@ -51,7 +51,7 @@ class Settings:
     pinecone_api_key: str = os.getenv("PINECONE_API_KEY", "")
     pinecone_index: str = os.getenv("PINECONE_INDEX", "")
     pinecone_namespace: str = os.getenv("PINECONE_NAMESPACE", "default")
-    pgvector_table: str = _normalize_pgvector_table(os.getenv("PGVECTOR_TABLE", "validex_knowledge"))
+    pgvector_table: str = _normalize_pgvector_table(os.getenv("PGVECTOR_COLLECTION", os.getenv("PGVECTOR_TABLE", "validex_knowledge")))
     use_pgvector_retrieval: bool = os.getenv("USE_PGVECTOR_RETRIEVAL", "1") == "1"
     pgvector_require_non_fake_embeddings: bool = os.getenv("PGVECTOR_REQUIRE_NON_FAKE_EMBEDDINGS", "1") == "1"
     pgvector_min_similarity: float = float(os.getenv("PGVECTOR_MIN_SIMILARITY", "0.15"))
@@ -78,8 +78,14 @@ class Settings:
     min_draft_chars: int = int(os.getenv("MIN_DRAFT_CHARS", "700"))
     use_rate_limit: bool = os.getenv("USE_RATE_LIMIT", "1") == "1"
     rate_limit_per_minute: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
+    burst_limit_per_10s: int = int(os.getenv("BURST_LIMIT_PER_10S", "5"))
+    max_concurrent_per_ip: int = int(os.getenv("MAX_CONCURRENT_PER_IP", "3"))
+    request_timeout_seconds: int = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "180"))
+    max_response_size_bytes: int = int(os.getenv("MAX_RESPONSE_SIZE_BYTES", "102400"))  # 100KB
+    max_concurrent_llm_requests: int = int(os.getenv("MAX_CONCURRENT_LLM_REQUESTS", "10"))
     use_redis_rate_limit: bool = os.getenv("USE_REDIS_RATE_LIMIT", "0") == "1"
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    enable_security_headers: bool = os.getenv("ENABLE_SECURITY_HEADERS", "1") == "1"
     metrics_window_size: int = int(os.getenv("METRICS_WINDOW_SIZE", "200"))
     tool_allowed_domains: str = os.getenv(
         "TOOL_ALLOWED_DOMAINS",
@@ -93,6 +99,12 @@ class Settings:
     # Circuit breaker: skip LLM after N consecutive failures for a cooldown period
     circuit_breaker_threshold: int = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "3"))
     circuit_breaker_cooldown_seconds: int = int(os.getenv("CIRCUIT_BREAKER_COOLDOWN_SECONDS", "60"))
+    # Connection pool
+    db_pool_min_size: int = int(os.getenv("DB_POOL_MIN", "2"))
+    db_pool_max_size: int = int(os.getenv("DB_POOL_MAX", "20"))
+    # Redis sessions
+    use_redis_sessions: bool = os.getenv("USE_REDIS_SESSIONS", "0") == "1"
+    session_eviction_interval_seconds: int = int(os.getenv("SESSION_EVICTION_INTERVAL", "300"))
     # Conversation memory: max history turns sent to LLM
     max_conversation_turns: int = int(os.getenv("MAX_CONVERSATION_TURNS", "5"))
     # Prompt guard

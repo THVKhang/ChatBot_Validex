@@ -1,0 +1,15 @@
+Police check processing times in Australia vary depending on the type of check, the method of application, and the individual applicant's circumstances. Understanding these timelines helps employers plan their recruitment processes and set realistic expectations for applicants.
+
+Approximately 70 percent of Australian police checks submitted through accredited online providers are processed within 24 hours. These are typically straightforward cases where the applicant's identity is verified digitally, their name does not match any records in the ACIC database, and no manual review is required.
+
+The remaining 30 percent of applications require additional processing time, usually between 2 and 15 business days. Common reasons for extended processing include name matches with records in the criminal history database requiring manual verification, incomplete or inconsistent identity documentation, the applicant having a common name that generates multiple potential matches, or the applicant having lived in multiple jurisdictions requiring cross-referencing across state and territory police databases.
+
+Complex cases — such as those involving spent convictions assessment, international criminal history considerations, or applicants with extensive name history — may take up to 20 business days. In rare circumstances, checks may take longer if a state or territory police service has a backlog.
+
+Peak processing periods typically occur at the beginning of the calendar year (January through March), when many organisations conduct annual screening renewals, and at the start of the financial year (July), when government and healthcare organisations often onboard new staff. During these periods, processing times may increase by 2 to 5 business days.
+
+For employers who need expedited results, some providers offer priority processing for an additional fee. However, the actual processing time is ultimately determined by the ACIC and state police databases, so even priority applications may experience delays if manual review is required.
+
+Strategies for managing processing times include initiating police checks as early as possible in the recruitment process, ideally at the conditional offer stage rather than after final selection. Employers should also communicate expected timelines to applicants, implement interim supervision arrangements for workers whose checks are pending, and batch screening requests during off-peak periods where possible.
+
+Validex provides real-time status tracking for all police check applications, with automated notifications when results are available. The Validex dashboard shows the current average processing time based on recent submissions, helping employers plan accordingly.

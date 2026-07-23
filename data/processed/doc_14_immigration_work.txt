@@ -1,0 +1,15 @@
+Right to work verification is a critical pre-employment check for all Australian employers. Under the Migration Act 1958, it is an offence for an employer to knowingly or recklessly allow a non-citizen to work in Australia without a valid visa that permits work. Penalties for non-compliance are significant and can include fines and criminal prosecution.
+
+The Visa Entitlement Verification Online (VEVO) system is the primary tool for employers to verify a person's visa status and work rights. VEVO is a free service provided by the Department of Home Affairs that allows employers to check whether a visa holder is entitled to work in Australia, the conditions attached to their visa, and the expiry date of their visa.
+
+Employers can access VEVO through the Department of Home Affairs website or through integrated HR systems. To perform a check, the employer needs the person's date of birth and either their passport details, ImmiCard number, or visa grant number. The VEVO result confirms the visa subclass, work entitlements, and any conditions (such as work hour limitations for student visa holders).
+
+Common visa categories relevant to employment screening include Subclass 482 (Temporary Skill Shortage), Subclass 500 (Student Visa — limited to 48 hours per fortnight during study periods), Subclass 485 (Temporary Graduate), Subclass 820/801 (Partner Visa), and Subclass 189/190 (Skilled Permanent Visa — unrestricted work rights).
+
+Employers should perform VEVO checks before the employee commences work and at regular intervals for temporary visa holders, particularly before each visa expiry date. Many employers set calendar reminders or use HR systems to automate visa expiry tracking.
+
+For police check applications, immigration status affects the scope of the check. Non-citizens may require an international police check from their country of origin in addition to an Australian police check, depending on how long they have resided in Australia. Generally, if a person has lived in Australia for less than 12 months continuously, an overseas check may be appropriate.
+
+New Zealand citizens working in Australia under the Trans-Tasman Travel Arrangement have special arrangements. They can live and work in Australia indefinitely on a Special Category Visa (Subclass 444) but may need to apply for a police check through the Australian system.
+
+Validex supports right to work compliance by integrating police check applications with guidance on additional screening requirements based on the applicant's visa status and country of origin.

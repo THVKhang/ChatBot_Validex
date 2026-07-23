@@ -1,4 +1,6 @@
 import os
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["USE_LIVE_LLM"] = "0"
 os.environ["ENABLE_PROMPT_GUARD"] = "1"
 os.environ["USE_RATE_LIMIT"] = "0"

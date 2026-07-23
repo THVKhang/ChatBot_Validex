@@ -11,11 +11,6 @@ on:
         type: boolean
         default: false
 
-env:
-  DATABASE_URL: ${{ secrets.DATABASE_URL }}
-  GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-  EMBEDDING_PROVIDER: google
-
 jobs:
   delta-sync:
     runs-on: ubuntu-latest
@@ -37,13 +32,17 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run Delta Sync (dry run)
-        if: ${{ github.event.inputs.dry_run == 'true' || github.event_name == 'schedule' }}
+        if: github.event.inputs.dry_run == 'true' || github.event_name == 'schedule'
         run: |
           python -m app.delta_sync --dry-run
         continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          EMBEDDING_PROVIDER: google
 
       - name: Run Delta Sync (apply changes)
-        if: ${{ github.event.inputs.dry_run != 'true' }}
+        if: github.event.inputs.dry_run != 'true'
         run: |
           # Step 1: Detect and repeal changed content
           python -m app.delta_sync
@@ -53,6 +52,10 @@ jobs:
           
           # Step 3: Re-ingest into PGVector (only changed chunks will be embedded)
           python -m app.ingest_pgvector
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          EMBEDDING_PROVIDER: google
 
       - name: Upload changelog artifact
         if: always()

@@ -28,6 +28,9 @@ from app.config import settings
 
 load_dotenv()
 
+import logging
+logger = logging.getLogger(__name__)
+
 _SAFE_TABLE_NAME_RE = re.compile(r'^[a-z][a-z0-9_]{0,62}$')
 
 
@@ -85,9 +88,350 @@ def _chunk_hash(record: dict[str, Any]) -> str:
         "authority_score": record.get("authority_score"),
         "approved": record.get("approved"),
         "text": record.get("text"),
+        "parent_id": record.get("parent_id"),
     }
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha1(serialized.encode("utf-8")).hexdigest()
+
+
+def summarize_table_via_llm(table_md: str) -> str:
+    """Generate a summary of the markdown table using Gemini Flash."""
+    import time
+    from app.langchain_pipeline import pipeline
+
+    # Build fast LLM if not already built
+    llm = getattr(pipeline, "_fast_llm", None) or getattr(pipeline, "_llm", None)
+    if not llm:
+        try:
+            from app.llm.provider import build_resilient_fast_llm
+            llm = build_resilient_fast_llm(settings)
+        except Exception as build_exc:
+            print(f"Failed to build fast LLM in table summarizer: {build_exc}")
+
+    prompt = (
+        "Generate a concise, 100-word factual text summary of the following markdown table. "
+        "Explain its columns, values, and rules clearly:\n\n"
+        f"{table_md}"
+    )
+
+    max_retries = 4
+    backoff = 6.0
+    for attempt in range(max_retries):
+        try:
+            if llm:
+                response = llm.invoke(prompt)
+                return getattr(response, "content", str(response)).strip()
+        except Exception as exc:
+            exc_str = str(exc)
+            if "429" in exc_str or "quota" in exc_str.lower() or "limit" in exc_str.lower() or "ResourceExhausted" in exc_str:
+                print(f"Rate limit hit in summarize_table_via_llm (attempt {attempt + 1}/{max_retries}). Sleeping {backoff}s...")
+                time.sleep(backoff)
+                backoff *= 1.5
+                continue
+            print(f"Failed to summarize table via LLM: {exc}")
+            break
+    
+    # Fallback summary
+    lines = [l.strip() for l in table_md.splitlines() if l.strip()]
+    header = lines[0] if lines else ""
+    values = ", ".join(lines[2:5]) if len(lines) > 2 else ""
+    return f"Table with headers: {header}. Contains data: {values}"
+
+
+def extract_and_summarize_tables(
+    doc_id: str,
+    text: str,
+    doc_meta: dict,
+    table_name: str
+) -> tuple[str, list[dict], list[dict]]:
+    lines = text.splitlines()
+    cleaned_lines = []
+    table_children = []
+    table_parents = []
+    
+    current_table_lines = []
+    in_table = False
+    table_idx = 1
+    
+    for line in lines:
+        if "|" in line:
+            in_table = True
+            current_table_lines.append(line)
+        else:
+            if in_table and current_table_lines:
+                table_md = "\n".join(current_table_lines)
+                parent_id = f"parent_{doc_id}_table_{table_idx}"
+                
+                summary = summarize_table_via_llm(table_md)
+                
+                child_text = f"[{doc_meta.get('title', 'Document')} > Table Summary]\n{summary}"
+                child_id = f"child_{doc_id}_table_{table_idx}"
+                table_children.append({
+                    **doc_meta,
+                    "chunk_id": child_id,
+                    "text": child_text,
+                    "parent_id": parent_id,
+                    "parent_context": f"{doc_meta.get('title', 'Document')} > Table {table_idx}",
+                })
+                
+                table_parents.append({
+                    "parent_id": parent_id,
+                    "content": table_md,
+                    "doc_id": doc_id,
+                    "metadata": json.dumps({"type": "table", "title": f"Table {table_idx}", "source_url": doc_meta.get("source_url", "")})
+                })
+                
+                cleaned_lines.append(f"[[TABLE_PLACEHOLDER_{parent_id}]]")
+                current_table_lines = []
+                in_table = False
+                table_idx += 1
+            
+            cleaned_lines.append(line)
+            
+    if in_table and current_table_lines:
+        table_md = "\n".join(current_table_lines)
+        parent_id = f"parent_{doc_id}_table_{table_idx}"
+        summary = summarize_table_via_llm(table_md)
+        child_text = f"[{doc_meta.get('title', 'Document')} > Table Summary]\n{summary}"
+        child_id = f"child_{doc_id}_table_{table_idx}"
+        table_children.append({
+            **doc_meta,
+            "chunk_id": child_id,
+            "text": child_text,
+            "parent_id": parent_id,
+            "parent_context": f"{doc_meta.get('title', 'Document')} > Table {table_idx}",
+        })
+        table_parents.append({
+            "parent_id": parent_id,
+            "content": table_md,
+            "doc_id": doc_id,
+            "metadata": json.dumps({"type": "table", "title": f"Table {table_idx}", "source_url": doc_meta.get("source_url", "")})
+        })
+        cleaned_lines.append(f"[[TABLE_PLACEHOLDER_{parent_id}]]")
+        
+    return "\n".join(cleaned_lines), table_children, table_parents
+
+
+def split_text_into_paragraphs(text: str, max_chars: int = 1500) -> list[str]:
+    paragraphs = text.split("\n\n")
+    chunks = []
+    current = []
+    current_len = 0
+    for p in paragraphs:
+        p = p.strip()
+        if not p:
+            continue
+        if current_len + len(p) + 2 <= max_chars:
+            current.append(p)
+            current_len += len(p) + 2
+        else:
+            if current:
+                chunks.append("\n\n".join(current))
+            current = [p]
+            current_len = len(p)
+    if current:
+        chunks.append("\n\n".join(current))
+    return chunks
+
+
+def split_non_legal_hierarchical(doc: dict, table_name: str) -> tuple[list[dict], list[dict]]:
+    full_text = doc["full_text"]
+    doc_id = doc["doc_id"]
+    doc_title = doc["title"]
+    
+    full_text, table_children, table_parents = extract_and_summarize_tables(doc_id, full_text, doc, table_name)
+    
+    child_records = list(table_children)
+    parent_records = list(table_parents)
+    
+    parts = re.split(r'^##\s+', full_text, flags=re.MULTILINE)
+    
+    intro_text = parts[0].strip()
+    if intro_text:
+        parent_id = f"parent_{doc_id}_intro"
+        p_rec = {
+            "parent_id": parent_id,
+            "content": intro_text,
+            "doc_id": doc_id,
+            "metadata": json.dumps({"title": "Introduction", "source_url": doc.get("source_url", "")})
+        }
+        parent_records.append(p_rec)
+        
+        sub_chunks = split_text_into_paragraphs(intro_text, max_chars=1500)
+        for idx, sub_text in enumerate(sub_chunks):
+            child_text = f"[{doc_title} > Introduction]\n{sub_text}"
+            child_id = f"child_{doc_id}_intro_{idx}"
+            child_records.append({
+                **doc,
+                "chunk_id": child_id,
+                "text": child_text,
+                "parent_id": parent_id,
+                "parent_context": f"{doc_title} > Introduction",
+            })
+            
+    for sec_idx, part in enumerate(parts[1:], start=1):
+        lines = part.splitlines()
+        if not lines:
+            continue
+        h2_title = lines[0].strip()
+        sec_text = "\n".join(lines[1:]).strip()
+        if not sec_text:
+            continue
+            
+        parent_id = f"parent_{doc_id}_sec_{sec_idx}"
+        p_rec = {
+            "parent_id": parent_id,
+            "content": f"## {h2_title}\n\n{sec_text}",
+            "doc_id": doc_id,
+            "metadata": json.dumps({"title": h2_title, "source_url": doc.get("source_url", "")})
+        }
+        parent_records.append(p_rec)
+        
+        sub_chunks = split_text_into_paragraphs(sec_text, max_chars=1500)
+        for idx, sub_text in enumerate(sub_chunks):
+            child_text = f"[{doc_title} > {h2_title}]\n{sub_text}"
+            child_id = f"child_{doc_id}_sec_{sec_idx}_{idx}"
+            child_records.append({
+                **doc,
+                "chunk_id": child_id,
+                "text": child_text,
+                "parent_id": parent_id,
+                "parent_context": f"{doc_title} > {h2_title}",
+            })
+            
+    return child_records, parent_records
+
+
+def split_legal_hierarchical(doc: dict, table_name: str) -> tuple[list[dict], list[dict]]:
+    full_text = doc["full_text"]
+    doc_id = doc["doc_id"]
+    doc_title = doc["title"]
+    
+    full_text, table_children, table_parents = extract_and_summarize_tables(doc_id, full_text, doc, table_name)
+    
+    child_records = list(table_children)
+    parent_records = list(table_parents)
+    
+    from app.legal_chunker import chunk_legal_text
+    legal_chunks = chunk_legal_text(
+        text=full_text,
+        act_name=doc.get("act_name", doc_title),
+        jurisdiction=doc.get("jurisdiction", "Commonwealth"),
+        source_url=doc.get("source_url", "")
+    )
+    
+    section_groups = {}
+    for lc in legal_chunks:
+        section_key = lc.section_ref or lc.breadcrumb or "general"
+        if section_key not in section_groups:
+            section_groups[section_key] = []
+        section_groups[section_key].append(lc)
+        
+    for sec_idx, (section_key, chunks_in_group) in enumerate(section_groups.items(), start=1):
+        parent_id = f"parent_{doc_id}_leg_{sec_idx}"
+        parent_content = "\n\n".join(lc.raw_text for lc in chunks_in_group)
+        
+        p_rec = {
+            "parent_id": parent_id,
+            "content": f"### {section_key}\n\n{parent_content}",
+            "doc_id": doc_id,
+            "metadata": json.dumps({"title": section_key, "source_url": doc.get("source_url", "")})
+        }
+        parent_records.append(p_rec)
+        
+        for lc in chunks_in_group:
+            child_id = f"child_{doc_id}_leg_{sec_idx}_{lc.chunk_index}"
+            child_records.append({
+                **doc,
+                "chunk_id": child_id,
+                "text": lc.text,
+                "parent_id": parent_id,
+                "parent_context": lc.breadcrumb,
+            })
+            
+    return child_records, parent_records
+
+
+def build_parent_child_chunks(
+    records: list[dict[str, Any]],
+    table_name: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Process raw records, reconstruct documents, and chunk hierarchically."""
+    import re
+    
+    def _detect_legal_structure(text: str) -> bool:
+        text_lower = text.lower()
+        if "crimes act" in text_lower or "privacy act" in text_lower or "spent convictions" in text_lower:
+            return True
+        sections = len(re.findall(r'^\s*(?:Section|s\.?|Sec\.?)\s+\d+', text, re.MULTILINE))
+        parts = len(re.findall(r'^\s*Part\s+[IVXLC]+', text, re.MULTILINE | re.IGNORECASE))
+        return sections >= 3 or parts >= 2
+
+    docs = {}
+    for r in records:
+        doc_id = r.get("doc_id", "unknown_doc")
+        if doc_id not in docs:
+            docs[doc_id] = {
+                "doc_id": doc_id,
+                "title": r.get("title", "Untitled"),
+                "source_url": r.get("source_url", ""),
+                "source_domain": r.get("source_domain", ""),
+                "source_type": r.get("source_type", "webpage"),
+                "topic": r.get("topic", "compliance"),
+                "region": r.get("region", "AU"),
+                "authority_score": r.get("authority_score", 0.5),
+                "approved": r.get("approved", True),
+                "jurisdiction": r.get("jurisdiction", "Commonwealth"),
+                "act_name": r.get("act_name", ""),
+                "section_ref": r.get("section_ref", ""),
+                "parent_context": r.get("parent_context", ""),
+                "chunks": []
+            }
+        docs[doc_id]["chunks"].append(r)
+        
+    all_children = []
+    all_parents = []
+    
+    for doc_id, doc in docs.items():
+        def get_chunk_idx(c):
+            cid = c.get("chunk_id", "")
+            match = re.search(r'_(\d+)$', cid)
+            return int(match.group(1)) if match else 0
+            
+        doc["chunks"].sort(key=get_chunk_idx)
+        full_text = "\n\n".join(c.get("text", "") for c in doc["chunks"])
+        doc["full_text"] = full_text
+        
+        doc_meta = {k: v for k, v in doc.items() if k != "chunks"}
+        
+        try:
+            if _detect_legal_structure(full_text):
+                children, parents = split_legal_hierarchical(doc_meta, table_name)
+            else:
+                children, parents = split_non_legal_hierarchical(doc_meta, table_name)
+        except Exception as exc:
+            print(f"Hierarchical splitting failed for doc {doc_id}: {exc}. Using fallback chunking.")
+            parent_id = f"parent_{doc_id}_fallback"
+            parents = [{
+                "parent_id": parent_id,
+                "content": full_text,
+                "doc_id": doc_id,
+                "metadata": json.dumps({"title": doc_meta.get("title", ""), "source_url": doc_meta.get("source_url", "")})
+            }]
+            children = []
+            for c in doc["chunks"]:
+                children.append({
+                    **doc_meta,
+                    "chunk_id": c.get("chunk_id"),
+                    "text": c.get("text"),
+                    "parent_id": parent_id,
+                    "parent_context": doc_meta.get("title", ""),
+                })
+        
+        all_children.extend(children)
+        all_parents.extend(parents)
+        
+    return all_children, all_parents
 
 
 def _build_embedding_client(google_output_dimensionality: int | None = None) -> tuple[Any | None, str]:
@@ -96,14 +440,23 @@ def _build_embedding_client(google_output_dimensionality: int | None = None) -> 
     if provider == "local":
         try:
             from sentence_transformers import SentenceTransformer
+            # Prefer fine-tuned Validex domain model if available
+            finetuned_path = os.path.join("data", "models", "bge-base-finetuned-validex")
+            if os.path.isdir(finetuned_path) and os.path.isfile(os.path.join(finetuned_path, "config.json")):
+                model_name = finetuned_path
+                print(f"Using FINE-TUNED embedding model for ingestion: {finetuned_path}")
+            else:
+                model_name = 'BAAI/bge-base-en-v1.5'
+                print(f"Using pre-trained embedding model for ingestion: {model_name}")
+
             class LocalEmbeddings:
-                def __init__(self):
-                    self.model = SentenceTransformer('BAAI/bge-base-en-v1.5')
+                def __init__(self, model_path):
+                    self.model = SentenceTransformer(model_path)
                 def embed_documents(self, texts):
                     return self.model.encode(texts).tolist()
                 def embed_query(self, text):
                     return self.model.encode(text).tolist()
-            return (LocalEmbeddings(), "local")
+            return (LocalEmbeddings(model_name), "local")
         except ImportError:
             print("Please install sentence-transformers: pip install sentence-transformers")
             return (None, "local")
@@ -206,9 +559,12 @@ def ingest_jsonl_to_pgvector(
     state_file.parent.mkdir(parents=True, exist_ok=True)
     previous_state = _load_state(state_file) if incremental else {}
 
+    # Run Hierarchical Chunking (Parent-Child) & Table Summarization
+    child_records, parent_records = build_parent_child_chunks(records, table_name)
+
     changed_records: list[dict[str, Any]] = []
     next_state: dict[str, str] = {}
-    for record in records:
+    for record in child_records:
         chunk_id = str(record.get("chunk_id", "")).strip()
         if not chunk_id:
             continue
@@ -251,6 +607,13 @@ def ingest_jsonl_to_pgvector(
     repo = PGVectorRepository()
     repo.initialize_schema(table_name, safe_dimension)
 
+    # Upsert parent chunks associated with changed child chunks
+    if changed_records:
+        changed_parent_ids = {r.get("parent_id") for r in changed_records if r.get("parent_id")}
+        parents_to_upsert = [p for p in parent_records if p["parent_id"] in changed_parent_ids]
+        if parents_to_upsert:
+            repo.upsert_parents(table_name, parents_to_upsert)
+
     # Enrich records with legal metadata before inserting
     from app.metadata_enricher import enrich_batch
     use_llm_enrichment = os.getenv("ENRICH_WITH_LLM", "0") == "1"
@@ -274,6 +637,7 @@ def ingest_jsonl_to_pgvector(
                 "approved": bool(item.get("approved", True)),
                 "content": str(item.get("text", "")),
                 "embedding": json.dumps(vector),
+                "parent_id": item.get("parent_id"),
                 # Legal metadata (Trụ Cột 3)
                 "status": str(item.get("status", "in_force")),
                 "jurisdiction": str(item.get("jurisdiction", "Commonwealth")),
@@ -299,7 +663,7 @@ def ingest_jsonl_to_pgvector(
         "upserted": len(changed_records),
         "changed_records": len(changed_records),
         "deleted_records": deleted_count,
-        "total_records": len(records),
+        "total_records": len(child_records),
         "state_path": str(state_file),
     }
 
@@ -379,12 +743,42 @@ def ingest_jsonl_to_postgres_langchain(
 
 
 if __name__ == "__main__":
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser(description="Ingest documents into PGVector")
+    parser.add_argument(
+        "--collection",
+        type=str,
+        default=settings.pgvector_table,
+        help="Target collection/table name (e.g. validex_docs_v2)"
+    )
+    parser.add_argument(
+        "--crawl-golden",
+        action="store_true",
+        help="Crawl golden sources (.gov.au) before ingesting"
+    )
+    args = parser.parse_args()
+    
     mode = os.getenv("INGEST_MODE", "raw_sql").strip().lower()
+    
+    jsonl_path = "data/canonical/au_blog_chunks.jsonl"
+    if args.crawl_golden:
+        logger.info("Crawling golden sources before ingestion...")
+        from app.gov_crawler import crawl_golden_sources, CRAWLED_OUTPUT_PATH
+        crawl_result = crawl_golden_sources()
+        if crawl_result.get("success", 0) == 0:
+            logger.error("Crawling failed, aborting ingestion.")
+            print(json.dumps({"status": "error", "message": "crawling failed"}, indent=2))
+            sys.exit(1)
+        jsonl_path = CRAWLED_OUTPUT_PATH
+
+    logger.info("Starting ingestion: mode=%s, collection=%s, file=%s", mode, args.collection, jsonl_path)
+    
     try:
         if mode == "langchain":
-            result = ingest_jsonl_to_postgres_langchain()
+            result = ingest_jsonl_to_postgres_langchain(jsonl_path=jsonl_path, collection_name=args.collection)
         else:
-            result = ingest_jsonl_to_pgvector()
+            result = ingest_jsonl_to_pgvector(jsonl_path=jsonl_path, table_name=args.collection)
     except Exception as exc:
         result = {
             "status": "error",

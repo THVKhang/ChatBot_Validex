@@ -76,6 +76,7 @@ export class App {
   authUsername = '';
   authPassword = '';
   authError = '';
+  authSuccess = '';
   authLoading = false;
 
   // HITL Dashboard State
@@ -86,7 +87,7 @@ export class App {
   // OS Dock State
   dockPopup: string | null = null;
   showTokenPopup = false;
-
+  showSettings = false;
   // Module 1: Feedback State
   feedbackMap: Record<number, 1 | -1> = {};
 
@@ -107,6 +108,14 @@ export class App {
     { code: 'ko', label: '🇰🇷 한국어' },
     { code: 'ja', label: '🇯🇵 日本語' },
   ];
+
+  selectedValidexVersion = '1.3';
+  readonly validexVersions = ['1.1', '1.2', '1.3'];
+
+  // Custom Blog Settings (free input)
+  customWordCount: number = 500;
+  customSectionCount: number = 3;
+  customImageCount: number = 1;
 
   // Module 4: Pipeline Visualizer State
   pipelineSteps: { name: string; icon: string; status: 'done' | 'active' | 'pending'; detail: string }[] = [];
@@ -195,34 +204,8 @@ export class App {
   }
 
   private typewriterEffect(targetMsg: ChatMessage, fullText: string): void {
-    this.isTyping = true;
-    targetMsg.text = ''; 
-    
-    // Smooth swing effect: ~150 frames at 20ms each = 3 seconds max duration
-    const intervalMs = 20;
-    const maxFrames = 150;
-    const charsPerFrame = Math.max(3, Math.ceil(fullText.length / maxFrames));
-    
-    let currentIndex = 0;
-    
-    if (this.typingInterval) {
-      clearInterval(this.typingInterval);
-    }
-    
-    this.typingInterval = setInterval(() => {
-      currentIndex += charsPerFrame;
-      if (currentIndex >= fullText.length) {
-        targetMsg.text = fullText;
-        this.isTyping = false;
-        clearInterval(this.typingInterval);
-        this.typingInterval = null;
-        this.scrollChatToBottom();
-      } else {
-        targetMsg.text = fullText.slice(0, currentIndex);
-        // Throttle scrolling slightly if needed, but modern browsers handle it fine
-        this.scrollChatToBottom();
-      }
-    }, intervalMs);
+    targetMsg.text = fullText;
+    this.scrollChatToBottom();
   }
 
   private readonly allPrompts: string[] = [
@@ -543,6 +526,11 @@ export class App {
               else this.thinkingStatus = `${stepName} is working...`;
               this.thinkingDetail = '';
             }
+          } else if (event.type === 'chunk') {
+            this.stopThinkingCycle();
+            this.isTyping = true;
+            assistantMsg.text += (event.data?.chunk || '');
+            this.scrollChatToBottom();
           } else if (event.type === 'done') {
             this.stopThinkingCycle();
             const response = event.data as ChatApiResponse;
@@ -557,7 +545,11 @@ export class App {
             // Track detected language (Module 3)
             this.detectedLanguage = response.parsed?.language || 'en';
             // Trigger smooth typewriter UI
-            this.typewriterEffect(assistantMsg, response.generated.draft);
+            this.isTyping = false;
+            if (!assistantMsg.text) {
+              assistantMsg.text = response.generated.draft;
+            }
+            this.scrollChatToBottom();
             
           } else if (event.type === 'error') {
             this.stopThinkingCycle();
@@ -813,7 +805,7 @@ export class App {
       });
   }
 
-  exportDraft(markdown: string, format: 'docx' | 'html'): void {
+  exportDraft(markdown: string, format: 'docx' | 'pdf' | 'html'): void {
     this.chatService.exportChat(markdown, format).subscribe({
       next: (blob) => {
         const url = window.URL.createObjectURL(blob);
@@ -829,6 +821,45 @@ export class App {
         this.errorMessage = `Unable to export to ${format.toUpperCase()}.`;
       }
     });
+  }
+
+  // ── Rich Text Editor State ──
+  editorToolbarVisible: Record<number, boolean> = {};
+  editableMode: Record<number, boolean> = {};
+
+  toggleEditorToolbar(msgIndex: number): void {
+    this.editorToolbarVisible[msgIndex] = !this.editorToolbarVisible[msgIndex];
+    if (this.editorToolbarVisible[msgIndex]) {
+      this.editableMode[msgIndex] = true;
+    }
+  }
+
+  isEditorToolbarVisible(msgIndex: number): boolean {
+    return !!this.editorToolbarVisible[msgIndex];
+  }
+
+  isContentEditable(msgIndex: number): boolean {
+    return !!this.editableMode[msgIndex];
+  }
+
+  execFormatCommand(command: string, value: string = ''): void {
+    document.execCommand(command, false, value || undefined);
+  }
+
+  formatHeading(level: string): void {
+    document.execCommand('formatBlock', false, level);
+  }
+
+  insertLink(): void {
+    const url = prompt('Enter URL:', 'https://');
+    if (url) {
+      document.execCommand('createLink', false, url);
+    }
+  }
+
+  getEditedContent(msgIndex: number): string {
+    const el = document.querySelector(`#msg-content-${msgIndex}`) as HTMLElement;
+    return el ? el.innerHTML : '';
   }
 
   usePromptTemplate(sample: string): void {
@@ -1114,6 +1145,7 @@ export class App {
     this.authMode = mode;
     this.showAuthModal = true;
     this.authError = '';
+    this.authSuccess = '';
     this.authUsername = '';
     this.authPassword = '';
   }
@@ -1130,13 +1162,14 @@ export class App {
 
     this.authLoading = true;
     this.authError = '';
+    this.authSuccess = '';
 
     if (this.authMode === 'login') {
       this.authService.login(this.authUsername, this.authPassword).subscribe({
         next: () => {
           this.authLoading = false;
           this.closeAuthModal();
-          this.loadSessions(); // Reload sessions for the logged-in user
+          this.loadSessions();
         },
         error: (err) => {
           this.authLoading = false;
@@ -1146,19 +1179,15 @@ export class App {
     } else {
       this.authService.register(this.authUsername, this.authPassword).subscribe({
         next: () => {
-          // Auto login after register
-          this.authService.login(this.authUsername, this.authPassword).subscribe({
-            next: () => {
-              this.authLoading = false;
-              this.closeAuthModal();
-              this.loadSessions();
-            },
-            error: () => {
-              this.authLoading = false;
-              this.authMode = 'login';
-              this.authError = 'Registration successful. Please log in.';
-            }
-          });
+          this.authLoading = false;
+          this.authSuccess = '✅ Registration successful! Switching to login...';
+          this.authError = '';
+          // Auto-switch to login after 1.5 seconds
+          setTimeout(() => {
+            this.authMode = 'login';
+            this.authSuccess = 'Account created! Please sign in.';
+            this.authPassword = '';
+          }, 1500);
         },
         error: (err) => {
           this.authLoading = false;

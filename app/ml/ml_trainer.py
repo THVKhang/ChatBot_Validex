@@ -353,7 +353,7 @@ def train_model(
     # Full-data predictions for report
     y_class_pred = classifier.predict(X_scaled)
     clf_report = classification_report(
-        y_class, y_class_pred, target_names=["low", "medium", "high"], output_dict=True
+        y_class, y_class_pred, labels=[0, 1, 2], target_names=["low", "medium", "high"], output_dict=True
     )
 
     # Final feature importance (after possible pruning)

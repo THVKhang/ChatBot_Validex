@@ -51,6 +51,7 @@ class GraphState(TypedDict):
     tried_queries: list[str]
     rag_feedback: str | None
     loop_step: int
+    global_step_count: int  # Circuit Breaker: total node visits across ALL retry loops
     
     # Supervisor Architecture
     complexity_level: str  # "simple" or "complex"
@@ -65,4 +66,8 @@ class GraphState(TypedDict):
     # ML/DL Quality Control Pipeline
     ml_features: dict  # Feature vector extracted by ML Data Collector
     ml_quality_prediction: dict | None  # ML model prediction result
+    
+    # LLM Scorecard Evaluation
+    editor_evaluation: dict | None
+
 

@@ -106,7 +106,7 @@ def test_pgvector_non_fake_guard_skips_local_fallback(monkeypatch):
     monkeypatch.setattr(
         pipeline,
         "_retrieve_from_pgvector",
-        lambda _query, _top_k: RetrievalBundle(
+        lambda _query, _top_k, *args, **kwargs: RetrievalBundle(
             decision=RetrievalDecision(
                 docs=[],
                 status="no_match",

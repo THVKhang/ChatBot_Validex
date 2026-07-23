@@ -37,8 +37,8 @@ def test_enforce_grounding_adds_doc_url_page_citations():
 
     assert result.sections
     assert SOURCE_LINE_PREFIX in result.sections[0].body
-    assert "[Nguồn: doc_01 | URL: https://example.gov.au/police-check]" in result.sections[0].body
-    assert "## Danh mục nguồn tham khảo" in result.draft
+    assert "[Source: doc_01 | URL: https://example.gov.au/police-check]" in result.sections[0].body
+    assert "## References" in result.draft
 
 
 def test_enforce_grounding_uses_missing_data_sentence_without_docs():

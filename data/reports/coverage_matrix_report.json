@@ -1,0 +1,528 @@
+{
+  "total_chunks": 0,
+  "unmatched_chunks": 0,
+  "matrix": {
+    "police_check": {
+      "Commonwealth": 0,
+      "NSW": 0,
+      "VIC": 0,
+      "QLD": 0,
+      "WA": 0,
+      "SA": 0,
+      "TAS": 0,
+      "ACT": 0,
+      "NT": 0
+    },
+    "wwcc": {
+      "Commonwealth": 0,
+      "NSW": 0,
+      "VIC": 0,
+      "QLD": 0,
+      "WA": 0,
+      "SA": 0,
+      "TAS": 0,
+      "ACT": 0,
+      "NT": 0
+    },
+    "ndis": {
+      "Commonwealth": 0,
+      "NSW": 0,
+      "VIC": 0,
+      "QLD": 0,
+      "WA": 0,
+      "SA": 0,
+      "TAS": 0,
+      "ACT": 0,
+      "NT": 0
+    },
+    "spent_convictions": {
+      "Commonwealth": 0,
+      "NSW": 0,
+      "VIC": 0,
+      "QLD": 0,
+      "WA": 0,
+      "SA": 0,
+      "TAS": 0,
+      "ACT": 0,
+      "NT": 0
+    },
+    "100_point_id": {
+      "Commonwealth": 0,
+      "NSW": 0,
+      "VIC": 0,
+      "QLD": 0,
+      "WA": 0,
+      "SA": 0,
+      "TAS": 0,
+      "ACT": 0,
+      "NT": 0
+    },
+    "aged_care": {
+      "Commonwealth": 0,
+      "NSW": 0,
+      "VIC": 0,
+      "QLD": 0,
+      "WA": 0,
+      "SA": 0,
+      "TAS": 0,
+      "ACT": 0,
+      "NT": 0
+    },
+    "healthcare": {
+      "Commonwealth": 0,
+      "NSW": 0,
+      "VIC": 0,
+      "QLD": 0,
+      "WA": 0,
+      "SA": 0,
+      "TAS": 0,
+      "ACT": 0,
+      "NT": 0
+    },
+    "education": {
+      "Commonwealth": 0,
+      "NSW": 0,
+      "VIC": 0,
+      "QLD": 0,
+      "WA": 0,
+      "SA": 0,
+      "TAS": 0,
+      "ACT": 0,
+      "NT": 0
+    },
+    "employer_compliance": {
+      "Commonwealth": 0,
+      "NSW": 0,
+      "VIC": 0,
+      "QLD": 0,
+      "WA": 0,
+      "SA": 0,
+      "TAS": 0,
+      "ACT": 0,
+      "NT": 0
+    },
+    "immigration": {
+      "Commonwealth": 0,
+      "NSW": 0,
+      "VIC": 0,
+      "QLD": 0,
+      "WA": 0,
+      "SA": 0,
+      "TAS": 0,
+      "ACT": 0,
+      "NT": 0
+    },
+    "security_clearance": {
+      "Commonwealth": 0,
+      "NSW": 0,
+      "VIC": 0,
+      "QLD": 0,
+      "WA": 0,
+      "SA": 0,
+      "TAS": 0,
+      "ACT": 0,
+      "NT": 0
+    }
+  },
+  "total_cells": 99,
+  "empty_cells": 99,
+  "coverage_pct": 0.0,
+  "blind_spots": [
+    {
+      "topic": "police_check",
+      "state": "Commonwealth"
+    },
+    {
+      "topic": "police_check",
+      "state": "NSW"
+    },
+    {
+      "topic": "police_check",
+      "state": "VIC"
+    },
+    {
+      "topic": "police_check",
+      "state": "QLD"
+    },
+    {
+      "topic": "police_check",
+      "state": "WA"
+    },
+    {
+      "topic": "police_check",
+      "state": "SA"
+    },
+    {
+      "topic": "police_check",
+      "state": "TAS"
+    },
+    {
+      "topic": "police_check",
+      "state": "ACT"
+    },
+    {
+      "topic": "police_check",
+      "state": "NT"
+    },
+    {
+      "topic": "wwcc",
+      "state": "Commonwealth"
+    },
+    {
+      "topic": "wwcc",
+      "state": "NSW"
+    },
+    {
+      "topic": "wwcc",
+      "state": "VIC"
+    },
+    {
+      "topic": "wwcc",
+      "state": "QLD"
+    },
+    {
+      "topic": "wwcc",
+      "state": "WA"
+    },
+    {
+      "topic": "wwcc",
+      "state": "SA"
+    },
+    {
+      "topic": "wwcc",
+      "state": "TAS"
+    },
+    {
+      "topic": "wwcc",
+      "state": "ACT"
+    },
+    {
+      "topic": "wwcc",
+      "state": "NT"
+    },
+    {
+      "topic": "ndis",
+      "state": "Commonwealth"
+    },
+    {
+      "topic": "ndis",
+      "state": "NSW"
+    },
+    {
+      "topic": "ndis",
+      "state": "VIC"
+    },
+    {
+      "topic": "ndis",
+      "state": "QLD"
+    },
+    {
+      "topic": "ndis",
+      "state": "WA"
+    },
+    {
+      "topic": "ndis",
+      "state": "SA"
+    },
+    {
+      "topic": "ndis",
+      "state": "TAS"
+    },
+    {
+      "topic": "ndis",
+      "state": "ACT"
+    },
+    {
+      "topic": "ndis",
+      "state": "NT"
+    },
+    {
+      "topic": "spent_convictions",
+      "state": "Commonwealth"
+    },
+    {
+      "topic": "spent_convictions",
+      "state": "NSW"
+    },
+    {
+      "topic": "spent_convictions",
+      "state": "VIC"
+    },
+    {
+      "topic": "spent_convictions",
+      "state": "QLD"
+    },
+    {
+      "topic": "spent_convictions",
+      "state": "WA"
+    },
+    {
+      "topic": "spent_convictions",
+      "state": "SA"
+    },
+    {
+      "topic": "spent_convictions",
+      "state": "TAS"
+    },
+    {
+      "topic": "spent_convictions",
+      "state": "ACT"
+    },
+    {
+      "topic": "spent_convictions",
+      "state": "NT"
+    },
+    {
+      "topic": "100_point_id",
+      "state": "Commonwealth"
+    },
+    {
+      "topic": "100_point_id",
+      "state": "NSW"
+    },
+    {
+      "topic": "100_point_id",
+      "state": "VIC"
+    },
+    {
+      "topic": "100_point_id",
+      "state": "QLD"
+    },
+    {
+      "topic": "100_point_id",
+      "state": "WA"
+    },
+    {
+      "topic": "100_point_id",
+      "state": "SA"
+    },
+    {
+      "topic": "100_point_id",
+      "state": "TAS"
+    },
+    {
+      "topic": "100_point_id",
+      "state": "ACT"
+    },
+    {
+      "topic": "100_point_id",
+      "state": "NT"
+    },
+    {
+      "topic": "aged_care",
+      "state": "Commonwealth"
+    },
+    {
+      "topic": "aged_care",
+      "state": "NSW"
+    },
+    {
+      "topic": "aged_care",
+      "state": "VIC"
+    },
+    {
+      "topic": "aged_care",
+      "state": "QLD"
+    },
+    {
+      "topic": "aged_care",
+      "state": "WA"
+    },
+    {
+      "topic": "aged_care",
+      "state": "SA"
+    },
+    {
+      "topic": "aged_care",
+      "state": "TAS"
+    },
+    {
+      "topic": "aged_care",
+      "state": "ACT"
+    },
+    {
+      "topic": "aged_care",
+      "state": "NT"
+    },
+    {
+      "topic": "healthcare",
+      "state": "Commonwealth"
+    },
+    {
+      "topic": "healthcare",
+      "state": "NSW"
+    },
+    {
+      "topic": "healthcare",
+      "state": "VIC"
+    },
+    {
+      "topic": "healthcare",
+      "state": "QLD"
+    },
+    {
+      "topic": "healthcare",
+      "state": "WA"
+    },
+    {
+      "topic": "healthcare",
+      "state": "SA"
+    },
+    {
+      "topic": "healthcare",
+      "state": "TAS"
+    },
+    {
+      "topic": "healthcare",
+      "state": "ACT"
+    },
+    {
+      "topic": "healthcare",
+      "state": "NT"
+    },
+    {
+      "topic": "education",
+      "state": "Commonwealth"
+    },
+    {
+      "topic": "education",
+      "state": "NSW"
+    },
+    {
+      "topic": "education",
+      "state": "VIC"
+    },
+    {
+      "topic": "education",
+      "state": "QLD"
+    },
+    {
+      "topic": "education",
+      "state": "WA"
+    },
+    {
+      "topic": "education",
+      "state": "SA"
+    },
+    {
+      "topic": "education",
+      "state": "TAS"
+    },
+    {
+      "topic": "education",
+      "state": "ACT"
+    },
+    {
+      "topic": "education",
+      "state": "NT"
+    },
+    {
+      "topic": "employer_compliance",
+      "state": "Commonwealth"
+    },
+    {
+      "topic": "employer_compliance",
+      "state": "NSW"
+    },
+    {
+      "topic": "employer_compliance",
+      "state": "VIC"
+    },
+    {
+      "topic": "employer_compliance",
+      "state": "QLD"
+    },
+    {
+      "topic": "employer_compliance",
+      "state": "WA"
+    },
+    {
+      "topic": "employer_compliance",
+      "state": "SA"
+    },
+    {
+      "topic": "employer_compliance",
+      "state": "TAS"
+    },
+    {
+      "topic": "employer_compliance",
+      "state": "ACT"
+    },
+    {
+      "topic": "employer_compliance",
+      "state": "NT"
+    },
+    {
+      "topic": "immigration",
+      "state": "Commonwealth"
+    },
+    {
+      "topic": "immigration",
+      "state": "NSW"
+    },
+    {
+      "topic": "immigration",
+      "state": "VIC"
+    },
+    {
+      "topic": "immigration",
+      "state": "QLD"
+    },
+    {
+      "topic": "immigration",
+      "state": "WA"
+    },
+    {
+      "topic": "immigration",
+      "state": "SA"
+    },
+    {
+      "topic": "immigration",
+      "state": "TAS"
+    },
+    {
+      "topic": "immigration",
+      "state": "ACT"
+    },
+    {
+      "topic": "immigration",
+      "state": "NT"
+    },
+    {
+      "topic": "security_clearance",
+      "state": "Commonwealth"
+    },
+    {
+      "topic": "security_clearance",
+      "state": "NSW"
+    },
+    {
+      "topic": "security_clearance",
+      "state": "VIC"
+    },
+    {
+      "topic": "security_clearance",
+      "state": "QLD"
+    },
+    {
+      "topic": "security_clearance",
+      "state": "WA"
+    },
+    {
+      "topic": "security_clearance",
+      "state": "SA"
+    },
+    {
+      "topic": "security_clearance",
+      "state": "TAS"
+    },
+    {
+      "topic": "security_clearance",
+      "state": "ACT"
+    },
+    {
+      "topic": "security_clearance",
+      "state": "NT"
+    }
+  ]
+}

@@ -19,6 +19,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ── Global Circuit Breaker ────────────────────────────────────
+# Maximum total node visits across ALL retry loops (RAG + Editor + ML Gate).
+# Prevents GraphRecursionError from nested loop combinations.
+GLOBAL_STEP_LIMIT = 8
+
 # ── Legal / Complex Topic Indicators ──────────────────────────
 COMPLEX_INDICATORS = [
     "legislation", "act", "regulation", "compliance", "legal",
@@ -27,6 +32,8 @@ COMPLEX_INDICATORS = [
     "fair work", "anti-discrimination", "human rights",
     "immigration", "visa", "citizenship",
     "multi-state", "comparison", "versus", "vs",
+    "points", "100-point", "100 point", "fee", "cost", 
+    "how many", "how much", "points calculation", "score",
 ]
 
 
@@ -43,18 +50,28 @@ class SupervisorNode(BaseAgentNode):
         """
         parsed = state.get("parsed", {})
         topic = parsed.get("topic", "").lower()
+        prompt = state.get("prompt", "").lower()
         
-        # Score complexity based on indicators
-        complexity_score = sum(1 for indicator in COMPLEX_INDICATORS if indicator in topic)
+        # Score complexity based on indicators in both topic and prompt
+        complexity_score = sum(1 for indicator in COMPLEX_INDICATORS if indicator in topic or indicator in prompt)
         
         # Also check length hint: long articles on legal topics = complex
         is_long = parsed.get("length", "medium") == "long"
         if is_long:
             complexity_score += 1
+            
+        # Force complex for point calculations, fees, and critical regulatory guides
+        force_complex_keywords = [
+            "points", "100-point", "100 point", "fee", "cost", 
+            "how many", "how much", "spent conviction", "spent convictions",
+            "working with children", "wwcc", "ndis", "citizenship", "visa",
+            "calculation", "calculator"
+        ]
+        is_forced_complex = any(kw in prompt or kw in topic for kw in force_complex_keywords)
         
-        if complexity_score >= 2:
+        if complexity_score >= 2 or is_forced_complex:
             level = "complex"
-            notes = f"Complex topic detected (score={complexity_score}). Using enhanced pipeline with deeper research."
+            notes = f"Complex topic/prompt detected (score={complexity_score}, forced={is_forced_complex}). Using enhanced pipeline with deeper research."
         else:
             level = "simple"
             notes = f"Standard topic (score={complexity_score}). Using optimized linear pipeline."
@@ -136,28 +153,6 @@ def route_after_parser(state: GraphState):
     return "Researcher"
 
 
-def route_after_editor(state: GraphState):
-    """Conditional edge from Editor: If feedback exists, go back to Writer. Else END."""
-    if state.get("editor_feedback"):
-        # Circuit Breaker: limit revision cycles
-        loop_step = state.get("loop_step", 0)
-        revision_count = state.get("revision_count", 0)
-        if loop_step >= 3 or revision_count >= 3:
-            logger.warning(
-                f"⚠️ CIRCUIT BREAKER: Force-exiting cyclic loop after "
-                f"loop_step={loop_step}, revision_count={revision_count}. Publishing draft as is."
-            )
-            return END
-        return "Writer"
-    return END
-
-
-def route_after_rag(state: GraphState):
-    """Conditional edge from RAG Evaluator: If feedback exists and attempts < 2, go back to Researcher. Else route by complexity."""
-    attempts = state.get("retrieval_attempts", 0)
-    if state.get("rag_feedback") and attempts < 2:
-        return "Researcher"
-    return "Writer"
 
 
 def route_after_supervisor(state: GraphState):
@@ -170,6 +165,10 @@ def route_after_supervisor(state: GraphState):
 
 def route_after_rag_complex(state: GraphState):
     """For complex pipeline: after RAG eval, route to deep researcher or supervisor routing."""
+    # Global circuit breaker
+    if state.get("global_step_count", 0) >= GLOBAL_STEP_LIMIT:
+        logger.warning("⚠️ GLOBAL CIRCUIT BREAKER: step %d >= %d. Forcing Supervisor.", state.get("global_step_count", 0), GLOBAL_STEP_LIMIT)
+        return "Supervisor"
     attempts = state.get("retrieval_attempts", 0)
     if state.get("rag_feedback") and attempts < 2:
         return "Researcher"
@@ -217,10 +216,12 @@ def route_after_editor_with_ml(state: GraphState):
     if state.get("editor_feedback"):
         loop_step = state.get("loop_step", 0)
         revision_count = state.get("revision_count", 0)
-        if loop_step >= 3 or revision_count >= 3:
+        global_step = state.get("global_step_count", 0)
+        if loop_step >= 3 or revision_count >= 3 or global_step >= GLOBAL_STEP_LIMIT:
             logger.warning(
-                f"⚠️ CIRCUIT BREAKER: Force-exiting cyclic loop after "
-                f"loop_step={loop_step}, revision_count={revision_count}. Publishing draft as is."
+                "⚠️ CIRCUIT BREAKER: Force-exiting cyclic loop "
+                "(loop_step=%d, revision_count=%d, global_step=%d). Publishing draft as is.",
+                loop_step, revision_count, global_step,
             )
             return "ML_Quality_Gate"
         return "Writer"
@@ -238,6 +239,12 @@ def route_after_ml_gate(state: GraphState):
     In SHADOW mode: always passes to ML_Collector (never blocks).
     In ENFORCE mode: routes to Researcher or Writer based on failure source.
     """
+    # Global circuit breaker — always takes priority
+    global_step = state.get("global_step_count", 0)
+    if global_step >= GLOBAL_STEP_LIMIT:
+        logger.warning("⚠️ GLOBAL CIRCUIT BREAKER: step %d >= %d. Forcing ML_Collector (END).", global_step, GLOBAL_STEP_LIMIT)
+        return "ML_Collector"
+
     prediction = state.get("ml_quality_prediction") or {}
     mode = prediction.get("gate_mode", "shadow")
 
@@ -277,5 +284,9 @@ builder.add_edge("ML_Collector", END)
 
 # Compile Graph with Checkpointer for state persistence
 checkpointer = MemorySaver()
-multi_agent_graph = builder.compile(checkpointer=checkpointer)
+multi_agent_graph = builder.compile(
+    checkpointer=checkpointer,
+    # Explicit recursion limit to prevent runaway loops (LangGraph default is 25)
+    # Set higher than GLOBAL_STEP_LIMIT to allow the circuit breaker to handle gracefully
+)
 

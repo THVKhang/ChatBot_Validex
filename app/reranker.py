@@ -23,8 +23,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Path to the bundled ONNX reranker model
+# Path to the bundled ONNX reranker model (pre-trained)
 DEFAULT_MODEL_DIR = os.path.join("data", "models", "ms-marco-MiniLM-L-12-v2")
+
+# Path to fine-tuned Validex domain reranker (trained by reranker_trainer.py)
+FINETUNED_MODEL_DIR = os.path.join("data", "models", "reranker-finetuned-validex")
 
 # Global singleton
 _RERANKER = None
@@ -52,31 +55,48 @@ class CrossEncoderReranker:
         self._ranker = None
 
     def _load_model(self):
-        """Lazy-load the ONNX reranker model."""
+        """Lazy-load the reranker model.
+        
+        Priority:
+        1. Fine-tuned Validex domain model (data/models/reranker-finetuned-validex/)
+        2. FlashRank ONNX pre-trained model
+        3. SentenceTransformers CrossEncoder fallback
+        """
         if self._ranker is not None:
             return
 
-        model_path = Path(self.model_dir)
-        if not model_path.exists():
-            logger.warning("Reranker model not found at %s — reranking disabled", self.model_dir)
-            return
-
-        try:
-            from flashrank import Ranker, RerankRequest
-            self._ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir=str(model_path.parent))
-            logger.info("CrossEncoder Reranker loaded from %s", self.model_dir)
-        except ImportError:
-            # Fallback: try sentence-transformers CrossEncoder
+        # Priority 1: Fine-tuned domain model
+        finetuned_path = Path(FINETUNED_MODEL_DIR)
+        if finetuned_path.exists() and (finetuned_path / "config.json").exists():
             try:
                 from sentence_transformers import CrossEncoder
-                onnx_file = model_path / "flashrank-MiniLM-L-12-v2_Q.onnx"
-                if onnx_file.exists():
-                    logger.info("FlashRank not available, using SentenceTransformers CrossEncoder fallback")
-                    self._ranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-12-v2", max_length=self.max_length)
-                else:
-                    logger.warning("No reranker backend available — reranking disabled")
+                self._ranker = CrossEncoder(str(finetuned_path), max_length=self.max_length)
+                self._use_crossencoder = True
+                logger.info("Loaded FINE-TUNED Validex reranker from %s", FINETUNED_MODEL_DIR)
+                return
+            except Exception as exc:
+                logger.warning("Failed to load fine-tuned reranker: %s — trying pre-trained", exc)
+
+        # Priority 2: FlashRank ONNX pre-trained
+        model_path = Path(self.model_dir)
+        if model_path.exists():
+            try:
+                from flashrank import Ranker, RerankRequest
+                self._ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir=str(model_path.parent))
+                self._use_crossencoder = False
+                logger.info("CrossEncoder Reranker loaded from %s", self.model_dir)
+                return
             except ImportError:
-                logger.warning("Neither flashrank nor sentence-transformers available — reranking disabled")
+                pass
+
+        # Priority 3: SentenceTransformers CrossEncoder (download from HF)
+        try:
+            from sentence_transformers import CrossEncoder
+            self._ranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-12-v2", max_length=self.max_length)
+            self._use_crossencoder = True
+            logger.info("Loaded SentenceTransformers CrossEncoder (pre-trained) as fallback")
+        except ImportError:
+            logger.warning("No reranker backend available — reranking disabled")
 
     def rerank(
         self,
@@ -115,13 +135,13 @@ class CrossEncoderReranker:
             return documents
 
         try:
-            return self._rerank_with_flashrank(query, documents, top_k, content_key)
-        except Exception:
-            try:
+            if getattr(self, '_use_crossencoder', False):
                 return self._rerank_with_crossencoder(query, documents, top_k, content_key)
-            except Exception as exc:
-                logger.warning("Reranking failed: %s — returning original order", exc)
-                return documents
+            else:
+                return self._rerank_with_flashrank(query, documents, top_k, content_key)
+        except Exception as exc:
+            logger.warning("Reranking failed: %s — returning original order", exc)
+            return documents
 
     def _rerank_with_flashrank(
         self, query: str, documents: list[dict], top_k: int | None, content_key: str
