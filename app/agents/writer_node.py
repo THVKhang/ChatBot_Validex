@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_image_placeholders(draft: str, topic: str) -> str:
-    """Replace ![IMAGE:keyword] placeholders AND fix fake Unsplash URLs with real image URLs."""
+    """Replace ![IMAGE:keyword] placeholders AND fix fake/broken Unsplash URLs with real image URLs."""
     from app.generator import build_section_image_url
 
     # ── Pass 1: Resolve ![IMAGE:keyword] placeholders ──
@@ -49,6 +49,35 @@ def _resolve_image_placeholders(draft: str, topic: str) -> str:
             replacement = f"![{alt_text}]({image_url})"
             draft = draft[:match.start()] + replacement + draft[match.end():]
             logger.info(f"Writer: Fixed fake URL for '{alt}' → {image_url[:80]}...")
+
+    # ── Pass 3: Fix broken markdown image syntax ──
+    # LLM sometimes outputs images without proper markdown syntax:
+    #   "alt text(https://images.unsplash.com/...)" — missing ![...]
+    #   "[alt text](https://images.unsplash.com/...)" — missing leading !
+    # Fix: Convert to proper ![alt](url) format
+    broken_img_pattern = re.compile(
+        r'(?<!!)\[([^\]]+)\]\((https://images\.unsplash\.com/[^\)]+)\)'
+    )
+    broken_matches = list(broken_img_pattern.finditer(draft))
+    for match in reversed(broken_matches):
+        alt = match.group(1).strip()
+        url = match.group(2)
+        replacement = f"![{alt}]({url})"
+        draft = draft[:match.start()] + replacement + draft[match.end():]
+        logger.info(f"Writer: Fixed broken image link (missing !) for '{alt}'")
+
+    # ── Pass 4: Fix raw "alt text(url)" without any brackets ──
+    raw_img_pattern = re.compile(
+        r'^([^!\[\n][^\(\n]{3,80})\((https://images\.unsplash\.com/[^\)]+)\)\s*$',
+        re.MULTILINE
+    )
+    raw_matches = list(raw_img_pattern.finditer(draft))
+    for match in reversed(raw_matches):
+        alt = match.group(1).strip()
+        url = match.group(2)
+        replacement = f"![{alt}]({url})"
+        draft = draft[:match.start()] + replacement + draft[match.end():]
+        logger.info(f"Writer: Fixed raw image text for '{alt}'")
 
     return draft
 
@@ -353,18 +382,19 @@ class WriterAgentNode(BaseAgentNode):
                     "Apply the user's requested changes to the blog. Rules:\n"
                     "1. Keep all existing content that the user did NOT ask to change.\n"
                     "2. Only modify what the user explicitly asked for.\n"
-                    "3. IMAGE RULES (CRITICAL):\n"
-                    "   - If the user asks to add images, insert a placeholder in this EXACT format:\n"
-                    "     ![IMAGE:search keyword here]\n"
-                    "   - Add EXACTLY the number of images the user requested. "
-                    "If user says 'add 1 picture', insert EXACTLY 1 placeholder. "
-                    "If user says 'add 2 pictures', insert EXACTLY 2 placeholders.\n"
-                    "   - Do NOT add more images than requested.\n"
-                    "   - Do NOT use any URL — just use the placeholder format above.\n"
-                    "   - Place the placeholder at an appropriate position between sections.\n"
-                    "4. Keep ALL existing images (lines starting with ![) unchanged.\n"
-                    "5. Maintain the same markdown format, heading structure, and tone.\n"
-                    "6. Output ONLY the modified blog post. No commentary.\n"
+                    "3. IMAGE RULES (CRITICAL — follow EXACTLY):\n"
+                    "   a) For ADDING new images: insert a placeholder in this EXACT format:\n"
+                    "      ![IMAGE:search keyword here]\n"
+                    "      Add EXACTLY the number of images the user requested.\n"
+                    "   b) For CHANGING/REPLACING an existing image: remove the old image line " 
+                    "and insert a new placeholder in the same position:\n"
+                    "      ![IMAGE:search keyword describing the new image]\n"
+                    "   c) For REMOVING an image: simply delete that image line.\n"
+                    "   d) Do NOT use any URL (no https://...). ONLY use ![IMAGE:keyword] placeholders.\n"
+                    "   e) Do NOT output raw URLs or links to images. Always use the placeholder format.\n"
+                    "   f) Keep all OTHER existing images (that the user did NOT ask to change) as-is.\n"
+                    "4. Maintain the same markdown format, heading structure, and tone.\n"
+                    "5. Output ONLY the modified blog post. No commentary or explanation.\n"
                 )
                 try:
                     response = llm_to_use.invoke(edit_prompt)
