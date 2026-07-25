@@ -938,14 +938,13 @@ export class App {
         }
       }, 0);
     } else {
-      // EXITING edit mode: save edits back to message text (optional)
+      // EXITING edit mode: clean up image selection + save edits
+      this._deselectImage(); // Remove any active resize handles before saving
       const editEl = document.getElementById(`msg-content-${msgIndex}`);
       if (editEl) {
         // Store edited HTML so it renders correctly in display mode
         const msg = this.messages[msgIndex];
         if (msg) {
-          // Save the raw edited HTML back — the markdown pipe won't re-process it,
-          // but the display div will show the updated content via innerHTML
           (msg as any)._editedHtml = editEl.innerHTML;
         }
       }
