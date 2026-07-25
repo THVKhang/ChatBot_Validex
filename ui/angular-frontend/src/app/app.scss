@@ -1350,20 +1350,146 @@
   padding: 0;
 }
 
-/* ─── Editable Content Highlight ─── */
-.msg-markdown.editable-content {
-  outline: 2px solid rgba(26, 115, 232, 0.25);
-  outline-offset: 4px;
-  border-radius: 4px;
-  padding: 8px;
-  transition: outline-color 0.15s;
-  min-height: 60px;
-  background: #fff;
+/* ─── Paper Page (Word Processor) ─── */
+.paper-page-wrapper {
+  display: flex;
+  justify-content: center;
+  padding: 16px 0;
+  background: #e8eaed;
+  border-radius: 0 0 8px 8px;
+  min-height: 400px;
+  overflow: auto;
 }
 
-.msg-markdown.editable-content:focus {
-  outline-color: rgba(26, 115, 232, 0.5);
+.paper-page {
+  background: #fff;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.12),
+    0 4px 12px rgba(0, 0, 0, 0.08);
+  border-radius: 2px;
+  transition: width 0.3s ease, min-height 0.3s ease;
+
+  /* A4 Portrait (default) — scaled to ~70% for screen */
+  width: 595px;
+  min-height: 842px;
+  padding: 60px 56px;
+
+  &.landscape {
+    width: 842px;
+    min-height: 595px;
+    padding: 56px 60px;
+  }
+
+  &.page-letter {
+    width: 612px;
+    min-height: 792px;
+    &.landscape {
+      width: 792px;
+      min-height: 612px;
+    }
+  }
+
+  &.page-legal {
+    width: 612px;
+    min-height: 1008px;
+    &.landscape {
+      width: 1008px;
+      min-height: 612px;
+    }
+  }
 }
+
+.paper-page-content {
+  outline: none;
+  min-height: 100%;
+  font-family: 'Inter', Arial, sans-serif;
+  font-size: 11pt;
+  line-height: 1.6;
+  color: #1f1f1f;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.paper-page-content:focus {
+  outline: none;
+}
+
+/* Paper content typography */
+.paper-page-content h1 { font-size: 20pt; margin: 16px 0 8px; font-weight: 700; }
+.paper-page-content h2 { font-size: 16pt; margin: 14px 0 6px; font-weight: 600; }
+.paper-page-content h3 { font-size: 13pt; margin: 12px 0 4px; font-weight: 600; }
+.paper-page-content h4 { font-size: 11pt; margin: 10px 0 4px; font-weight: 600; }
+.paper-page-content p { margin: 4px 0; }
+.paper-page-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  cursor: pointer;
+  display: block;
+  margin: 8px auto;
+}
+.paper-page-content blockquote {
+  border-left: 3px solid #dadce0;
+  padding-left: 12px;
+  margin: 8px 0;
+  color: #5f6368;
+}
+.paper-page-content ul, .paper-page-content ol {
+  padding-left: 24px;
+  margin: 4px 0;
+}
+
+/* ── Image Resize Handles ── */
+.img-resize-wrapper {
+  display: inline-block;
+  position: relative;
+}
+
+.img-selected {
+  outline: 2px solid #1a73e8;
+  outline-offset: 2px;
+}
+
+.img-resize-handle {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 12px;
+  height: 12px;
+  background: #1a73e8;
+  border: 2px solid #fff;
+  border-radius: 2px;
+  cursor: se-resize;
+  z-index: 10;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.img-resize-handle:hover {
+  background: #1558b0;
+  transform: scale(1.2);
+}
+
+/* ── Page Control Active State ── */
+.toolbar-btn.active {
+  background: #d3e3fd;
+  color: #1a73e8;
+}
+
+.toolbar-select-page {
+  min-width: 60px;
+  max-width: 70px;
+}
+
+/* ── Editable Content Highlight (fallback) ── */
+.editable-content {
+  outline: none;
+  min-height: 60px;
+}
+
+.editable-content:focus {
+  outline: none;
+}
+
 
 /* ─── Input Bar (pinned bottom, ChatGPT style) ─── */
 .chat-input-bar {

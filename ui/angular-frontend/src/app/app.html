@@ -277,6 +277,21 @@
                       <span class="material-symbols-outlined">format_clear</span>
                     </button>
                   </div>
+                  <div class="toolbar-divider"></div>
+                  <!-- Page Controls -->
+                  <div class="toolbar-group page-controls">
+                    <button class="toolbar-btn" [class.active]="pageOrientation === 'portrait'" (mousedown)="$event.preventDefault(); setPageOrientation('portrait')" title="Portrait">
+                      <span class="material-symbols-outlined">crop_portrait</span>
+                    </button>
+                    <button class="toolbar-btn" [class.active]="pageOrientation === 'landscape'" (mousedown)="$event.preventDefault(); setPageOrientation('landscape')" title="Landscape">
+                      <span class="material-symbols-outlined">crop_landscape</span>
+                    </button>
+                    <select class="toolbar-select toolbar-select-page" (change)="setPageSize($any($event.target).value)" title="Page Size">
+                      <option value="a4" [selected]="pageSize === 'a4'">A4</option>
+                      <option value="letter" [selected]="pageSize === 'letter'">Letter</option>
+                      <option value="legal" [selected]="pageSize === 'legal'">Legal</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
@@ -287,11 +302,19 @@
                    [id]="'msg-display-' + i"
                    [innerHTML]="getDisplayHtml(msg)"></div>
 
-              <!-- Edit mode: contenteditable (Angular does NOT manage innerHTML) -->
+              <!-- Edit mode: Paper Page with contenteditable -->
               <div *ngIf="msg.role === 'assistant' && msg.text && isContentEditable(i)"
-                   class="msg-markdown editable-content"
-                   contenteditable="true"
-                   [id]="'msg-content-' + i"></div>
+                   class="paper-page-wrapper">
+                <div class="paper-page"
+                     [class.landscape]="pageOrientation === 'landscape'"
+                     [class.page-letter]="pageSize === 'letter'"
+                     [class.page-legal]="pageSize === 'legal'">
+                  <div class="paper-page-content editable-content"
+                       contenteditable="true"
+                       [id]="'msg-content-' + i"
+                       (click)="onEditableClick($event)"></div>
+                </div>
+              </div>
               <p *ngIf="msg.role === 'user'" class="msg-text">{{ msg.text }}</p>
               <div class="msg-footer" *ngIf="msg.role === 'assistant' && msg.text">
                 <button class="btn-regenerate" [class.toolbar-active]="isEditorToolbarVisible(i)" type="button" (click)="toggleEditorToolbar(i)" [disabled]="loading || isTyping" title="Edit / Format">

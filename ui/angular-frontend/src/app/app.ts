@@ -835,6 +835,88 @@ export class App {
   currentTextColor = '#000000';
   currentHighlightColor = '#ffff00';
   currentFontSizeIndex = 3; // maps to fontSize "3" = 12pt
+  pageOrientation: 'portrait' | 'landscape' = 'portrait';
+  pageSize: 'a4' | 'letter' | 'legal' = 'a4';
+  private _selectedImage: HTMLImageElement | null = null;
+
+  setPageOrientation(orientation: 'portrait' | 'landscape'): void {
+    this.pageOrientation = orientation;
+  }
+
+  setPageSize(size: string): void {
+    this.pageSize = size as 'a4' | 'letter' | 'legal';
+  }
+
+  onEditableClick(event: MouseEvent): void {
+    const target = event.target as HTMLElement;
+
+    // ── Image click: select and show resize handles ──
+    if (target.tagName === 'IMG') {
+      event.preventDefault();
+      this._selectImage(target as HTMLImageElement);
+    } else {
+      this._deselectImage();
+    }
+  }
+
+  private _selectImage(img: HTMLImageElement): void {
+    this._deselectImage(); // clear previous
+    this._selectedImage = img;
+    img.classList.add('img-selected');
+
+    // Create resize handle
+    const handle = document.createElement('div');
+    handle.className = 'img-resize-handle';
+    handle.contentEditable = 'false';
+
+    // Position handle relative to image
+    const wrapper = document.createElement('span');
+    wrapper.className = 'img-resize-wrapper';
+    wrapper.contentEditable = 'false';
+    img.parentNode?.insertBefore(wrapper, img);
+    wrapper.appendChild(img);
+    wrapper.appendChild(handle);
+
+    // Drag to resize
+    let startX = 0;
+    let startWidth = 0;
+
+    const onMouseDown = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      startX = e.clientX;
+      startWidth = img.offsetWidth;
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      const dx = e.clientX - startX;
+      const newWidth = Math.max(50, startWidth + dx);
+      img.style.width = newWidth + 'px';
+      img.style.height = 'auto';
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    handle.addEventListener('mousedown', onMouseDown);
+  }
+
+  private _deselectImage(): void {
+    if (this._selectedImage) {
+      this._selectedImage.classList.remove('img-selected');
+      // Unwrap from resize wrapper
+      const wrapper = this._selectedImage.closest('.img-resize-wrapper');
+      if (wrapper && wrapper.parentNode) {
+        wrapper.parentNode.insertBefore(this._selectedImage, wrapper);
+        wrapper.remove();
+      }
+      this._selectedImage = null;
+    }
+  }
 
   toggleEditorToolbar(msgIndex: number): void {
     const wasVisible = this.editorToolbarVisible[msgIndex];
