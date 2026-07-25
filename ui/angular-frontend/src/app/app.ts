@@ -826,11 +826,16 @@ export class App {
   // ── Rich Text Editor State ──
   editorToolbarVisible: Record<number, boolean> = {};
   editableMode: Record<number, boolean> = {};
+  currentTextColor = '#000000';
+  currentHighlightColor = '#ffff00';
+  currentFontSizeIndex = 3; // maps to fontSize "3" = 12pt
 
   toggleEditorToolbar(msgIndex: number): void {
     this.editorToolbarVisible[msgIndex] = !this.editorToolbarVisible[msgIndex];
     if (this.editorToolbarVisible[msgIndex]) {
       this.editableMode[msgIndex] = true;
+    } else {
+      this.editableMode[msgIndex] = false;
     }
   }
 
@@ -847,13 +852,37 @@ export class App {
   }
 
   formatHeading(level: string): void {
-    document.execCommand('formatBlock', false, level);
+    if (level) {
+      document.execCommand('formatBlock', false, level);
+    }
+  }
+
+  changeFontSize(delta: number): void {
+    this.currentFontSizeIndex = Math.max(1, Math.min(7, this.currentFontSizeIndex + delta));
+    document.execCommand('fontSize', false, String(this.currentFontSizeIndex));
+  }
+
+  applyTextColor(color: string): void {
+    this.currentTextColor = color;
+    document.execCommand('foreColor', false, color);
+  }
+
+  applyHighlightColor(color: string): void {
+    this.currentHighlightColor = color;
+    document.execCommand('hiliteColor', false, color);
   }
 
   insertLink(): void {
     const url = prompt('Enter URL:', 'https://');
     if (url) {
       document.execCommand('createLink', false, url);
+    }
+  }
+
+  insertImage(): void {
+    const url = prompt('Enter image URL:', 'https://');
+    if (url) {
+      document.execCommand('insertImage', false, url);
     }
   }
 

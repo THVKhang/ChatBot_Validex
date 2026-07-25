@@ -1182,21 +1182,18 @@
   text-transform: uppercase;
 }
 
-/* ─── Rich Text Editor Toolbar ─── */
+/* ─── Rich Text Editor Toolbar (Google Docs-like) ─── */
 .editor-toolbar {
   display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 6px 10px;
-  background: rgba(250, 250, 250, 0.92);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid #e5e5e5;
-  border-radius: 10px;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 0;
+  padding: 4px 8px;
+  background: #f8f9fa;
+  border: 1px solid #dadce0;
+  border-radius: 8px 8px 0 0;
+  margin-bottom: 0;
   animation: toolbarSlideDown 0.25s cubic-bezier(0.4, 0, 0.2, 1) forwards;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   position: sticky;
   top: 0;
   z-index: 5;
@@ -1205,12 +1202,25 @@
 @keyframes toolbarSlideDown {
   from {
     opacity: 0;
-    transform: translateY(-8px);
+    transform: translateY(-6px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 0;
+  flex-wrap: wrap;
+}
+
+.toolbar-row + .toolbar-row {
+  border-top: 1px solid #e8eaed;
+  padding-top: 3px;
 }
 
 .toolbar-group {
@@ -1222,7 +1232,7 @@
 .toolbar-divider {
   width: 1px;
   height: 20px;
-  background: #e5e5e5;
+  background: #dadce0;
   margin: 0 4px;
   flex-shrink: 0;
 }
@@ -1230,10 +1240,10 @@
 .toolbar-btn {
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 4px;
   cursor: pointer;
-  padding: 4px 6px;
-  color: #52525b;
+  padding: 4px 5px;
+  color: #444746;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1242,37 +1252,117 @@
   font-family: 'Inter', sans-serif;
   font-size: 0.7rem;
   font-weight: 700;
-  transition: all 0.12s ease;
+  transition: background 0.1s ease, color 0.1s ease;
+  position: relative;
 }
 
 .toolbar-btn .material-symbols-outlined {
-  font-size: 16px;
+  font-size: 18px;
+}
+
+.toolbar-btn-sm .material-symbols-outlined {
+  font-size: 14px;
 }
 
 .toolbar-btn:hover {
-  background: #f4f4f5;
-  color: #171717;
-  border-color: #e5e5e5;
-  transform: scale(1.05);
+  background: #e8eaed;
+  color: #1f1f1f;
 }
 
 .toolbar-btn:active {
-  background: #e5e5e5;
-  transform: scale(0.95);
+  background: #d3d3d3;
+}
+
+/* ── Toolbar Select Dropdowns ── */
+.toolbar-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 3px 20px 3px 8px;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.72rem;
+  color: #444746;
+  cursor: pointer;
+  height: 28px;
+  outline: none;
+  transition: background 0.1s ease, border-color 0.1s ease;
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='%23444746' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23444746' stroke-width='1.2' fill='none'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  background-size: 8px 5px;
+}
+
+.toolbar-select:hover {
+  background-color: #e8eaed;
+  border-color: #dadce0;
+}
+
+.toolbar-select:focus {
+  border-color: #1a73e8;
+  background-color: #e8f0fe;
+}
+
+.toolbar-select-font {
+  min-width: 100px;
+  max-width: 120px;
+}
+
+.toolbar-select-size {
+  min-width: 44px;
+  max-width: 52px;
+  text-align: center;
+  padding-left: 4px;
+}
+
+.toolbar-select-heading {
+  min-width: 90px;
+  max-width: 110px;
+}
+
+/* ── Color Picker Buttons ── */
+.toolbar-color-btn {
+  flex-direction: column;
+  gap: 0;
+  padding: 2px 5px 0;
+  cursor: pointer;
+  position: relative;
+}
+
+.color-indicator {
+  display: block;
+  width: 16px;
+  height: 3px;
+  border-radius: 1px;
+  margin-top: -2px;
+}
+
+.color-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  border: none;
+  padding: 0;
 }
 
 /* ─── Editable Content Highlight ─── */
 .msg-markdown.editable-content {
-  outline: 2px dashed rgba(59, 130, 246, 0.3);
-  outline-offset: 6px;
-  border-radius: 8px;
-  padding: 4px;
-  transition: outline-color 0.2s;
+  outline: 2px solid rgba(26, 115, 232, 0.25);
+  outline-offset: 4px;
+  border-radius: 4px;
+  padding: 8px;
+  transition: outline-color 0.15s;
   min-height: 60px;
+  background: #fff;
 }
 
 .msg-markdown.editable-content:focus {
-  outline-color: rgba(59, 130, 246, 0.5);
+  outline-color: rgba(26, 115, 232, 0.5);
 }
 
 /* ─── Input Bar (pinned bottom, ChatGPT style) ─── */

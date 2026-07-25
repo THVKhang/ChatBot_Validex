@@ -141,66 +141,142 @@
               <span class="material-symbols-outlined" [class.waving]="msg.role === 'assistant'">{{ msg.role === 'user' ? 'person' : 'smart_toy' }}</span>
             </div>
             <div class="msg-bubble">
-              <!-- Rich Text Editor Toolbar -->
+              <!-- Rich Text Editor Toolbar (Google Docs-like) -->
               <div class="editor-toolbar" *ngIf="msg.role === 'assistant' && msg.text && isEditorToolbarVisible(i)">
-                <div class="toolbar-group">
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('bold')" title="Bold (Ctrl+B)">
-                    <span class="material-symbols-outlined">format_bold</span>
-                  </button>
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('italic')" title="Italic (Ctrl+I)">
-                    <span class="material-symbols-outlined">format_italic</span>
-                  </button>
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('underline')" title="Underline (Ctrl+U)">
-                    <span class="material-symbols-outlined">format_underlined</span>
-                  </button>
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('strikeThrough')" title="Strikethrough">
-                    <span class="material-symbols-outlined">strikethrough_s</span>
-                  </button>
+                <!-- Row 1: Undo/Redo, Font Family, Font Size, Text Style -->
+                <div class="toolbar-row">
+                  <div class="toolbar-group">
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('undo')" title="Undo (Ctrl+Z)">
+                      <span class="material-symbols-outlined">undo</span>
+                    </button>
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('redo')" title="Redo (Ctrl+Y)">
+                      <span class="material-symbols-outlined">redo</span>
+                    </button>
+                  </div>
+                  <div class="toolbar-divider"></div>
+                  <div class="toolbar-group">
+                    <select class="toolbar-select toolbar-select-font" (change)="execFormatCommand('fontName', $any($event.target).value)" title="Font Family">
+                      <option value="Inter">Inter</option>
+                      <option value="Arial">Arial</option>
+                      <option value="Georgia">Georgia</option>
+                      <option value="Times New Roman">Times New Roman</option>
+                      <option value="Courier New">Courier New</option>
+                      <option value="Verdana">Verdana</option>
+                    </select>
+                  </div>
+                  <div class="toolbar-divider"></div>
+                  <div class="toolbar-group">
+                    <button class="toolbar-btn toolbar-btn-sm" (mousedown)="$event.preventDefault(); changeFontSize(-1)" title="Decrease font size">
+                      <span class="material-symbols-outlined">remove</span>
+                    </button>
+                    <select class="toolbar-select toolbar-select-size" (change)="execFormatCommand('fontSize', $any($event.target).value)" title="Font Size">
+                      <option value="1">8</option>
+                      <option value="2">10</option>
+                      <option value="3" selected>12</option>
+                      <option value="4">14</option>
+                      <option value="5">18</option>
+                      <option value="6">24</option>
+                      <option value="7">36</option>
+                    </select>
+                    <button class="toolbar-btn toolbar-btn-sm" (mousedown)="$event.preventDefault(); changeFontSize(1)" title="Increase font size">
+                      <span class="material-symbols-outlined">add</span>
+                    </button>
+                  </div>
+                  <div class="toolbar-divider"></div>
+                  <div class="toolbar-group">
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('bold')" title="Bold (Ctrl+B)">
+                      <span class="material-symbols-outlined">format_bold</span>
+                    </button>
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('italic')" title="Italic (Ctrl+I)">
+                      <span class="material-symbols-outlined">format_italic</span>
+                    </button>
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('underline')" title="Underline (Ctrl+U)">
+                      <span class="material-symbols-outlined">format_underlined</span>
+                    </button>
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('strikeThrough')" title="Strikethrough">
+                      <span class="material-symbols-outlined">strikethrough_s</span>
+                    </button>
+                  </div>
+                  <div class="toolbar-divider"></div>
+                  <div class="toolbar-group">
+                    <label class="toolbar-btn toolbar-color-btn" title="Text Color">
+                      <span class="material-symbols-outlined">format_color_text</span>
+                      <span class="color-indicator" [style.background]="currentTextColor"></span>
+                      <input type="color" class="color-input" [value]="currentTextColor" (input)="applyTextColor($any($event.target).value)">
+                    </label>
+                    <label class="toolbar-btn toolbar-color-btn" title="Highlight Color">
+                      <span class="material-symbols-outlined">format_ink_highlighter</span>
+                      <span class="color-indicator color-indicator-highlight" [style.background]="currentHighlightColor"></span>
+                      <input type="color" class="color-input" [value]="currentHighlightColor" (input)="applyHighlightColor($any($event.target).value)">
+                    </label>
+                  </div>
                 </div>
-                <div class="toolbar-divider"></div>
-                <div class="toolbar-group">
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); formatHeading('H1')" title="Heading 1">
-                    H1
-                  </button>
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); formatHeading('H2')" title="Heading 2">
-                    H2
-                  </button>
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); formatHeading('H3')" title="Heading 3">
-                    H3
-                  </button>
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); formatHeading('P')" title="Paragraph">
-                    <span class="material-symbols-outlined">format_paragraph</span>
-                  </button>
-                </div>
-                <div class="toolbar-divider"></div>
-                <div class="toolbar-group">
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('insertUnorderedList')" title="Bullet List">
-                    <span class="material-symbols-outlined">format_list_bulleted</span>
-                  </button>
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('insertOrderedList')" title="Numbered List">
-                    <span class="material-symbols-outlined">format_list_numbered</span>
-                  </button>
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('formatBlock', 'blockquote')" title="Blockquote">
-                    <span class="material-symbols-outlined">format_quote</span>
-                  </button>
-                </div>
-                <div class="toolbar-divider"></div>
-                <div class="toolbar-group">
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); insertLink()" title="Insert Link">
-                    <span class="material-symbols-outlined">link</span>
-                  </button>
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('removeFormat')" title="Clear Formatting">
-                    <span class="material-symbols-outlined">format_clear</span>
-                  </button>
-                </div>
-                <div class="toolbar-divider"></div>
-                <div class="toolbar-group">
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('undo')" title="Undo (Ctrl+Z)">
-                    <span class="material-symbols-outlined">undo</span>
-                  </button>
-                  <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('redo')" title="Redo (Ctrl+Y)">
-                    <span class="material-symbols-outlined">redo</span>
-                  </button>
+                <!-- Row 2: Headings, Alignment, Lists, Indent, Insert -->
+                <div class="toolbar-row">
+                  <div class="toolbar-group">
+                    <select class="toolbar-select toolbar-select-heading" (change)="formatHeading($any($event.target).value); $any($event.target).value=''" title="Heading Style">
+                      <option value="" disabled selected>Heading ▾</option>
+                      <option value="H1">Heading 1</option>
+                      <option value="H2">Heading 2</option>
+                      <option value="H3">Heading 3</option>
+                      <option value="H4">Heading 4</option>
+                      <option value="P">Normal text</option>
+                    </select>
+                  </div>
+                  <div class="toolbar-divider"></div>
+                  <div class="toolbar-group">
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('insertUnorderedList')" title="Bulleted list">
+                      <span class="material-symbols-outlined">format_list_bulleted</span>
+                    </button>
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('insertOrderedList')" title="Numbered list">
+                      <span class="material-symbols-outlined">format_list_numbered</span>
+                    </button>
+                  </div>
+                  <div class="toolbar-divider"></div>
+                  <div class="toolbar-group">
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('justifyLeft')" title="Align left">
+                      <span class="material-symbols-outlined">format_align_left</span>
+                    </button>
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('justifyCenter')" title="Align center">
+                      <span class="material-symbols-outlined">format_align_center</span>
+                    </button>
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('justifyRight')" title="Align right">
+                      <span class="material-symbols-outlined">format_align_right</span>
+                    </button>
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('justifyFull')" title="Justify">
+                      <span class="material-symbols-outlined">format_align_justify</span>
+                    </button>
+                  </div>
+                  <div class="toolbar-divider"></div>
+                  <div class="toolbar-group">
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('outdent')" title="Decrease indent">
+                      <span class="material-symbols-outlined">format_indent_decrease</span>
+                    </button>
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('indent')" title="Increase indent">
+                      <span class="material-symbols-outlined">format_indent_increase</span>
+                    </button>
+                  </div>
+                  <div class="toolbar-divider"></div>
+                  <div class="toolbar-group">
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); insertLink()" title="Insert Link (Ctrl+K)">
+                      <span class="material-symbols-outlined">link</span>
+                    </button>
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); insertImage()" title="Insert Image">
+                      <span class="material-symbols-outlined">image</span>
+                    </button>
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('insertHorizontalRule')" title="Horizontal Rule">
+                      <span class="material-symbols-outlined">horizontal_rule</span>
+                    </button>
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('formatBlock', 'blockquote')" title="Blockquote">
+                      <span class="material-symbols-outlined">format_quote</span>
+                    </button>
+                  </div>
+                  <div class="toolbar-divider"></div>
+                  <div class="toolbar-group">
+                    <button class="toolbar-btn" (mousedown)="$event.preventDefault(); execFormatCommand('removeFormat')" title="Clear Formatting">
+                      <span class="material-symbols-outlined">format_clear</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
