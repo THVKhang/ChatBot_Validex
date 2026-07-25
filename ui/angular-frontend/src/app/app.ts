@@ -1,4 +1,5 @@
 import { Component, ElementRef, ViewChild } from '@angular/core';
+import { DomSanitizer } from '@angular/platform-browser';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 
@@ -239,7 +240,12 @@ export class App {
   @ViewChild('chatHistory')
   chatHistory?: ElementRef<HTMLDivElement>;
 
-  constructor(private readonly chatService: ChatService, private authService: AuthService) {
+  private _sanitizer!: DomSanitizer;
+  private _markdownPipeInstance!: MarkdownPipe;
+
+  constructor(private readonly chatService: ChatService, private authService: AuthService, sanitizer: DomSanitizer) {
+    this._sanitizer = sanitizer;
+    this._markdownPipeInstance = new MarkdownPipe(sanitizer);
     this.refreshRuntime();
     this.authService.currentUser$.subscribe(user => {
       this.currentUser = user;
@@ -831,10 +837,36 @@ export class App {
   currentFontSizeIndex = 3; // maps to fontSize "3" = 12pt
 
   toggleEditorToolbar(msgIndex: number): void {
-    this.editorToolbarVisible[msgIndex] = !this.editorToolbarVisible[msgIndex];
-    if (this.editorToolbarVisible[msgIndex]) {
+    const wasVisible = this.editorToolbarVisible[msgIndex];
+    this.editorToolbarVisible[msgIndex] = !wasVisible;
+
+    if (!wasVisible) {
+      // ENTERING edit mode: capture rendered HTML from display div BEFORE Angular hides it
+      const displayEl = document.getElementById(`msg-display-${msgIndex}`);
+      const capturedHtml = displayEl ? displayEl.innerHTML : '';
+
       this.editableMode[msgIndex] = true;
+
+      // Wait for Angular to render the edit div, then populate and focus
+      setTimeout(() => {
+        const editEl = document.getElementById(`msg-content-${msgIndex}`);
+        if (editEl) {
+          editEl.innerHTML = capturedHtml;
+          editEl.focus();
+        }
+      }, 0);
     } else {
+      // EXITING edit mode: save edits back to message text (optional)
+      const editEl = document.getElementById(`msg-content-${msgIndex}`);
+      if (editEl) {
+        // Store edited HTML so it renders correctly in display mode
+        const msg = this.messages[msgIndex];
+        if (msg) {
+          // Save the raw edited HTML back — the markdown pipe won't re-process it,
+          // but the display div will show the updated content via innerHTML
+          (msg as any)._editedHtml = editEl.innerHTML;
+        }
+      }
       this.editableMode[msgIndex] = false;
     }
   }
@@ -889,6 +921,14 @@ export class App {
   getEditedContent(msgIndex: number): string {
     const el = document.querySelector(`#msg-content-${msgIndex}`) as HTMLElement;
     return el ? el.innerHTML : '';
+  }
+
+  // Used by display div to show edited HTML if user has edited, otherwise original markdown
+  getDisplayHtml(msg: any): any {
+    if (msg._editedHtml) {
+      return this._sanitizer.bypassSecurityTrustHtml(msg._editedHtml);
+    }
+    return this._markdownPipeInstance.transform(msg.text || '');
   }
 
   usePromptTemplate(sample: string): void {

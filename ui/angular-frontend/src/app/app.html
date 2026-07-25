@@ -280,13 +280,18 @@
                 </div>
               </div>
 
-              <div *ngIf="msg.role === 'assistant' && msg.text"
+              <!-- Display mode: Angular manages innerHTML (read-only) -->
+              <div *ngIf="msg.role === 'assistant' && msg.text && !isContentEditable(i)"
                    class="msg-markdown"
                    [class.typing]="isTyping && i === messages.length - 1"
-                   [class.editable-content]="isContentEditable(i)"
-                   [attr.contenteditable]="isContentEditable(i) ? 'true' : null"
-                   [id]="'msg-content-' + i"
-                   [innerHTML]="msg.text | markdown"></div>
+                   [id]="'msg-display-' + i"
+                   [innerHTML]="getDisplayHtml(msg)"></div>
+
+              <!-- Edit mode: contenteditable (Angular does NOT manage innerHTML) -->
+              <div *ngIf="msg.role === 'assistant' && msg.text && isContentEditable(i)"
+                   class="msg-markdown editable-content"
+                   contenteditable="true"
+                   [id]="'msg-content-' + i"></div>
               <p *ngIf="msg.role === 'user'" class="msg-text">{{ msg.text }}</p>
               <div class="msg-footer" *ngIf="msg.role === 'assistant' && msg.text">
                 <button class="btn-regenerate" [class.toolbar-active]="isEditorToolbarVisible(i)" type="button" (click)="toggleEditorToolbar(i)" [disabled]="loading || isTyping" title="Edit / Format">
