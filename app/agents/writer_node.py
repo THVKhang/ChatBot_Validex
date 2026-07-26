@@ -375,32 +375,74 @@ class WriterAgentNode(BaseAgentNode):
             logger.info(f"Writer: EDIT MODE — applying '{edit_instruction}' to existing draft")
             llm_to_use = getattr(pipeline, "_llm", None)
             if llm_to_use:
-                edit_prompt = (
-                    "You are a blog editor. The user wants to modify an existing blog post.\n\n"
-                    f"USER REQUEST: {edit_instruction}\n\n"
-                    f"EXISTING BLOG:\n{previous_draft[:6000]}\n\n"
-                    "Apply the user's requested changes to the blog. Rules:\n"
-                    "1. Keep all existing content that the user did NOT ask to change.\n"
-                    "2. Only modify what the user explicitly asked for.\n"
-                    "3. IMAGE RULES (CRITICAL — follow EXACTLY):\n"
-                    "   a) For ADDING new images: insert a placeholder in this EXACT format:\n"
-                    "      ![IMAGE:search keyword here]\n"
-                    "      Add EXACTLY the number of images the user requested.\n"
-                    "   b) For CHANGING/REPLACING an existing image: remove the old image line " 
-                    "and insert a new placeholder in the same position:\n"
-                    "      ![IMAGE:search keyword describing the new image]\n"
-                    "   c) For REMOVING an image: simply delete that image line.\n"
-                    "   d) Do NOT use any URL (no https://...). ONLY use ![IMAGE:keyword] placeholders.\n"
-                    "   e) Do NOT output raw URLs or links to images. Always use the placeholder format.\n"
-                    "   f) Keep all OTHER existing images (that the user did NOT ask to change) as-is.\n"
-                    "4. Maintain the same markdown format, heading structure, and tone.\n"
-                    "5. Output ONLY the modified blog post. No commentary or explanation.\n"
-                )
+                # ── Detect if user wants a FORMAT CHANGE vs a CONTENT EDIT ──
+                edit_lower = edit_instruction.lower()
+                FORMAT_CHANGE_SIGNALS = [
+                    "stop writing", "don't write", "don't use blog", "not a blog",
+                    "instead of blog", "no longer a blog", "no more blog",
+                    "convert to", "convert into", "write as", "rewrite as",
+                    "format as", "change format", "change to",
+                    "as an email", "as a memo", "as a letter", "as a report",
+                    "as a summary", "as bullet points", "as json", "as plain text",
+                    "internal email", "write an email", "write a memo",
+                    "summarize into", "summarize as", "summarize the",
+                    "just the table", "table only", "only the table",
+                    "dừng viết blog", "viết dạng email", "viết thành email",
+                    "chuyển thành", "đổi sang", "tóm tắt thành",
+                ]
+                is_format_change = any(signal in edit_lower for signal in FORMAT_CHANGE_SIGNALS)
+
+                if is_format_change:
+                    logger.info(f"Writer: FORMAT CHANGE detected — allowing complete restructuring")
+                    edit_prompt = (
+                        "You are a content transformer. The user wants to COMPLETELY CHANGE "
+                        "the format/structure of existing content.\n\n"
+                        f"USER REQUEST: {edit_instruction}\n\n"
+                        f"SOURCE CONTENT (use the facts and data from this, but change the format entirely):\n"
+                        f"{previous_draft[:6000]}\n\n"
+                        "CRITICAL RULES:\n"
+                        "1. COMPLETELY CHANGE the output format to match the user's request.\n"
+                        "2. If the user asks for an email, output ONLY an email. "
+                        "Do NOT include blog headings like 'Introduction' or 'Conclusion'.\n"
+                        "3. If the user asks for a table, output ONLY the table.\n"
+                        "4. If the user asks for a summary, output ONLY a concise summary.\n"
+                        "5. Use the FACTS and DATA from the source content, but restructure completely.\n"
+                        "6. Do NOT wrap the output in a blog template. No 'Introduction', no 'Conclusion'.\n"
+                        "7. Follow any word count, format, or persona instructions from the user.\n"
+                        "8. Output ONLY the requested content. No commentary or explanation.\n"
+                    )
+                else:
+                    edit_prompt = (
+                        "You are a blog editor. The user wants to modify an existing blog post.\n\n"
+                        f"USER REQUEST: {edit_instruction}\n\n"
+                        f"EXISTING BLOG:\n{previous_draft[:6000]}\n\n"
+                        "Apply the user's requested changes to the blog. Rules:\n"
+                        "1. Keep all existing content that the user did NOT ask to change.\n"
+                        "2. Only modify what the user explicitly asked for.\n"
+                        "3. IMAGE RULES (CRITICAL — follow EXACTLY):\n"
+                        "   a) For ADDING new images: insert a placeholder in this EXACT format:\n"
+                        "      ![IMAGE:search keyword here]\n"
+                        "      Add EXACTLY the number of images the user requested.\n"
+                        "   b) For CHANGING/REPLACING an existing image: remove the old image line "
+                        "and insert a new placeholder in the same position:\n"
+                        "      ![IMAGE:search keyword describing the new image]\n"
+                        "   c) For REMOVING an image: simply delete that image line.\n"
+                        "   d) Do NOT use any URL (no https://...). ONLY use ![IMAGE:keyword] placeholders.\n"
+                        "   e) Do NOT output raw URLs or links to images. Always use the placeholder format.\n"
+                        "   f) Keep all OTHER existing images (that the user did NOT ask to change) as-is.\n"
+                        "4. Maintain the same markdown format, heading structure, and tone.\n"
+                        "5. Output ONLY the modified blog post. No commentary or explanation.\n"
+                    )
                 try:
                     response = llm_to_use.invoke(edit_prompt)
                     edited_draft = getattr(response, "content", str(response)).strip()
                     # Validate the edit produced something reasonable
-                    if len(edited_draft) > len(previous_draft) * 0.3 and ("##" in edited_draft or "#" in edited_draft):
+                    # Format changes (email/table) may not have ## headings — relax check
+                    if is_format_change:
+                        is_valid = len(edited_draft) > 50  # Just needs meaningful content
+                    else:
+                        is_valid = len(edited_draft) > len(previous_draft) * 0.3 and ("##" in edited_draft or "#" in edited_draft)
+                    if is_valid:
                         # ── Resolve image placeholders to real URLs ──
                         edited_draft = _resolve_image_placeholders(edited_draft, parsed.topic)
                         logger.info(f"Writer: Edit applied successfully ({len(previous_draft)} → {len(edited_draft)} chars)")
