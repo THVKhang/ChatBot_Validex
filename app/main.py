@@ -24,20 +24,69 @@ _SYSTEM_PROMPT_FINGERPRINTS = [
 
 
 def _sanitize_ui_artifacts(text: str) -> str:
-    """Clean web scraping UI artifacts, HTML button labels, and status badges."""
+    """Clean web scraping UI artifacts, HTML button labels, and status badges.
+    
+    Catches full toolbar strings like:
+      'edit_note description Word picture_as_pdf PDF html HTML refresh bookmark thumb_up thumb_down'
+    that leak from gov website scraping via collect_au_sources.py.
+    """
     if not text:
         return text
-    # Remove UI artifacts like '-- description html refresh bookmark thumb_up thumb_down' or pipeline tags
+    
+    # ── Pass 1a: Remove entire trailing UI toolbar blocks (multi-line format) ──
+    # These are scraped navigation/toolbar elements that appear as a block
     cleaned = re.sub(
-        r'(?i)(?:--\s*)?\b(?:description|html|refresh|bookmark|thumb_up|thumb_down|share|like|dislike|rating|standard\s+pipeline|complex\s+pipeline)\b',
+        r'(?:edit_note|picture_as_pdf|smart_toy|thumb_up|thumb_down)\s*'
+        r'(?:description|Word|PDF|html|HTML|refresh|bookmark|thumb_up|thumb_down|edit_note|picture_as_pdf|smart_toy|person|\s)*$',
         '',
-        text
+        text,
+        flags=re.MULTILINE
     )
-    # Remove emoji status badges like 🟢, 🔴, 🟡
+    
+    # ── Pass 1b: Remove inline toolbar chains (-- description html refresh ...) ──
+    # Older format: '-- description html refresh bookmark thumb_up thumb_down'
+    cleaned = re.sub(
+        r'--\s*(?:description|html|refresh|bookmark|thumb_up|thumb_down|share|like|dislike|rating|standard\s+pipeline|complex\s+pipeline)(?:\s+(?:description|html|refresh|bookmark|thumb_up|thumb_down|share|like|dislike|rating|standard\s+pipeline|complex\s+pipeline))*',
+        '',
+        cleaned,
+        flags=re.IGNORECASE
+    )
+    
+    # ── Pass 2: Remove individual Material Design icon names ──
+    # These are Angular Material / Google icon names that appear when scraping web UIs
+    # NOTE: 'description' omitted — too common in English prose. Caught by Pass 1 in toolbar context.
+    cleaned = re.sub(
+        r'\b(?:edit_note|picture_as_pdf|smart_toy|content_copy|open_in_new|'
+        r'thumb_up|thumb_down|bookmark_border|'
+        r'more_vert|more_horiz|'
+        r'arrow_back|arrow_forward|navigate_next|navigate_before|'
+        r'standard\s+pipeline|complex\s+pipeline)\b',
+        '',
+        cleaned,
+        flags=re.IGNORECASE
+    )
+    
+    # ── Pass 3: Remove standalone 'Word' / 'PDF' / 'HTML' tokens on their own line ──
+    # These are export button labels, NOT real content words
+    # Only remove when they appear as isolated tokens (not part of sentences)
+    cleaned = re.sub(r'^\s*(?:Word|PDF|HTML)\s*$', '', cleaned, flags=re.MULTILINE)
+    
+    # ── Pass 4: Clean "References" section if it only contains UI junk ──
+    # Pattern: "References\n\n[UI artifacts]" at end of text
+    cleaned = re.sub(
+        r'\n+References\s*\n+\s*$',
+        '',
+        cleaned
+    )
+    
+    # ── Pass 5: Remove emoji status badges ──
     cleaned = re.sub(r'[\U0001F7E0-\U0001F7E4\U0001F44D\U0001F44E]', '', cleaned)
-    # Clean up leftover orphaned dashes and multiple spaces
+    
+    # ── Pass 6: Clean up orphaned artifacts ──
     cleaned = re.sub(r'\n\s*--\s*\n', '\n', cleaned)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)  # Collapse 3+ blank lines → 2
     cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
+    
     return cleaned.strip()
 
 

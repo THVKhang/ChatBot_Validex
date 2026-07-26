@@ -482,9 +482,29 @@ class WriterAgentNode(BaseAgentNode):
                             "loop_step": state.get("loop_step", 0) + 1,
                         }
                     else:
-                        logger.warning("Writer: Edit output failed validation, falling through to full regeneration")
+                        # ── CRITICAL FIX: Do NOT fall through to full blog regeneration ──
+                        # Fallthrough was the root cause of "write in 400 word" generating
+                        # a completely new blog instead of expanding the email.
+                        logger.warning("Writer: Edit output failed validation — returning previous draft unchanged")
+                        return {
+                            "title": state.get("title", parsed.topic),
+                            "outline": state.get("outline", []),
+                            "draft": previous_draft,
+                            "sources_used": state.get("sources_used", []),
+                            "previous_draft": previous_draft,
+                            "loop_step": state.get("loop_step", 0) + 1,
+                        }
                 except Exception as exc:
-                    logger.warning(f"Writer: Edit fast-path failed: {exc}, falling through to full regeneration")
+                    # ── CRITICAL FIX: Do NOT fall through on exception either ──
+                    logger.warning(f"Writer: Edit fast-path failed: {exc} — returning previous draft unchanged")
+                    return {
+                        "title": state.get("title", parsed.topic),
+                        "outline": state.get("outline", []),
+                        "draft": previous_draft,
+                        "sources_used": state.get("sources_used", []),
+                        "previous_draft": previous_draft,
+                        "loop_step": state.get("loop_step", 0) + 1,
+                    }
     
         # ── Stage 1: PLAN (only on first attempt, skip on revisions) ──
         if revision_count == 0 and not feedback:
