@@ -392,6 +392,9 @@ class WriterAgentNode(BaseAgentNode):
                 ]
                 is_format_change = any(signal in edit_lower for signal in FORMAT_CHANGE_SIGNALS)
 
+                # ── Detect if previous_draft is a blog (has ## headings) or non-blog (email/table/etc) ──
+                is_previous_blog = bool(re.search(r'^#{1,3}\s+', previous_draft, re.MULTILINE))
+
                 if is_format_change:
                     logger.info(f"Writer: FORMAT CHANGE detected — allowing complete restructuring")
                     edit_prompt = (
@@ -411,7 +414,8 @@ class WriterAgentNode(BaseAgentNode):
                         "7. Follow any word count, format, or persona instructions from the user.\n"
                         "8. Output ONLY the requested content. No commentary or explanation.\n"
                     )
-                else:
+                elif is_previous_blog:
+                    # Previous draft IS a blog — use blog editor mode
                     edit_prompt = (
                         "You are a blog editor. The user wants to modify an existing blog post.\n\n"
                         f"USER REQUEST: {edit_instruction}\n\n"
@@ -433,14 +437,33 @@ class WriterAgentNode(BaseAgentNode):
                         "4. Maintain the same markdown format, heading structure, and tone.\n"
                         "5. Output ONLY the modified blog post. No commentary or explanation.\n"
                     )
+                else:
+                    # Previous draft is NOT a blog (email, table, plain text, etc.)
+                    # Use adaptive content editor — preserve the existing format, don't force blog structure
+                    logger.info(f"Writer: NON-BLOG content detected — using adaptive content editor")
+                    edit_prompt = (
+                        "You are a content editor. The user wants to modify existing content.\n\n"
+                        f"USER REQUEST: {edit_instruction}\n\n"
+                        f"EXISTING CONTENT:\n{previous_draft[:6000]}\n\n"
+                        "Apply the user's requested changes. Rules:\n"
+                        "1. Keep the SAME format as the existing content (if it's an email, keep it as email; "
+                        "if it's a table, keep it as table).\n"
+                        "2. Apply the user's changes (e.g., make longer, make shorter, add details).\n"
+                        "3. Do NOT convert into a blog post. Do NOT add headings like 'Introduction' or 'Conclusion'.\n"
+                        "4. Do NOT add blog structure. Preserve the original content type and format.\n"
+                        "5. Follow any word count instructions from the user.\n"
+                        "6. Output ONLY the modified content. No commentary or explanation.\n"
+                    )
                 try:
                     response = llm_to_use.invoke(edit_prompt)
                     edited_draft = getattr(response, "content", str(response)).strip()
                     # Validate the edit produced something reasonable
-                    # Format changes (email/table) may not have ## headings — relax check
-                    if is_format_change:
-                        is_valid = len(edited_draft) > 50  # Just needs meaningful content
+                    # Adaptive validation based on content type
+                    if is_format_change or not is_previous_blog:
+                        # Non-blog content: just check it has meaningful length
+                        is_valid = len(edited_draft) > 50
                     else:
+                        # Blog content: check for heading structure
                         is_valid = len(edited_draft) > len(previous_draft) * 0.3 and ("##" in edited_draft or "#" in edited_draft)
                     if is_valid:
                         # ── Resolve image placeholders to real URLs ──
