@@ -77,6 +77,27 @@ export class MarkdownPipe implements PipeTransform {
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/(?<!\w)\*(.+?)\*(?!\w)/g, '<em>$1</em>');
 
+    // ── Tables (basic markdown table support) ──
+    html = html.replace(
+      /(^\|.+\|\s*\n)(^\|[-:| ]+\|\s*\n)((?:^\|.+\|\s*\n?)+)/gm,
+      (_match, headerRow, _separator, bodyRows) => {
+        const parseRow = (row: string) =>
+          row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c: string) => c.trim());
+        const headers = parseRow(headerRow);
+        const rows = bodyRows.trim().split('\n').map(parseRow);
+        let table = '<table><thead><tr>';
+        headers.forEach((h: string) => { table += `<th>${h}</th>`; });
+        table += '</tr></thead><tbody>';
+        rows.forEach((row: string[]) => {
+          table += '<tr>';
+          row.forEach((cell: string) => { table += `<td>${cell}</td>`; });
+          table += '</tr>';
+        });
+        table += '</tbody></table>';
+        return table;
+      }
+    );
+
     // ── Blockquotes (multi-line support) ──
     html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
     // Merge adjacent blockquotes
@@ -91,8 +112,8 @@ export class MarkdownPipe implements PipeTransform {
       return `<ol>${items}</ol>`;
     });
 
-    // ── Unordered lists ──
-    html = html.replace(/^[-•] (.+)$/gm, '<li>$1</li>');
+    // ── Unordered lists (supports -, •, and * bullets) ──
+    html = html.replace(/^[-•*] (.+)$/gm, '<li>$1</li>');
     html = html.replace(/(<li>.*<\/li>\n?)+/g, (match) => {
       // Don't double-wrap if already in <ol>
       if (match.includes('<ol>')) return match;
@@ -103,8 +124,8 @@ export class MarkdownPipe implements PipeTransform {
     html = html.replace(/^(?!<[a-z])((?!^\s*$).+)$/gm, '<p>$1</p>');
 
     // ── Clean up double-wrapped paragraphs ──
-    html = html.replace(/<p><(h[1-4]|ul|ol|li|pre|blockquote|img|hr)/g, '<$1');
-    html = html.replace(/<\/(h[1-4]|ul|ol|li|pre|blockquote)><\/p>/g, '</$1>');
+    html = html.replace(/<p><(h[1-4]|ul|ol|li|pre|blockquote|img|hr|table)/g, '<$1');
+    html = html.replace(/<\/(h[1-4]|ul|ol|li|pre|blockquote|table)<\/p>/g, '</$1>');
 
     return html;
   }
