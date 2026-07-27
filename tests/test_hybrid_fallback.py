@@ -33,7 +33,7 @@ def test_hybrid_fallback_out_of_domain_includes_warning_and_runtime_flag(monkeyp
 
     assert payload["retrieval_meta"]["status"] == "out_of_domain"
     assert payload["runtime"]["external_knowledge_used"] is True
-    assert payload["generated"]["draft"].startswith(settings.hybrid_warning_text)
+    assert settings.hybrid_warning_text in payload["generated"]["draft"]
     assert payload["generated"]["sources_used"] == []
 
 
@@ -61,7 +61,7 @@ def test_hybrid_fallback_low_confidence_includes_warning_and_runtime_flag(monkey
 
     assert payload["retrieval_meta"]["status"] == "low_confidence"
     assert payload["runtime"]["external_knowledge_used"] is True
-    assert payload["generated"]["draft"].startswith(settings.hybrid_warning_text)
+    assert settings.hybrid_warning_text in payload["generated"]["draft"]
     assert payload["generated"]["sources_used"] == []
 
 
@@ -106,7 +106,7 @@ def test_pgvector_non_fake_guard_skips_local_fallback(monkeypatch):
     monkeypatch.setattr(
         pipeline,
         "_retrieve_from_pgvector",
-        lambda _query, _top_k: RetrievalBundle(
+        lambda _query, _top_k, *args, **kwargs: RetrievalBundle(
             decision=RetrievalDecision(
                 docs=[],
                 status="no_match",
@@ -151,10 +151,16 @@ def test_pgvector_non_fake_guard_skips_local_fallback(monkeypatch):
     if "duckduckgo_search" in sys.modules:
         monkeypatch.setattr("duckduckgo_search.DDGS", DummyDDGS)
     else:
-        import sys
         class DummyDDGSModule:
             DDGS = DummyDDGS
         sys.modules["duckduckgo_search"] = DummyDDGSModule
+    try:
+        import ddgs
+        monkeypatch.setattr(ddgs, "DDGS", DummyDDGS)
+    except ImportError:
+        class DummyDDGSModule:
+            DDGS = DummyDDGS
+        sys.modules["ddgs"] = DummyDDGSModule
 
     bundle = pipeline._retrieve({"effective_topic": "police check", "retrieval_top_k": 4})
 

@@ -1,0 +1,17 @@
+Privacy obligations for employers conducting background screening in Australia are primarily governed by the Privacy Act 1988 (Commonwealth), which establishes the Australian Privacy Principles (APPs). Employers must comply with these principles when collecting, using, storing, and disclosing personal information obtained through police checks and other screening processes.
+
+APP 3 (Collection of solicited personal information) requires that personal information collected for screening must be reasonably necessary for the employer's functions. This means employers should only request a police check when it is genuinely relevant to the role — for example, roles involving access to vulnerable people, financial assets, or sensitive information. Blanket screening of all employees without a specific risk basis may not satisfy the reasonableness test.
+
+APP 5 (Notification of collection) requires employers to inform applicants about why their personal information is being collected, how it will be used, who it may be disclosed to, and the consequences of not providing it. This is typically addressed through a screening consent form provided to the applicant before the police check is initiated.
+
+APP 6 (Use or disclosure of personal information) limits the use of screening results to the purpose for which they were collected. A police check obtained for pre-employment screening should not be used for other purposes, such as sharing with third parties or retaining for future recruitment rounds, without obtaining fresh consent.
+
+APP 11 (Security of personal information) requires employers to take reasonable steps to protect screening results from misuse, interference, loss, and unauthorised access. In practice, this means storing results in secure systems with restricted access, limiting the number of people who can view screening results, implementing document retention and destruction policies, and using encrypted transmission when sharing results electronically.
+
+Cross-border disclosure considerations arise when an employer shares screening results with offices or decision-makers outside Australia. APP 8 requires that before disclosing personal information overseas, the organisation must take reasonable steps to ensure the recipient complies with the APPs. This is particularly relevant for multinational organisations with centralised HR functions.
+
+Notifiable Data Breaches (NDB) scheme obligations apply if screening results are compromised. If an employer experiences a data breach involving police check results that is likely to result in serious harm, they must notify the affected individuals and the Office of the Australian Information Commissioner (OAIC) as soon as practicable.
+
+Employers should conduct a Privacy Impact Assessment (PIA) before implementing or significantly changing their screening program. A PIA helps identify privacy risks and ensures that the program is designed to comply with the APPs from the outset.
+
+Validex is committed to privacy compliance and processes all police checks in accordance with the Privacy Act 1988. Results are encrypted in transit and at rest, access is restricted to authorised users, and data retention policies align with industry best practice.

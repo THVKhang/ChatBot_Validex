@@ -10,8 +10,28 @@ class ParsedPrompt:
     tone: str
     audience: str
     length: str
+    language: str = "en"
+    target_sections: int = 0
+    target_images: int = -1
     custom_instructions: str = ""
     modifiers: dict = field(default_factory=dict)
+
+
+# ── Language Detection ──────────────────────────────────────────────
+LANGUAGE_MAP = {
+    "vi": "Vietnamese",
+    "zh": "Chinese",
+    "ko": "Korean",
+    "ja": "Japanese",
+    "en": "English",
+}
+
+def _detect_language(text: str) -> str:
+    """Detect language from text using Unicode character ranges.
+
+    Always returns 'en' as the chatbot is designed to only generate English content.
+    """
+    return "en"
 
 
 DEFAULT_INTENT = "create_blog"
@@ -212,10 +232,11 @@ def _extract_modifiers(prompt: str) -> dict:
 
 
 def sanitize_topic_for_tech_pivot(raw_topic: str) -> bool:
-    """Interceptor to brutally check for HR topics."""
-    hr_triggers = ["candidate", "hiring", "recruitment", "onboarding", "sla", "turnaround", "employee", "workplace", "screening"]
+    """Interceptor to check for pure HR topics (not background screening domain)."""
+    import re
+    hr_triggers = [r"\bcandidate\b", r"\bhiring\b", r"\brecruitment\b", r"\bonboarding\b", r"\bsla\b", r"\bturnaround\b", r"\bemployee\b"]
     topic_lower = raw_topic.lower()
-    return any(trigger in topic_lower for trigger in hr_triggers)
+    return any(re.search(trigger, topic_lower) for trigger in hr_triggers)
 
 def parse_prompt(prompt: str) -> ParsedPrompt:
     prompt_lower = prompt.lower()
@@ -224,8 +245,45 @@ def parse_prompt(prompt: str) -> ParsedPrompt:
     tone = _detect_tone(prompt_lower)
     audience = _detect_audience(prompt_lower)
     length = _detect_length(prompt_lower)
+    language = _detect_language(prompt)
     topic = _clean_topic_text(_extract_topic(prompt, prompt_lower, intent))
     
+    # Extract baseline target_sections and target_images from frontend config
+    target_sections = 0
+    sections_match = re.search(r"- target_sections:\s*(\d+)", prompt, re.IGNORECASE)
+    if sections_match:
+        target_sections = int(sections_match.group(1))
+
+    target_images = -1
+    images_match = re.search(r"- target_images:\s*(\d+)", prompt, re.IGNORECASE)
+    if images_match:
+        target_images = int(images_match.group(1))
+        
+    # Check natural language overrides in the user's actual prompt (first line)
+    user_message = prompt.splitlines()[0] if prompt.strip() else ""
+    
+    # Image natural language modifiers
+    add_img_match = re.search(r"add\s+(\d+)\s+(?:more\s+)?(?:images?|ảnh|anh|hình|hinh|pictures?|photos?)", user_message, re.IGNORECASE)
+    if add_img_match:
+        # If auto (-1), assume baseline 1 for adding
+        base = 1 if target_images == -1 else target_images
+        target_images = base + int(add_img_match.group(1))
+    else:
+        abs_img_match = re.search(r"(?:use|with|make|have|only)?\s*(\d+)\s+(?:images?|ảnh|anh|hình|hinh|pictures?|photos?)", user_message, re.IGNORECASE)
+        if abs_img_match:
+            target_images = int(abs_img_match.group(1))
+
+    # Section natural language modifiers
+    add_sec_match = re.search(r"add\s+(\d+)\s+(?:more\s+)?(?:sections?|mục|phần)", user_message, re.IGNORECASE)
+    if add_sec_match:
+        # If auto (0), assume baseline 3 for adding
+        base = 3 if target_sections == 0 else target_sections
+        target_sections = base + int(add_sec_match.group(1))
+    else:
+        abs_sec_match = re.search(r"(?:use|with|make|have|only)?\s*(\d+)\s+(?:sections?|mục|phần)", user_message, re.IGNORECASE)
+        if abs_sec_match:
+            target_sections = int(abs_sec_match.group(1))
+
     # Intercept and sanitize the entire request if it's an HR bait
     if sanitize_topic_for_tech_pivot(prompt_lower):
         topic = "Database Scalability, API Polling Rate Limits, and System Latency in National Identity Infrastructure"
@@ -241,6 +299,9 @@ def parse_prompt(prompt: str) -> ParsedPrompt:
         tone=tone,
         audience=audience,
         length=length,
+        language=language,
+        target_sections=target_sections,
+        target_images=target_images,
         modifiers=modifiers,
     )
 

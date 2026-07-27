@@ -10,6 +10,10 @@ from app.config import settings
 
 client = TestClient(app)
 
+from app.api_server import get_current_admin_user, get_current_user_id
+app.dependency_overrides[get_current_admin_user] = lambda: {"username": "admin", "is_admin": True}
+app.dependency_overrides[get_current_user_id] = lambda: 1
+
 
 def test_health_includes_runtime_details():
     response = client.get("/api/health")

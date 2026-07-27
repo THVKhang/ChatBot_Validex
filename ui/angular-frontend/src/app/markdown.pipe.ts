@@ -14,7 +14,11 @@ export class MarkdownPipe implements PipeTransform {
   }
 
   private markdownToHtml(md: string): string {
-    let html = md;
+    // Escape raw HTML tags in user/LLM input to prevent XSS vulnerabilities
+    let html = md
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
 
     // ── Strip raw source citations completely ──
     // [Source: Title | URL: url] → remove entirely
@@ -47,8 +51,7 @@ export class MarkdownPipe implements PipeTransform {
 
     // ── Code blocks (fenced) ──
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
-      const escaped = this.escapeHtml(code.trim());
-      return `<pre><code class="lang-${lang || 'text'}">${escaped}</code></pre>`;
+      return `<pre><code class="lang-${lang || 'text'}">${code.trim()}</code></pre>`;
     });
 
     // ── Inline code ──
@@ -74,6 +77,27 @@ export class MarkdownPipe implements PipeTransform {
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/(?<!\w)\*(.+?)\*(?!\w)/g, '<em>$1</em>');
 
+    // ── Tables (basic markdown table support) ──
+    html = html.replace(
+      /(^\|.+\|\s*\n)(^\|[-:| ]+\|\s*\n)((?:^\|.+\|\s*\n?)+)/gm,
+      (_match, headerRow, _separator, bodyRows) => {
+        const parseRow = (row: string) =>
+          row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c: string) => c.trim());
+        const headers = parseRow(headerRow);
+        const rows = bodyRows.trim().split('\n').map(parseRow);
+        let table = '<table><thead><tr>';
+        headers.forEach((h: string) => { table += `<th>${h}</th>`; });
+        table += '</tr></thead><tbody>';
+        rows.forEach((row: string[]) => {
+          table += '<tr>';
+          row.forEach((cell: string) => { table += `<td>${cell}</td>`; });
+          table += '</tr>';
+        });
+        table += '</tbody></table>';
+        return table;
+      }
+    );
+
     // ── Blockquotes (multi-line support) ──
     html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
     // Merge adjacent blockquotes
@@ -88,8 +112,8 @@ export class MarkdownPipe implements PipeTransform {
       return `<ol>${items}</ol>`;
     });
 
-    // ── Unordered lists ──
-    html = html.replace(/^[-•] (.+)$/gm, '<li>$1</li>');
+    // ── Unordered lists (supports -, •, and * bullets) ──
+    html = html.replace(/^[-•*] (.+)$/gm, '<li>$1</li>');
     html = html.replace(/(<li>.*<\/li>\n?)+/g, (match) => {
       // Don't double-wrap if already in <ol>
       if (match.includes('<ol>')) return match;
@@ -100,8 +124,8 @@ export class MarkdownPipe implements PipeTransform {
     html = html.replace(/^(?!<[a-z])((?!^\s*$).+)$/gm, '<p>$1</p>');
 
     // ── Clean up double-wrapped paragraphs ──
-    html = html.replace(/<p><(h[1-4]|ul|ol|li|pre|blockquote|img|hr)/g, '<$1');
-    html = html.replace(/<\/(h[1-4]|ul|ol|li|pre|blockquote)><\/p>/g, '</$1>');
+    html = html.replace(/<p><(h[1-4]|ul|ol|li|pre|blockquote|img|hr|table)/g, '<$1');
+    html = html.replace(/<\/(h[1-4]|ul|ol|li|pre|blockquote|table)<\/p>/g, '</$1>');
 
     return html;
   }

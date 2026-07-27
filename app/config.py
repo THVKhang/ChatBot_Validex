@@ -6,17 +6,23 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+import re
+
 def _normalize_pgvector_table(value: str | None) -> str:
     normalized = str(value or "").strip()
     if not normalized or normalized == "rag_blog_chunks":
-        return "validex_knowledge"
+        normalized = "validex_knowledge"
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", normalized):
+        raise ValueError(f"Invalid table name format: '{normalized}'. Only alphanumeric characters and underscores are allowed.")
     return normalized
 
 
 @dataclass(frozen=True)
 class Settings:
-    model_name: str = os.getenv("MODEL_NAME", "gpt-4o-mini")
-    google_model_name: str = os.getenv("GOOGLE_MODEL_NAME", "models/gemini-2.5-flash")
+    model_name: str = os.getenv("LLM_MODEL_PRO", os.getenv("MODEL_NAME", "gpt-4o-mini"))
+    fast_model_name: str = os.getenv("LLM_MODEL_FAST", os.getenv("FAST_MODEL_NAME", "llama-3.1-8b-instant"))
+    google_model_name: str = os.getenv("LLM_MODEL_PRO", os.getenv("GOOGLE_MODEL_NAME", "models/gemini-2.5-flash"))
+    google_fast_model_name: str = os.getenv("LLM_MODEL_FAST", os.getenv("GOOGLE_FAST_MODEL_NAME", "models/gemini-2.0-flash-lite"))
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     google_embedding_model: str = os.getenv("GOOGLE_EMBEDDING_MODEL", "models/text-embedding-004")
     llm_provider: str = os.getenv("LLM_PROVIDER", "auto")
@@ -45,7 +51,7 @@ class Settings:
     pinecone_api_key: str = os.getenv("PINECONE_API_KEY", "")
     pinecone_index: str = os.getenv("PINECONE_INDEX", "")
     pinecone_namespace: str = os.getenv("PINECONE_NAMESPACE", "default")
-    pgvector_table: str = _normalize_pgvector_table(os.getenv("PGVECTOR_TABLE", "validex_knowledge"))
+    pgvector_table: str = _normalize_pgvector_table(os.getenv("PGVECTOR_COLLECTION", os.getenv("PGVECTOR_TABLE", "validex_knowledge")))
     use_pgvector_retrieval: bool = os.getenv("USE_PGVECTOR_RETRIEVAL", "1") == "1"
     pgvector_require_non_fake_embeddings: bool = os.getenv("PGVECTOR_REQUIRE_NON_FAKE_EMBEDDINGS", "1") == "1"
     pgvector_min_similarity: float = float(os.getenv("PGVECTOR_MIN_SIMILARITY", "0.15"))
@@ -54,7 +60,7 @@ class Settings:
     use_live_llm: bool = os.getenv("USE_LIVE_LLM", "0") == "1"
     use_structured_output: bool = os.getenv("USE_STRUCTURED_OUTPUT", "1") == "1"
     use_pinecone_retrieval: bool = os.getenv("USE_PINECONE_RETRIEVAL", "0") == "1"
-    use_agentic_rag: bool = os.getenv("USE_AGENTIC_RAG", "0") == "1"
+    use_agentic_rag: bool = os.getenv("USE_AGENTIC_RAG", "1") == "1"
     use_unsplash_images: bool = os.getenv("USE_UNSPLASH_IMAGES", "1") == "1"
     unsplash_access_key: str = os.getenv("UNSPLASH_ACCESS_KEY", "")
     unsplash_api_base: str = os.getenv("UNSPLASH_API_BASE", "https://api.unsplash.com")
@@ -72,8 +78,14 @@ class Settings:
     min_draft_chars: int = int(os.getenv("MIN_DRAFT_CHARS", "700"))
     use_rate_limit: bool = os.getenv("USE_RATE_LIMIT", "1") == "1"
     rate_limit_per_minute: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
+    burst_limit_per_10s: int = int(os.getenv("BURST_LIMIT_PER_10S", "5"))
+    max_concurrent_per_ip: int = int(os.getenv("MAX_CONCURRENT_PER_IP", "3"))
+    request_timeout_seconds: int = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "180"))
+    max_response_size_bytes: int = int(os.getenv("MAX_RESPONSE_SIZE_BYTES", "102400"))  # 100KB
+    max_concurrent_llm_requests: int = int(os.getenv("MAX_CONCURRENT_LLM_REQUESTS", "10"))
     use_redis_rate_limit: bool = os.getenv("USE_REDIS_RATE_LIMIT", "0") == "1"
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    enable_security_headers: bool = os.getenv("ENABLE_SECURITY_HEADERS", "1") == "1"
     metrics_window_size: int = int(os.getenv("METRICS_WINDOW_SIZE", "200"))
     tool_allowed_domains: str = os.getenv(
         "TOOL_ALLOWED_DOMAINS",
@@ -87,6 +99,12 @@ class Settings:
     # Circuit breaker: skip LLM after N consecutive failures for a cooldown period
     circuit_breaker_threshold: int = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "3"))
     circuit_breaker_cooldown_seconds: int = int(os.getenv("CIRCUIT_BREAKER_COOLDOWN_SECONDS", "60"))
+    # Connection pool
+    db_pool_min_size: int = int(os.getenv("DB_POOL_MIN", "2"))
+    db_pool_max_size: int = int(os.getenv("DB_POOL_MAX", "20"))
+    # Redis sessions
+    use_redis_sessions: bool = os.getenv("USE_REDIS_SESSIONS", "0") == "1"
+    session_eviction_interval_seconds: int = int(os.getenv("SESSION_EVICTION_INTERVAL", "300"))
     # Conversation memory: max history turns sent to LLM
     max_conversation_turns: int = int(os.getenv("MAX_CONVERSATION_TURNS", "5"))
     # Prompt guard
@@ -106,6 +124,27 @@ class Settings:
     # AI Content Evaluator
     ai_evaluator_enabled: bool = os.getenv("AI_EVALUATOR_ENABLED", "0") == "1"
     ai_evaluator_min_score: int = int(os.getenv("AI_EVALUATOR_MIN_SCORE", "6"))
+    # ── Debate Agent Problem: Mixed-Model & Temperature Divergence ──
+    # Writer uses a creative temperature for prose quality
+    writer_temperature: float = float(os.getenv("WRITER_TEMPERATURE", "0.7"))
+    # Editor uses a strict temperature for consistent, objective evaluation
+    editor_temperature: float = float(os.getenv("EDITOR_TEMPERATURE", "0.1"))
+    # Optional: use a DIFFERENT model for the Editor (breaks Debate Agent Problem)
+    # If empty, Editor uses the same primary model but with editor_temperature
+    editor_model_name: str = os.getenv("EDITOR_MODEL_NAME", "")
+    editor_google_model_name: str = os.getenv("EDITOR_GOOGLE_MODEL_NAME", "")
+    # ── Per-User Token Quota (daily limits per tier) ──
+    user_tier_quotas: dict = None  # populated in __post_init__
+
+    def __post_init__(self):
+        # Bypass frozen to set computed field
+        quotas = {
+            "free": int(os.getenv("QUOTA_FREE", "25000")),
+            "starter": int(os.getenv("QUOTA_STARTER", "80000")),
+            "pro": int(os.getenv("QUOTA_PRO", "250000")),
+            "enterprise": int(os.getenv("QUOTA_ENTERPRISE", "1000000")),
+        }
+        object.__setattr__(self, "user_tier_quotas", quotas)
 
 
 settings = Settings()

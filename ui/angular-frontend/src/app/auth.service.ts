@@ -53,11 +53,13 @@ export class AuthService {
   }
 
   login(username: string, password: string): Observable<AuthResponse> {
-    const formData = new FormData();
-    formData.append('username', username);
-    formData.append('password', password);
+    const body = new URLSearchParams();
+    body.set('username', username);
+    body.set('password', password);
     
-    return this.http.post<AuthResponse>(`${this.baseUrl}/login`, formData).pipe(
+    return this.http.post<AuthResponse>(`${this.baseUrl}/login`, body.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    }).pipe(
       tap(res => {
         localStorage.setItem(this.tokenKey, res.access_token);
         localStorage.setItem(this.usernameKey, username);

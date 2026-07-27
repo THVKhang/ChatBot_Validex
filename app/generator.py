@@ -23,8 +23,8 @@ class GeneratedBlog:
 
 
 def build_section_image_url(topic: str, heading: str) -> str:
-    seed = quote_plus(f"{topic} {heading} editorial")
-    return f"https://picsum.photos/seed/{seed}/1600/900"
+    seed = quote_plus(f"{topic}-{heading}")
+    return f"https://picsum.photos/seed/{seed}/800/450"
 
 
 def _clean_text(text: str, max_chars: int = 180) -> str:
@@ -381,23 +381,42 @@ def _clean_evidence_snippet(snippet: str) -> str:
 
 
 def _supporting_facts(docs: list[RetrievedDoc], limit: int = 6) -> list[str]:
+    """Extract supporting evidence from retrieved documents.
+
+    Extracts longer snippets (up to 500 chars) and includes metadata
+    citations (act_name, section_ref) when available for authoritative sourcing.
+    """
     if not docs:
         return []
 
     facts: list[str] = []
     for item in docs:
-        snippet = _clean_text(item.content, 180)
+        snippet = _clean_text(item.content, 500)
         if not _looks_english(snippet):
             continue
 
         if snippet.lower().startswith("faq:"):
             snippet = snippet.split(":", 1)[1].strip()
 
+        # Strip context prefix like [Source Title]\n...
+        if snippet.startswith("[") and "]\n" in snippet[:100]:
+            bracket_end = snippet.index("]\n")
+            snippet = snippet[bracket_end + 2:].strip()
+
         # Filter out garbage scraper snippets
         if _is_garbage_snippet(snippet):
             continue
 
         snippet = _clean_evidence_snippet(snippet)
+
+        # Add metadata citation if available (act_name, section_ref)
+        metadata = getattr(item, 'metadata', {}) if hasattr(item, 'metadata') else {}
+        act_name = metadata.get('act_name', '') if isinstance(metadata, dict) else ''
+        section_ref = metadata.get('section_ref', '') if isinstance(metadata, dict) else ''
+        if act_name and section_ref:
+            snippet = f"{snippet} (Ref: {act_name}, {section_ref})"
+        elif act_name:
+            snippet = f"{snippet} (Ref: {act_name})"
 
         if snippet in facts:
             continue
@@ -603,18 +622,47 @@ def _section_body(parsed: ParsedPrompt, heading: str, evidence_fact: str | None)
 
 
 def build_sections(parsed: ParsedPrompt, outline: list[str], docs: list[RetrievedDoc]) -> list[GeneratedBlog.Section]:
-    supporting_facts = _supporting_facts(docs, limit=max(6, len(outline)))
+    # Extract evidence from docs
+    evidence_limit = max(len(outline) * 2, 10)
+    supporting_facts = _supporting_facts(docs, limit=evidence_limit)
     sections: list[GeneratedBlog.Section] = []
+
+    # Distribute facts evenly across sections (round-robin)
+    # Skip introduction and conclusion for evidence injection
+    content_headings = []
+    for i, raw_heading in enumerate(outline):
+        heading = raw_heading.split(":", 1)[-1].strip() if ":" in raw_heading else raw_heading.strip()
+        h_lower = heading.lower()
+        is_structural = (
+            h_lower in ("introduction",)
+            or "conclusion" in h_lower
+            or "get started" in h_lower
+            or "checklist" in h_lower
+        )
+        content_headings.append((i, heading, not is_structural))
+
+    # Map facts to content sections
+    fact_assignment: dict[int, str | None] = {}
+    content_indices = [i for i, _, is_content in content_headings if is_content]
+    for fact_idx, fact in enumerate(supporting_facts):
+        if content_indices:
+            section_idx = content_indices[fact_idx % len(content_indices)]
+            # Combine with existing if already assigned
+            if section_idx in fact_assignment and fact_assignment[section_idx]:
+                fact_assignment[section_idx] += " Additionally, " + fact[0].lower() + fact[1:]
+            else:
+                fact_assignment[section_idx] = fact
+
     for index, raw_heading in enumerate(outline):
         heading = raw_heading.split(":", 1)[-1].strip() if ":" in raw_heading else raw_heading.strip()
         if not heading:
             continue
 
-        section_fact = supporting_facts[index] if index < len(supporting_facts) else None
+        evidence = fact_assignment.get(index)
         sections.append(
             GeneratedBlog.Section(
                 heading=heading,
-                body=_section_body(parsed, heading, section_fact),
+                body=_section_body(parsed, heading, evidence),
                 image_url=build_section_image_url(parsed.topic, heading),
                 image_alt=f"{heading} illustration",
             )
@@ -664,74 +712,154 @@ def format_title(topic: str) -> str:
     return " ".join(titled)
 
 
-def _build_topic_aware_outline(parsed: ParsedPrompt) -> list[str]:
-    """Build an outline that reflects the user's actual topic using dynamic frameworks.
+def _detect_prompt_language(text: str) -> str:
+    """Detect the primary language of the user's prompt.
 
-    Framework A: Compliance / Background Check / Identity Verification topics
-    Framework B: General Technology / Cybersecurity / Digital Infrastructure topics
+    Always returns 'en' as the system is configured to output only English for foreign users.
     """
-    topic = re.sub(r"\s+", " ", parsed.topic).strip()
-    topic_title = format_title(topic)
+    return "en"
 
-    # Shorten topic for headings — max 8 words
-    topic_words = topic_title.split()
-    short_topic = " ".join(topic_words[:8]) if len(topic_words) > 8 else topic_title
 
-    topic_lower = topic.lower()
-
-    # Strip question prefixes for cleaner headings
-    # e.g., "How Is My Police Check Result Determined" → "Police Check Result Determination"
-    question_prefixes = [
-        "how is ", "how are ", "how does ", "how do ", "how can ", "how to ",
-        "what is ", "what are ", "what does ", "what do ",
-        "why is ", "why are ", "why does ", "why do ",
-        "when is ", "when are ", "when does ", "when do ",
-        "does ", "do ", "can ", "is ", "are ",
-    ]
-    heading_topic = short_topic
-    for prefix in question_prefixes:
-        if heading_topic.lower().startswith(prefix):
-            heading_topic = heading_topic[len(prefix):].strip()
-            heading_topic = format_title(heading_topic)
-            break
-
-    # Detect if this is a compliance/background-check topic (Framework A)
-    compliance_keywords = [
-        "police check", "background check", "criminal record", "identity verification",
-        "spent conviction", "acic", "npc", "compliance", "vetting", "screening",
-        "criminal history", "disclosure", "working with children", "wwcc",
-    ]
-    is_compliance = any(kw in topic_lower for kw in compliance_keywords)
-
-    if is_compliance:
-        # Framework A — Compliance / Background Check
-        outline = [
-            f"System Architecture Behind {heading_topic}",
-            f"How {heading_topic} Results Are Determined",
+# ── Language-aware heading templates ──────────────────────────
+_OUTLINE_TEMPLATES = {
+    "en": {
+        "howto": [
+            "Introduction",
+            "What You Need to Know Before Starting",
+            "Step 1: Understand the Requirements",
+            "Step 2: Gather Your Documents and Information",
+            "Step 3: Submit Your Application",
+            "Step 4: What Happens Next — Processing and Results",
+            "Tips for a Smooth Experience",
+            "Conclusion and Next Steps",
+        ],
+        "comparison": [
+            "Introduction",
+            "Overview of {topic}",
+            "Key Differences at a Glance",
+            "Detailed Comparison: Features and Requirements",
+            "Which Option Is Right for You",
+            "Conclusion and Recommendations",
+        ],
+        "technical": [
+            "System Architecture Overview",
+            "Core Technical Components",
             "Data Flow and Processing Pipeline",
-            "Legislative and Regulatory Framework",
+            "Security and Compliance Framework",
             "Practical Implications and Outcomes",
             "Conclusion and Strategic Next Steps",
-        ]
-    else:
-        # Framework B — General Technology / Cybersecurity
-        outline = [
-            f"Protocol Architecture and Standards Governing {heading_topic}",
-            f"Core Mechanisms and Algorithms",
-            "Implementation Landscape and Real-World Deployments",
-            "Threat Model Analysis and Security Considerations",
-            "Strategic Impact and Future Trajectory",
-            "Conclusion and Strategic Next Steps",
-        ]
+        ],
+        "informational": [
+            "Introduction",
+            "Overview of {topic}",
+            "Key Factors and Considerations",
+            "Practical Guidance on {topic}",
+            "What This Means for You",
+            "Conclusion and Next Steps",
+        ],
+        "extras": [
+            "Common Questions and Expert Insights",
+            "Industry Best Practices and Standards",
+            "Case Studies and Real-World Examples",
+            "Resources and Further Reading",
+        ],
+    },
+}
 
-    if parsed.length == "long":
-        # Insert an extra depth section before the conclusion
-        outline.insert(-1, "Common Questions and Expert Insights")
+
+def _build_topic_aware_outline(parsed: ParsedPrompt) -> list[str]:
+    """Build an outline that reflects the user's actual INTENT and LANGUAGE.
+
+    Framework selection:
+      A) How-to / Guide / Step-by-step  → practical steps outline
+      B) Informational / Explainer       → concept-first outline
+      C) Comparison / Versus             → side-by-side outline
+      D) Technical / Architecture        → system/tech outline (ONLY when user explicitly asks)
+      E) General fallback                → balanced editorial outline
+    
+    Language-aware: Headings match the language of the user's prompt.
+    """
+    topic = re.sub(r"\s+", " ", parsed.topic).strip()
+    
+    # Detect language from the raw prompt (the actual user input)
+    lang = _detect_prompt_language(parsed.raw_prompt)
+    templates = _OUTLINE_TEMPLATES.get(lang, _OUTLINE_TEMPLATES["en"])
+    
+    # Shorten topic for headings — max 5 words, strip filler and question patterns
+    cleaned_topic = re.sub(r'(?i)^(how to |guide (for|to) |apply(ing)? for |step[- ]by[- ]step )', '', topic).strip()
+    # Normalize full question sentences into clean noun phrases (e.g. "Do police checks expire?" -> "Police Check Expiry & Validity")
+    if re.search(r'(?i)^(do|does|is|are|can|how|what|when|where|why)\b', cleaned_topic):
+        cleaned_topic = re.sub(r'(?i)^(do|does|is|are|can|how|what|when|where|why)\s+', '', cleaned_topic).strip()
+        cleaned_topic = re.sub(r'\?$', '', cleaned_topic).strip()
+        if "expire" in cleaned_topic.lower() and "expiry" not in cleaned_topic.lower():
+            cleaned_topic = re.sub(r'(?i)\bexpire\b', 'Expiry & Validity', cleaned_topic).strip()
+    
+    topic_words = cleaned_topic.split()
+    short_topic = " ".join(topic_words[:5]) if len(topic_words) > 5 else cleaned_topic
+
+    prompt_lower = re.sub(r"\s+", " ", parsed.raw_prompt).strip().lower()
+
+    # ── Intent Detection from prompt ──────────────────────────────
+
+    # A) How-to / Guide / Step-by-step
+    howto_signals = [
+        "step-by-step", "step by step", "how to", "how do i", "how can i",
+        "guide", "walkthrough", "checklist", "tutorial", "instructions",
+        "apply for", "applying for", "get a ", "getting a ",
+        "huong dan", "hướng dẫn", "cach ", "cách ",
+        "tung buoc", "từng bước", "làm sao", "làm thế nào",
+    ]
+    is_howto = any(signal in prompt_lower for signal in howto_signals)
+
+    # B) Comparison / Versus
+    comparison_signals = [
+        " vs ", " versus ", "compare", "comparison", "difference between",
+        "so sanh", "so sánh", "khac nhau", "khác nhau", "sự khác biệt",
+    ]
+    is_comparison = any(signal in prompt_lower for signal in comparison_signals)
+
+    # C) Technical / Architecture (ONLY when user explicitly asks about tech)
+    tech_signals = [
+        "architecture", "backend", "api", "system design", "infrastructure",
+        "database", "microservice", "protocol", "algorithm", "data flow",
+        "kien truc", "kiến trúc", "hệ thống", "bảo mật", "mã hóa",
+    ]
+    is_technical = any(signal in prompt_lower for signal in tech_signals)
+
+    # ── Build Outline Based on Detected Intent ───────────────────
+
+    if is_howto and not is_technical:
+        template_key = "howto"
+    elif is_comparison:
+        template_key = "comparison"
+    elif is_technical:
+        template_key = "technical"
+    else:
+        template_key = "informational"
+    
+    outline = [h.format(topic=short_topic) for h in templates[template_key]]
+
+    # ── Adjust outline length if target_sections is specified ────
+    if hasattr(parsed, "target_sections") and parsed.target_sections > 0:
+        target = max(2, parsed.target_sections)
+
+        if target < len(outline):
+            outline = outline[:target - 1] + [outline[-1]]
+        elif target > len(outline):
+            extras = list(templates["extras"])
+            while len(outline) < target and extras:
+                outline.insert(-1, extras.pop(0))
+            while len(outline) < target:
+                outline.insert(-1, f"Analysis: Aspect {len(outline)}")
+
+    elif parsed.length == "long":
+        outline.insert(-1, templates["extras"][0])
 
     return outline
 
 
 def generate_outline(parsed: ParsedPrompt) -> list[str]:
+    # Police check topics have a specialized step-by-step outline
     if _is_police_check_topic(parsed.topic):
         if _prefers_step_structure(parsed):
             if parsed.length == "short":
@@ -758,10 +886,29 @@ def generate_outline(parsed: ParsedPrompt) -> list[str]:
             if parsed.length == "long":
                 outline.insert(2, "What to Expect")
             return outline
+        else:
+            if parsed.length == "short":
+                return [
+                    "Introduction",
+                    "Understanding the National Police Check",
+                    "Risk, Compliance, and Candidate Experience",
+                    "Operational Priorities for Employers",
+                ]
 
-        # Build a topic-aware outline from the user's actual question
-        return _build_topic_aware_outline(parsed)
+            outline = [
+                "Introduction",
+                "Understanding the National Police Check",
+                "Role-Based Screening and Risk Governance",
+                "Operational Delivery and Candidate Experience",
+                "Employer Responsibilities and Compliance Controls",
+                "Conclusion and Next Actions",
+            ]
 
+            if parsed.length == "long":
+                outline.insert(4, "Building a Scalable Verification Program")
+            return outline
+
+    # All other topics — use the dynamic intent-aware outline builder
     return _build_topic_aware_outline(parsed)
 
 
@@ -820,16 +967,16 @@ def generate_blog_output(
         sections.extend(
             [
                 GeneratedBlog.Section(
-                    heading="Implementation Checklist",
+                    heading="Practical Checklist",
                     body=(
-                        f"Execution checklist for {parsed.audience}:\n"
-                        "1) Define screening scope and policy boundaries.\n"
-                        "2) Standardize required documents and consent steps.\n"
-                        "3) Communicate timelines to candidates and hiring managers.\n"
-                        "4) Track onboarding and compliance KPIs continuously."
+                        f"Action checklist for {parsed.audience}:\n"
+                        "1) Identify the specific requirements for your situation.\n"
+                        "2) Gather all necessary documents and information.\n"
+                        "3) Follow the correct process for your state or territory.\n"
+                        "4) Keep records of your application and any reference numbers."
                     ),
-                    image_url=build_section_image_url(parsed.topic, "implementation checklist"),
-                    image_alt="Implementation checklist",
+                    image_url=build_section_image_url(parsed.topic, "practical checklist"),
+                    image_alt="Practical checklist",
                 )
             ]
         )

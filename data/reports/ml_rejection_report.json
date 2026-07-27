@@ -1,0 +1,39 @@
+{
+  "total_training_records": 4,
+  "total_rejected": 3,
+  "ml_gate_rejected": 2,
+  "rejection_rate_pct": 75.0,
+  "top_rejected_topics": {
+    "spent convictions QLD": 1,
+    "WWCC Blue Card QLD": 1,
+    "police check": 1
+  },
+  "top_rejection_reasons": {
+    "Low faithfulness": 1,
+    "Insufficient evidence": 1,
+    "Too short": 1
+  },
+  "topic_reason_samples": {
+    "spent convictions QLD": [
+      "Low faithfulness"
+    ],
+    "WWCC Blue Card QLD": [
+      "Insufficient evidence"
+    ],
+    "police check": [
+      "Too short"
+    ]
+  },
+  "high_nli_contradiction_topics": [
+    {
+      "topic": "spent convictions QLD",
+      "nli_contradictions": 0.5,
+      "reason": "Low faithfulness"
+    },
+    {
+      "topic": "WWCC Blue Card QLD",
+      "nli_contradictions": 0.7,
+      "reason": "Insufficient evidence"
+    }
+  ]
+}

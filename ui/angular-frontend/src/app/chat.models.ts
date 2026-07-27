@@ -4,6 +4,7 @@ export interface ParsedResult {
   audience: string;
   tone: string;
   length: string;
+  language?: string;
   context_note: string;
 }
 
@@ -207,4 +208,19 @@ export interface KnowledgeHealthResponse {
   provider_breakdown: EmbeddingProviderStat[];
   ready_for_retrieval: boolean;
   generated_at: string;
+}
+
+export interface PendingReview {
+  run_id: string;
+  session_id: string;
+  topic: string;
+  status: string;
+  issues: string[];
+  created_at: string;
+  draft: string;
+}
+
+export interface UpdateReviewAction {
+  action: 'Approve' | 'Reject';
+  feedback?: string;
 }

@@ -188,7 +188,7 @@ class TokenTracker:
                         SELECT date, model, SUM(input_tokens)::int, SUM(output_tokens)::int,
                                SUM(request_count)::int, SUM(error_count)::int
                         FROM token_usage_log
-                        WHERE created_at > NOW() - INTERVAL '%s days'
+                        WHERE created_at > NOW() - INTERVAL '1 day' * %s
                         GROUP BY date, model
                         ORDER BY date DESC, model
                     """, (days,))
@@ -208,6 +208,117 @@ class TokenTracker:
             logger.warning("Failed to fetch historical token data: %s", exc)
             return []
 
+    # ── Per-User Token Quota ──────────────────────────────────────
+    # Tracks token usage per user (session_id) per day for quota enforcement.
+
+    def _ensure_user_table(self, conn: Any) -> None:
+        """Create user_token_usage table if it doesn't exist."""
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_token_usage (
+                    id SERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    tokens_used INT NOT NULL DEFAULT 0,
+                    request_count INT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(user_id, date)
+                )
+            """)
+            conn.commit()
+
+    def record_user_usage(self, user_id: str, tokens: int) -> None:
+        """Record token usage for a specific user (upsert daily)."""
+        if not user_id:
+            return
+        dsn = os.getenv("DATABASE_URL", "").strip()
+        if not dsn:
+            # In-memory fallback
+            with self._lock:
+                key = f"user:{user_id}"
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                if not hasattr(self, "_user_usage"):
+                    self._user_usage: dict[str, dict] = {}
+                record = self._user_usage.get(key)
+                if not record or record.get("date") != today:
+                    self._user_usage[key] = {"date": today, "tokens": 0, "requests": 0}
+                self._user_usage[key]["tokens"] += tokens
+                self._user_usage[key]["requests"] += 1
+            return
+
+        try:
+            import psycopg
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            with psycopg.connect(dsn) as conn:
+                self._ensure_user_table(conn)
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO user_token_usage (user_id, date, tokens_used, request_count)
+                        VALUES (%s, %s, %s, 1)
+                        ON CONFLICT (user_id, date) DO UPDATE SET
+                            tokens_used = user_token_usage.tokens_used + EXCLUDED.tokens_used,
+                            request_count = user_token_usage.request_count + 1
+                    """, (user_id, today, tokens))
+                conn.commit()
+        except Exception as exc:
+            logger.warning("Failed to record user token usage: %s", exc)
+
+    def get_user_budget(self, user_id: str, tier: str = "free") -> dict[str, Any]:
+        """Get remaining token budget for a user today.
+
+        Returns: {remaining, total, used, percent, tier, requests}
+        """
+        from app.config import settings
+        quota = settings.user_tier_quotas.get(tier, settings.user_tier_quotas["free"])
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        used = 0
+        requests = 0
+
+        dsn = os.getenv("DATABASE_URL", "").strip()
+        if dsn:
+            try:
+                import psycopg
+                with psycopg.connect(dsn) as conn:
+                    self._ensure_user_table(conn)
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT tokens_used, request_count FROM user_token_usage WHERE user_id = %s AND date = %s",
+                            (user_id, today),
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            used, requests = row[0], row[1]
+            except Exception as exc:
+                logger.warning("Failed to get user budget from DB: %s", exc)
+        else:
+            # In-memory fallback
+            with self._lock:
+                key = f"user:{user_id}"
+                if hasattr(self, "_user_usage"):
+                    record = self._user_usage.get(key, {})
+                    if record.get("date") == today:
+                        used = record.get("tokens", 0)
+                        requests = record.get("requests", 0)
+
+        remaining = max(0, quota - used)
+        percent = round(used / quota * 100, 1) if quota > 0 else 100.0
+
+        return {
+            "remaining": remaining,
+            "total": quota,
+            "used": used,
+            "percent": percent,
+            "tier": tier,
+            "requests": requests,
+            "date": today,
+        }
+
+    def check_user_quota(self, user_id: str, tier: str = "free") -> bool:
+        """Check if user has remaining quota. Returns True if OK, False if exceeded."""
+        budget = self.get_user_budget(user_id, tier)
+        return budget["remaining"] > 0
+
 
 # Module-level singleton
 token_tracker = TokenTracker()
+

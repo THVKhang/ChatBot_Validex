@@ -30,8 +30,8 @@ def _connection_dsn() -> str:
 def _ensure_table(dsn: str) -> None:
     """Create the chat_sessions and users tables if they don't exist (idempotent)."""
     try:
-        import psycopg
-        with psycopg.connect(dsn) as conn:
+        from app.db_pool import get_connection
+        with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS users (
@@ -120,8 +120,8 @@ def save_session(session_id: str, session: SessionManager, user_id: int | None =
     turns_json = _turns_to_json(session)
 
     try:
-        import psycopg
-        with psycopg.connect(dsn) as conn:
+        from app.db_pool import get_connection
+        with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO chat_sessions (session_id, user_id, turns, updated_at)
@@ -148,8 +148,8 @@ def load_session(session_id: str, user_id: int | None = None) -> SessionManager 
         _table_ensured = True
 
     try:
-        import psycopg
-        with psycopg.connect(dsn) as conn:
+        from app.db_pool import get_connection
+        with get_connection() as conn:
             with conn.cursor() as cur:
                 if user_id is not None:
                     cur.execute(
@@ -185,8 +185,8 @@ def list_sessions(limit: int = 50, user_id: int | None = None) -> list[dict[str,
         _table_ensured = True
 
     try:
-        import psycopg
-        with psycopg.connect(dsn) as conn:
+        from app.db_pool import get_connection
+        with get_connection() as conn:
             with conn.cursor() as cur:
                 if user_id is not None:
                     cur.execute(
@@ -229,11 +229,11 @@ def delete_expired_sessions(ttl_seconds: int = 3600) -> int:
         return 0
 
     try:
-        import psycopg
-        with psycopg.connect(dsn) as conn:
+        from app.db_pool import get_connection
+        with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "DELETE FROM chat_sessions WHERE updated_at < NOW() - INTERVAL '%s seconds'",
+                    "DELETE FROM chat_sessions WHERE updated_at < NOW() - INTERVAL '1 second' * %s",
                     (ttl_seconds,),
                 )
                 deleted = cur.rowcount

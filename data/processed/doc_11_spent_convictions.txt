@@ -1,0 +1,13 @@
+Spent convictions legislation in Australia allows certain criminal convictions to become "spent" after a qualifying period, meaning they no longer need to be disclosed in most circumstances. The primary federal legislation governing spent convictions is Part VIIC of the Crimes Act 1914 (Commonwealth).
+
+Under the Commonwealth scheme, a conviction becomes spent after a waiting period of 10 years for adults (or 5 years for juvenile offenders), provided the person has not reoffended during that period. Once spent, the conviction generally cannot be disclosed on a police check result and employers cannot require the person to disclose it.
+
+However, the spent convictions scheme has significant exclusions. Convictions resulting in a prison sentence of more than 30 months cannot become spent under Commonwealth law. Sexual offences against children are also permanently excluded from the scheme in most jurisdictions. Certain regulated industries — including positions involving children, aged care, and national security — may be exempt from the spent convictions scheme, meaning all convictions remain disclosable regardless of the waiting period.
+
+Each state and territory has its own spent convictions legislation, and the rules differ. For example, Victoria's Spent Convictions Act 2021 allows some sentences exceeding the Commonwealth threshold to become spent. Queensland's Criminal Law (Rehabilitation of Offenders) Act 1986 has a rehabilitation period of 10 years. New South Wales uses the Criminal Records Act 1991, which provides for a 10-year conviction-free period for adults.
+
+For employers, the practical implications are significant. When a police check returns a result, the employer should only see disclosable convictions — not spent ones. However, employers in exempt categories (childcare, aged care, law enforcement) may receive more comprehensive disclosures. Employers must understand which category their roles fall under and apply the correct assessment framework.
+
+Key employer obligations include not asking applicants to disclose spent convictions (unless in an exempt category), not using spent conviction information in hiring decisions even if inadvertently disclosed, and maintaining policies that align with anti-discrimination legislation. The Australian Human Rights Commission provides guidance on managing criminal history in employment decisions.
+
+Validex police checks are processed through the ACIC's National Police Checking Service, which applies the relevant spent convictions legislation automatically, ensuring that only disclosable information is included in results.

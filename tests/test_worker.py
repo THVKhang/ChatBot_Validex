@@ -33,7 +33,7 @@ def test_run_ingestion_job_logs_blocking_errors(monkeypatch):
     monkeypatch.setattr(
         worker_module,
         "collect_sources",
-        lambda incremental=True: {
+        lambda *args, **kwargs: {
             "chunks_total": 3,
             "changed_urls": 1,
             "unchanged_urls": 0,
@@ -49,7 +49,7 @@ def test_run_ingestion_job_logs_blocking_errors(monkeypatch):
     monkeypatch.setattr(
         worker_module,
         "ingest_jsonl_to_pgvector",
-        lambda table_name=None, incremental=True: {
+        lambda *args, **kwargs: {
             "status": "ok",
             "upserted": 3,
             "changed_records": 3,

@@ -5,25 +5,39 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import Optional
 import jwt
-from passlib.context import CryptContext
+import bcrypt
 from app.session_store import _connection_dsn, _ensure_table
+from dotenv import load_dotenv
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "super_secret_key_validex_2026")
+load_dotenv()
+
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError(
+        "JWT_SECRET_KEY environment variable is not set! "
+        "Application cannot start safely without a configured JWT secret."
+    )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+def _truncate_pw(pw: str) -> str:
+    """Bcrypt only handles up to 72 bytes."""
+    return pw.encode("utf-8")[:72].decode("utf-8", errors="ignore")
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    pw_bytes = _truncate_pw(plain_password).encode("utf-8")
+    hashed_bytes = hashed_password.encode("utf-8") if isinstance(hashed_password, str) else hashed_password
+    return bcrypt.checkpw(pw_bytes, hashed_bytes)
+
+def get_password_hash(password: str) -> str:
+    pw_bytes = _truncate_pw(password).encode("utf-8")
+    return bcrypt.hashpw(pw_bytes, bcrypt.gensalt()).decode("utf-8")
 
 def create_access_token(data: dict):
     to_encode = data.copy()
-    expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
@@ -44,21 +58,14 @@ def register(user: UserCreate):
     if not dsn:
         raise HTTPException(status_code=500, detail="Database not configured")
     _ensure_table(dsn)
-    import re
-    if len(user.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
-    if not re.search(r"[A-Z]", user.password):
-        raise HTTPException(status_code=400, detail="Password must contain at least one uppercase letter")
-    if not re.search(r"[a-z]", user.password):
-        raise HTTPException(status_code=400, detail="Password must contain at least one lowercase letter")
-    if not re.search(r"[0-9]", user.password):
-        raise HTTPException(status_code=400, detail="Password must contain at least one number")
-    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", user.password):
-        raise HTTPException(status_code=400, detail="Password must contain at least one special character")
+    if not user.username or not user.username.strip():
+        raise HTTPException(status_code=400, detail="Username cannot be empty")
+    if len(user.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
 
-    import psycopg
+    from app.db_pool import get_connection
     try:
-        with psycopg.connect(dsn) as conn:
+        with get_connection() as conn:
             with conn.cursor() as cur:
                 # check existing
                 cur.execute("SELECT id FROM users WHERE username = %s", (user.username,))
@@ -85,8 +92,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
         raise HTTPException(status_code=500, detail="Database not configured")
     _ensure_table(dsn)
     
-    import psycopg
-    with psycopg.connect(dsn) as conn:
+    from app.db_pool import get_connection
+    with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT id, password_hash, is_admin FROM users WHERE username = %s", (form_data.username,))
             row = cur.fetchone()

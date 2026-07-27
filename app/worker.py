@@ -213,26 +213,183 @@ def refresh_stale_embeddings(logger: logging.Logger) -> dict[str, Any]:
         return {"status": "error", "reason": str(exc)}
 
 
+def run_scheduled_blogs(logger: logging.Logger) -> dict[str, Any]:
+    """Check blog_schedule table and trigger pipeline for due topics."""
+    import os
+    db_url = os.getenv("DATABASE_URL", "").strip()
+    if not db_url:
+        return {"status": "skipped", "reason": "no DATABASE_URL"}
+
+    try:
+        import psycopg
+        from datetime import datetime, timezone
+
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS blog_schedule (
+                        id SERIAL PRIMARY KEY,
+                        topic TEXT NOT NULL,
+                        language TEXT DEFAULT 'en',
+                        cron_expression TEXT DEFAULT '0 9 * * MON',
+                        is_active BOOLEAN DEFAULT TRUE,
+                        last_run_at TIMESTAMPTZ,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+                conn.commit()
+
+                # Find active schedules that haven't run today
+                now = datetime.now(timezone.utc)
+                cur.execute("""
+                    SELECT id, topic, language, cron_expression, last_run_at
+                    FROM blog_schedule
+                    WHERE is_active = TRUE
+                """)
+                rows = cur.fetchall()
+
+        generated_count = 0
+        for row in rows:
+            schedule_id, topic, language, cron_expr, last_run = row
+
+            # Simple cron matching: check if it should run today
+            if not _should_run_cron(cron_expr, now, last_run):
+                continue
+
+            logger.info("Scheduled blog trigger: topic='%s', lang='%s'", topic, language)
+            try:
+                from app.main import process_prompt
+                from app.session_manager import SessionManager
+                session = SessionManager()
+                result = process_prompt(topic, session=session)
+                generated_count += 1
+
+                # Update last_run_at
+                with psycopg.connect(db_url) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE blog_schedule SET last_run_at = NOW() WHERE id = %s",
+                            (schedule_id,),
+                        )
+                    conn.commit()
+
+                logger.info("Scheduled blog generated for topic='%s'", topic)
+            except Exception as exc:
+                logger.error("Scheduled blog failed for topic='%s': %s", topic, exc)
+
+        return {"status": "ok", "generated": generated_count}
+
+    except Exception as exc:
+        logger.error("run_scheduled_blogs failed: %s", exc)
+        return {"status": "error", "reason": str(exc)}
+
+
+def _should_run_cron(cron_expr: str, now, last_run) -> bool:
+    """Simple cron matching for: minute hour day_of_month month day_of_week."""
+    if last_run and last_run.date() == now.date():
+        return False  # Already ran today
+
+    parts = cron_expr.split()
+    if len(parts) != 5:
+        return False
+
+    minute, hour, dom, month, dow = parts
+
+    if minute != "*" and int(minute) != now.minute:
+        return False
+    if hour != "*" and int(hour) != now.hour:
+        return False
+    if dom != "*" and int(dom) != now.day:
+        return False
+    if month != "*" and int(month) != now.month:
+        return False
+    if dow != "*":
+        # 0=MON in our system, Python weekday() 0=MON
+        dow_map = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
+        target = dow_map.get(dow.upper(), None)
+        if target is None:
+            try:
+                target = int(dow)
+            except ValueError:
+                return False
+        if now.weekday() != target:
+            return False
+
+    return True
+
+
+def mark_stale_knowledge(logger: logging.Logger, stale_months: int = 6) -> dict[str, Any]:
+    """Mark knowledge chunks older than stale_months as stale."""
+    import os
+    db_url = os.getenv("DATABASE_URL", "").strip()
+    if not db_url:
+        return {"status": "skipped"}
+
+    try:
+        import psycopg
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=stale_months * 30)).isoformat()
+
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                # Add is_stale column if not exists
+                cur.execute(f"""
+                    ALTER TABLE {settings.pgvector_table}
+                    ADD COLUMN IF NOT EXISTS is_stale BOOLEAN DEFAULT FALSE
+                """)
+                # Mark old chunks
+                cur.execute(f"""
+                    UPDATE {settings.pgvector_table}
+                    SET is_stale = TRUE
+                    WHERE created_at < %s AND (is_stale IS NULL OR is_stale = FALSE)
+                """, (cutoff,))
+                stale_count = cur.rowcount
+            conn.commit()
+
+        logger.info("Marked %d chunks as stale (older than %d months)", stale_count, stale_months)
+        return {"status": "ok", "stale_marked": stale_count}
+
+    except Exception as exc:
+        logger.warning("mark_stale_knowledge failed: %s", exc)
+        return {"status": "error", "reason": str(exc)}
+
+
 def run_worker_loop(poll_seconds: int = 30) -> None:
     logger = _build_logger()
     logger.info("worker started with poll_seconds=%s", poll_seconds)
 
     last_run: date | None = None
+    last_schedule_check: date | None = None
     sleep_seconds = max(5, int(poll_seconds))
 
     while True:
         now = datetime.now()
+
+        # Weekly ingestion job (Sunday 2am)
         if is_scheduled_window(now, last_run):
             try:
                 run_ingestion_job(logger)
+                mark_stale_knowledge(logger)
                 last_run = now.date()
                 logger.info("ingestion job completed successfully")
             except Exception as exc:  # pragma: no cover - runtime hardening
                 logger.exception("ingestion job failed: %s", exc)
                 last_run = now.date()
 
+        # Hourly schedule check for blog generation
+        if last_schedule_check != now.date() or now.minute == 0:
+            try:
+                result = run_scheduled_blogs(logger)
+                if result.get("generated", 0) > 0:
+                    logger.info("Scheduled blogs generated: %s", result)
+                last_schedule_check = now.date()
+            except Exception as exc:
+                logger.warning("Scheduled blog check failed: %s", exc)
+
         time.sleep(sleep_seconds)
 
 
 if __name__ == "__main__":
     run_worker_loop()
+

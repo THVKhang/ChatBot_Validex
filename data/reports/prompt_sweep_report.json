@@ -1,0 +1,61 @@
+{
+  "total_topics": 2,
+  "covered_count": 1,
+  "blind_spot_count": 1,
+  "coverage_pct": 50.0,
+  "threshold": 0.65,
+  "blind_spots": [
+    {
+      "topic": "blind spot topic",
+      "top_1_similarity": 0.35,
+      "top_3_similarities": [
+        0.35
+      ],
+      "top_3_titles": [
+        "Bad Match"
+      ],
+      "is_blind_spot": true,
+      "num_results": 1
+    }
+  ],
+  "covered": [
+    {
+      "topic": "covered topic",
+      "top_1_similarity": 0.85,
+      "top_3_similarities": [
+        0.85
+      ],
+      "top_3_titles": [
+        "Good Match"
+      ],
+      "is_blind_spot": false,
+      "num_results": 1
+    }
+  ],
+  "all_results": [
+    {
+      "topic": "covered topic",
+      "top_1_similarity": 0.85,
+      "top_3_similarities": [
+        0.85
+      ],
+      "top_3_titles": [
+        "Good Match"
+      ],
+      "is_blind_spot": false,
+      "num_results": 1
+    },
+    {
+      "topic": "blind spot topic",
+      "top_1_similarity": 0.35,
+      "top_3_similarities": [
+        0.35
+      ],
+      "top_3_titles": [
+        "Bad Match"
+      ],
+      "is_blind_spot": true,
+      "num_results": 1
+    }
+  ]
+}

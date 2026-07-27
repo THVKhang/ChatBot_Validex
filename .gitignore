@@ -205,3 +205,30 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Large ML model files (exceed GitHub 100MB limit)
+*.safetensors
+*.onnx
+*.bin
+data/models/
+checkpoints/
+data/ml/models/
+
+# Brain / scratch artifacts
+brain/
+
+# Angular build output
+ui/angular-frontend/dist/
+
+# Validex cache
+data/validex_cache.db
+
+# Generated outputs & logs
+_error.log
+logs/
+*.log
+scratch_evaluation_results.json
+resilience_report.json
+
+# Scratch test scripts (use tests/ directory instead)
+_test_*.py

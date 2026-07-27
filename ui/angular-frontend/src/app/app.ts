@@ -1,4 +1,5 @@
 import { Component, ElementRef, ViewChild } from '@angular/core';
+import { DomSanitizer } from '@angular/platform-browser';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 
@@ -29,7 +30,9 @@ export class App {
   prompt = '';
   darkMode = false;
   selectedTone = 'Professional';
-  selectedWordCount = '800 Words';
+  selectedWordCount = '500 Words';
+  selectedSectionCount = '3';
+  selectedImageCount = '1';
   selectedAudience = 'General Audience';
   sessionId: string | null = null;
   loading = false;
@@ -74,21 +77,136 @@ export class App {
   authUsername = '';
   authPassword = '';
   authError = '';
+  authSuccess = '';
   authLoading = false;
+
+  // HITL Dashboard State
+  pendingReviews: import('./chat.models').PendingReview[] = [];
+  pendingReviewsLoading = false;
+  selectedReview: import('./chat.models').PendingReview | null = null;
+
+  // OS Dock State
+  dockPopup: string | null = null;
+  showTokenPopup = false;
+  showSettings = false;
+  // Module 1: Feedback State
+  feedbackMap: Record<number, 1 | -1> = {};
+
+  // Module 2: Analytics State
+  analyticsTokens: any = null;
+  analyticsQuality: any = null;
+  analyticsCache: any = null;
+  analyticsFeedback: any = null;
+
+  // Module 3: Language State
+  selectedLanguage = 'Auto';
+  detectedLanguage = '';
+  readonly languageOptions = [
+    { code: 'Auto', label: '🌐 Auto-detect' },
+    { code: 'en', label: '🇬🇧 English' },
+    { code: 'vi', label: '🇻🇳 Tiếng Việt' },
+    { code: 'zh', label: '🇨🇳 中文' },
+    { code: 'ko', label: '🇰🇷 한국어' },
+    { code: 'ja', label: '🇯🇵 日本語' },
+  ];
+
+  selectedValidexVersion = '1.3';
+  readonly validexVersions = ['1.1', '1.2', '1.3'];
+
+  // Custom Blog Settings (free input)
+  customWordCount: number = 500;
+  customSectionCount: number = 3;
+  customImageCount: number = 1;
+
+  // Module 4: Pipeline Visualizer State
+  pipelineSteps: { name: string; icon: string; status: 'done' | 'active' | 'pending'; detail: string }[] = [];
+
+  // Module 5: Scheduling State
+  schedules: any[] = [];
+  newScheduleTopic = '';
+  newScheduleLang = 'en';
+  newScheduleCron = '0 9 * * MON';
+
+  // Module 6: Supervisor State
+  lastComplexityLevel: 'simple' | 'complex' | '' = '';
+  supervisorNotes = '';
+
+  // User Token Budget State
+  userBudget: { remaining: number; total: number; used: number; percent: number; tier: string; requests: number } | null = null;
+  quotaExceeded = false;
+
+  toggleDockPopup(name: string): void {
+    this.dockPopup = this.dockPopup === name ? null : name;
+  }
+
+  closeDockPopups(): void {
+    this.dockPopup = null;
+  }
 
   thinkingStatus = '';
   thinkingDetail = '';
   private thinkingInterval: any;
+  
+  isTyping = false;
+  private typingInterval: any;
 
   private startThinkingCycle(): void {
-    // We now rely on real-time SSE "thinking" events from LangGraph multi-agent architecture
-    // This is just the initial state
     this.thinkingStatus = 'Initializing Multi-Agent system...';
+    // Initialize pipeline steps for visualizer
+    this.pipelineSteps = [
+      { name: 'Parser', icon: 'psychology', status: 'pending', detail: '' },
+      { name: 'Researcher', icon: 'search', status: 'pending', detail: '' },
+      { name: 'RAG Eval', icon: 'fact_check', status: 'pending', detail: '' },
+      { name: 'Supervisor', icon: 'hub', status: 'pending', detail: '' },
+      { name: 'Writer', icon: 'edit_note', status: 'pending', detail: '' },
+      { name: 'Editor', icon: 'rate_review', status: 'pending', detail: '' },
+    ];
+    this.lastComplexityLevel = '';
+    this.supervisorNotes = '';
+    this.detectedLanguage = '';
   }
 
   private stopThinkingCycle(): void {
     this.thinkingStatus = '';
     this.thinkingDetail = '';
+  }
+
+  private updatePipelineStep(nodeName: string, detail: string): void {
+    const nodeMap: Record<string, string> = {
+      'Parser': 'Parser', 'Researcher': 'Researcher',
+      'RAG_Evaluator': 'RAG Eval', 'Supervisor': 'Supervisor',
+      'Deep_Researcher': 'Researcher', 'Writer': 'Writer', 'Editor': 'Editor',
+    };
+    const stepName = nodeMap[nodeName] || nodeName;
+    let found = false;
+    for (const step of this.pipelineSteps) {
+      if (step.name === stepName) {
+        step.status = 'active';
+        step.detail = detail;
+        found = true;
+      } else if (found) {
+        step.status = 'pending';
+      } else {
+        step.status = 'done';
+      }
+    }
+    // Special: insert Deep_Researcher after Supervisor when complex
+    if (nodeName === 'Deep_Researcher') {
+      const hasDR = this.pipelineSteps.some(s => s.name === 'Deep Research');
+      if (!hasDR) {
+        const supIdx = this.pipelineSteps.findIndex(s => s.name === 'Supervisor');
+        if (supIdx >= 0) {
+          this.pipelineSteps.splice(supIdx + 1, 0, {
+            name: 'Deep Research', icon: 'library_books', status: 'active', detail: detail,
+          });
+        }
+      }
+    }
+  }
+
+  private typewriterEffect(targetMsg: ChatMessage, fullText: string): void {
+    targetMsg.text = fullText;
+    this.scrollChatToBottom();
   }
 
   private readonly allPrompts: string[] = [
@@ -122,7 +240,12 @@ export class App {
   @ViewChild('chatHistory')
   chatHistory?: ElementRef<HTMLDivElement>;
 
-  constructor(private readonly chatService: ChatService, private authService: AuthService) {
+  private _sanitizer!: DomSanitizer;
+  private _markdownPipeInstance!: MarkdownPipe;
+
+  constructor(private readonly chatService: ChatService, private authService: AuthService, sanitizer: DomSanitizer) {
+    this._sanitizer = sanitizer;
+    this._markdownPipeInstance = new MarkdownPipe(sanitizer);
     this.refreshRuntime();
     this.authService.currentUser$.subscribe(user => {
       this.currentUser = user;
@@ -148,6 +271,7 @@ export class App {
     }
 
     this.loadReports();
+    this.loadTokenUsage();
     this.startRuntimePolling();
   }
 
@@ -165,6 +289,7 @@ export class App {
 
     this.pollTimerId = window.setInterval(() => {
       this.refreshRuntime();
+      this.loadTokenUsage();
     }, 10000);
   }
 
@@ -177,7 +302,7 @@ export class App {
       error: () => {
         this.apiReady = false;
         this.healthData = null;
-        this.errorMessage = 'Backend API is not running. Start the API server before testing the frontend.';
+        console.error('Backend API is not running. Start the API server before testing the frontend.');
       }
     });
 
@@ -212,6 +337,31 @@ export class App {
         this.knowledgeHealthData = null;
         this.knowledgeHealthError = 'Unable to fetch knowledge health.';
       },
+    });
+  }
+
+  loadTokenUsage(): void {
+    this.chatService.getTokenUsage().subscribe({
+      next: (res) => {
+        this.tokenUsageData = res;
+      },
+      error: () => {
+        this.tokenUsageData = null;
+      }
+    });
+    this.loadUserBudget();
+  }
+
+  loadUserBudget(): void {
+    this.chatService.getUserBudget().subscribe({
+      next: (res) => {
+        this.userBudget = res;
+        this.quotaExceeded = res.remaining <= 0;
+      },
+      error: () => {
+        this.userBudget = null;
+        this.quotaExceeded = false;
+      }
     });
   }
 
@@ -255,6 +405,7 @@ export class App {
         this.crawlHistory = [];
       }
     });
+    this.loadPendingReviews();
   }
 
   setTopTab(tab: 'dashboard' | 'templates' | 'analytics'): void {
@@ -355,34 +506,57 @@ export class App {
               assistantMsg.latencyMs = Math.round(latency);
             }
           } else if (event.type === 'thinking') {
-            // Use rich status from backend
             const status = event.data?.status || '';
             const detail = event.data?.detail || '';
             const stepName = event.data?.step || 'Agent working';
             
+            // Update Pipeline Visualizer (Module 4)
+            this.updatePipelineStep(stepName, detail || status);
+
+            // Track Supervisor routing (Module 6)
+            if (stepName === 'Supervisor') {
+              this.lastComplexityLevel = status.toLowerCase().includes('complex') ? 'complex' : 'simple';
+              this.supervisorNotes = detail || status;
+            }
+
             if (status) {
               this.thinkingStatus = status;
               this.thinkingDetail = detail;
             } else {
-              // Fallback to step-based messages
-              if (stepName === 'Parser') this.thinkingStatus = '🎯 Analyzing your request with AI...';
-              else if (stepName === 'Researcher') this.thinkingStatus = '🔍 Searching knowledge sources...';
+              if (stepName === 'Parser') this.thinkingStatus = '🎯 Analyzing your request...';
+              else if (stepName === 'Researcher') this.thinkingStatus = '🔍 Searching knowledge...';
+              else if (stepName === 'Supervisor') this.thinkingStatus = '🧠 Routing pipeline...';
+              else if (stepName === 'Deep_Researcher') this.thinkingStatus = '📚 Deep-diving legal sources...';
               else if (stepName === 'Writer') this.thinkingStatus = '✍️ Generating content...';
               else if (stepName === 'Editor') this.thinkingStatus = '🔬 Reviewing quality...';
               else this.thinkingStatus = `${stepName} is working...`;
               this.thinkingDetail = '';
             }
+          } else if (event.type === 'chunk') {
+            this.stopThinkingCycle();
+            this.isTyping = true;
+            assistantMsg.text += (event.data?.chunk || '');
+            this.scrollChatToBottom();
           } else if (event.type === 'done') {
             this.stopThinkingCycle();
             const response = event.data as ChatApiResponse;
             this.sessionId = response.session_id;
             this.generatedAt = new Date();
             this.selectedReport = null;
-            assistantMsg.text = response.generated.draft;
             assistantMsg.payload = response;
             assistantMsg.latencyMs = Date.now() - startTime;
             this.loading = false;
+            // Mark all pipeline steps as done
+            for (const s of this.pipelineSteps) s.status = 'done';
+            // Track detected language (Module 3)
+            this.detectedLanguage = response.parsed?.language || 'en';
+            // Trigger smooth typewriter UI
+            this.isTyping = false;
+            if (!assistantMsg.text) {
+              assistantMsg.text = response.generated.draft;
+            }
             this.scrollChatToBottom();
+            
           } else if (event.type === 'error') {
             this.stopThinkingCycle();
             this.loading = false;
@@ -442,7 +616,7 @@ export class App {
   }
 
   onPromptKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       this.sendPrompt();
     }
@@ -539,6 +713,32 @@ export class App {
     });
   }
 
+  loadPendingReviews(): void {
+    this.pendingReviewsLoading = true;
+    this.chatService.getPendingReviews().subscribe({
+      next: (reviews) => {
+        this.pendingReviewsLoading = false;
+        this.pendingReviews = reviews;
+      },
+      error: () => {
+        this.pendingReviewsLoading = false;
+        // Optionally show error
+      }
+    });
+  }
+
+  approveReview(runId: string): void {
+    this.chatService.updateReview(runId, { action: 'Approve' }).subscribe(() => {
+      this.loadPendingReviews();
+    });
+  }
+
+  rejectReview(runId: string): void {
+    this.chatService.updateReview(runId, { action: 'Reject', feedback: 'Rejected by Editor' }).subscribe(() => {
+      this.loadPendingReviews();
+    });
+  }
+
   openReport(reportId: string): void {
     this.reportsError = '';
     this.chatService.getReport(reportId).subscribe({
@@ -611,7 +811,7 @@ export class App {
       });
   }
 
-  exportDraft(markdown: string, format: 'docx' | 'html'): void {
+  exportDraft(markdown: string, format: 'docx' | 'pdf' | 'html'): void {
     this.chatService.exportChat(markdown, format).subscribe({
       next: (blob) => {
         const url = window.URL.createObjectURL(blob);
@@ -627,6 +827,189 @@ export class App {
         this.errorMessage = `Unable to export to ${format.toUpperCase()}.`;
       }
     });
+  }
+
+  // ── Rich Text Editor State ──
+  editorToolbarVisible: Record<number, boolean> = {};
+  editableMode: Record<number, boolean> = {};
+  currentTextColor = '#000000';
+  currentHighlightColor = '#ffff00';
+  currentFontSizeIndex = 3; // maps to fontSize "3" = 12pt
+  pageOrientation: 'portrait' | 'landscape' = 'portrait';
+  pageSize: 'a4' | 'letter' | 'legal' = 'a4';
+  private _selectedImage: HTMLImageElement | null = null;
+
+  setPageOrientation(orientation: 'portrait' | 'landscape'): void {
+    this.pageOrientation = orientation;
+  }
+
+  setPageSize(size: string): void {
+    this.pageSize = size as 'a4' | 'letter' | 'legal';
+  }
+
+  onEditableClick(event: MouseEvent): void {
+    const target = event.target as HTMLElement;
+
+    // ── Image click: select and show resize handles ──
+    if (target.tagName === 'IMG') {
+      event.preventDefault();
+      this._selectImage(target as HTMLImageElement);
+    } else {
+      this._deselectImage();
+    }
+  }
+
+  private _selectImage(img: HTMLImageElement): void {
+    this._deselectImage(); // clear previous
+    this._selectedImage = img;
+    img.classList.add('img-selected');
+
+    // Create resize handle
+    const handle = document.createElement('div');
+    handle.className = 'img-resize-handle';
+    handle.contentEditable = 'false';
+
+    // Position handle relative to image
+    const wrapper = document.createElement('span');
+    wrapper.className = 'img-resize-wrapper';
+    wrapper.contentEditable = 'false';
+    img.parentNode?.insertBefore(wrapper, img);
+    wrapper.appendChild(img);
+    wrapper.appendChild(handle);
+
+    // Drag to resize
+    let startX = 0;
+    let startWidth = 0;
+
+    const onMouseDown = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      startX = e.clientX;
+      startWidth = img.offsetWidth;
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      const dx = e.clientX - startX;
+      const newWidth = Math.max(50, startWidth + dx);
+      img.style.width = newWidth + 'px';
+      img.style.height = 'auto';
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    handle.addEventListener('mousedown', onMouseDown);
+  }
+
+  private _deselectImage(): void {
+    if (this._selectedImage) {
+      this._selectedImage.classList.remove('img-selected');
+      // Unwrap from resize wrapper
+      const wrapper = this._selectedImage.closest('.img-resize-wrapper');
+      if (wrapper && wrapper.parentNode) {
+        wrapper.parentNode.insertBefore(this._selectedImage, wrapper);
+        wrapper.remove();
+      }
+      this._selectedImage = null;
+    }
+  }
+
+  toggleEditorToolbar(msgIndex: number): void {
+    const wasVisible = this.editorToolbarVisible[msgIndex];
+    this.editorToolbarVisible[msgIndex] = !wasVisible;
+
+    if (!wasVisible) {
+      // ENTERING edit mode: capture rendered HTML from display div BEFORE Angular hides it
+      const displayEl = document.getElementById(`msg-display-${msgIndex}`);
+      const capturedHtml = displayEl ? displayEl.innerHTML : '';
+
+      this.editableMode[msgIndex] = true;
+
+      // Wait for Angular to render the edit div, then populate and focus
+      setTimeout(() => {
+        const editEl = document.getElementById(`msg-content-${msgIndex}`);
+        if (editEl) {
+          editEl.innerHTML = capturedHtml;
+          editEl.focus();
+        }
+      }, 0);
+    } else {
+      // EXITING edit mode: clean up image selection + save edits
+      this._deselectImage(); // Remove any active resize handles before saving
+      const editEl = document.getElementById(`msg-content-${msgIndex}`);
+      if (editEl) {
+        // Store edited HTML so it renders correctly in display mode
+        const msg = this.messages[msgIndex];
+        if (msg) {
+          (msg as any)._editedHtml = editEl.innerHTML;
+        }
+      }
+      this.editableMode[msgIndex] = false;
+    }
+  }
+
+  isEditorToolbarVisible(msgIndex: number): boolean {
+    return !!this.editorToolbarVisible[msgIndex];
+  }
+
+  isContentEditable(msgIndex: number): boolean {
+    return !!this.editableMode[msgIndex];
+  }
+
+  execFormatCommand(command: string, value: string = ''): void {
+    document.execCommand(command, false, value || undefined);
+  }
+
+  formatHeading(level: string): void {
+    if (level) {
+      document.execCommand('formatBlock', false, level);
+    }
+  }
+
+  changeFontSize(delta: number): void {
+    this.currentFontSizeIndex = Math.max(1, Math.min(7, this.currentFontSizeIndex + delta));
+    document.execCommand('fontSize', false, String(this.currentFontSizeIndex));
+  }
+
+  applyTextColor(color: string): void {
+    this.currentTextColor = color;
+    document.execCommand('foreColor', false, color);
+  }
+
+  applyHighlightColor(color: string): void {
+    this.currentHighlightColor = color;
+    document.execCommand('hiliteColor', false, color);
+  }
+
+  insertLink(): void {
+    const url = prompt('Enter URL:', 'https://');
+    if (url) {
+      document.execCommand('createLink', false, url);
+    }
+  }
+
+  insertImage(): void {
+    const url = prompt('Enter image URL:', 'https://');
+    if (url) {
+      document.execCommand('insertImage', false, url);
+    }
+  }
+
+  getEditedContent(msgIndex: number): string {
+    const el = document.querySelector(`#msg-content-${msgIndex}`) as HTMLElement;
+    return el ? el.innerHTML : '';
+  }
+
+  // Used by display div to show edited HTML if user has edited, otherwise original markdown
+  getDisplayHtml(msg: any): any {
+    if (msg._editedHtml) {
+      return this._sanitizer.bypassSecurityTrustHtml(msg._editedHtml);
+    }
+    return this._markdownPipeInstance.transform(msg.text || '');
   }
 
   usePromptTemplate(sample: string): void {
@@ -874,14 +1257,37 @@ export class App {
   }
 
   private buildConfiguredPrompt(basePrompt: string): string {
-    return [
+    const lines = [
       basePrompt,
       '',
       'Editorial settings:',
       `- tone: ${this.selectedTone}`,
       `- target_word_count: ${this.selectedWordCount}`,
       `- target_audience: ${this.selectedAudience}`,
-    ].join('\n');
+    ];
+
+    // Language injection (Module 3)
+    if (this.selectedLanguage !== 'Auto') {
+      lines.push(`- language: ${this.selectedLanguage}`);
+    }
+
+    if (this.selectedSectionCount !== 'Auto') {
+      const secCount = parseInt(this.selectedSectionCount);
+      if (!isNaN(secCount)) {
+        lines.push(`- target_sections: ${secCount}`);
+      }
+    }
+
+    if (this.selectedImageCount !== 'Auto') {
+      const imgCount = parseInt(this.selectedImageCount);
+      if (!isNaN(imgCount)) {
+        lines.push(`- target_images: ${imgCount}`);
+      } else if (this.selectedImageCount === 'No images') {
+        lines.push(`- target_images: 0`);
+      }
+    }
+
+    return lines.join('\n');
   }
 
   // --- Auth Methods ---
@@ -889,6 +1295,7 @@ export class App {
     this.authMode = mode;
     this.showAuthModal = true;
     this.authError = '';
+    this.authSuccess = '';
     this.authUsername = '';
     this.authPassword = '';
   }
@@ -905,13 +1312,14 @@ export class App {
 
     this.authLoading = true;
     this.authError = '';
+    this.authSuccess = '';
 
     if (this.authMode === 'login') {
       this.authService.login(this.authUsername, this.authPassword).subscribe({
         next: () => {
           this.authLoading = false;
           this.closeAuthModal();
-          this.loadSessions(); // Reload sessions for the logged-in user
+          this.loadSessions();
         },
         error: (err) => {
           this.authLoading = false;
@@ -921,19 +1329,15 @@ export class App {
     } else {
       this.authService.register(this.authUsername, this.authPassword).subscribe({
         next: () => {
-          // Auto login after register
-          this.authService.login(this.authUsername, this.authPassword).subscribe({
-            next: () => {
-              this.authLoading = false;
-              this.closeAuthModal();
-              this.loadSessions();
-            },
-            error: () => {
-              this.authLoading = false;
-              this.authMode = 'login';
-              this.authError = 'Registration successful. Please log in.';
-            }
-          });
+          this.authLoading = false;
+          this.authSuccess = '✅ Registration successful! Switching to login...';
+          this.authError = '';
+          // Auto-switch to login after 1.5 seconds
+          setTimeout(() => {
+            this.authMode = 'login';
+            this.authSuccess = 'Account created! Please sign in.';
+            this.authPassword = '';
+          }, 1500);
         },
         error: (err) => {
           this.authLoading = false;
@@ -949,5 +1353,65 @@ export class App {
     this.messages.length = 0;
     this.sessions = [];
     this.activeMenu = 'new';
+  }
+
+  // ── Module 1: Feedback Methods ──
+  submitFeedback(msgIndex: number, rating: 1 | -1): void {
+    if (this.feedbackMap[msgIndex] !== undefined) return;
+    const msg = this.messages[msgIndex];
+    const reportId = msg?.payload?.session_id || this.sessionId || 'unknown';
+    this.feedbackMap[msgIndex] = rating;
+    this.chatService.submitFeedback(reportId, rating).subscribe({
+      error: () => { delete this.feedbackMap[msgIndex]; }
+    });
+  }
+
+  // ── Module 2: Analytics Methods ──
+  loadAnalytics(): void {
+    this.chatService.getAnalyticsTokens().subscribe({ next: (d) => this.analyticsTokens = d, error: () => {} });
+    this.chatService.getAnalyticsQuality().subscribe({ next: (d) => this.analyticsQuality = d, error: () => {} });
+    this.chatService.getAnalyticsCache().subscribe({ next: (d) => this.analyticsCache = d, error: () => {} });
+    this.chatService.getAnalyticsFeedback().subscribe({ next: (d) => this.analyticsFeedback = d, error: () => {} });
+  }
+
+  get qualityEntries(): { key: string; value: number }[] {
+    const data = this.analyticsQuality?.data;
+    if (!data) return [];
+    return Object.entries(data).map(([k, v]) => ({ key: k, value: v as number })).sort((a, b) => b.value - a.value);
+  }
+
+  get qualityTotal(): number {
+    return this.qualityEntries.reduce((sum, e) => sum + e.value, 0);
+  }
+
+  // ── Module 3: Language Helper ──
+  getLanguageLabel(code: string): string {
+    return this.languageOptions.find(l => l.code === code)?.label || code;
+  }
+
+  // ── Module 5: Scheduling Methods ──
+  loadSchedules(): void {
+    this.chatService.getSchedules().subscribe({
+      next: (s) => this.schedules = s || [],
+      error: () => this.schedules = [],
+    });
+  }
+
+  createSchedule(): void {
+    if (!this.newScheduleTopic.trim()) return;
+    this.chatService.createSchedule(this.newScheduleTopic, this.newScheduleLang, this.newScheduleCron).subscribe({
+      next: () => {
+        this.newScheduleTopic = '';
+        this.loadSchedules();
+      },
+      error: () => {}
+    });
+  }
+
+  deleteSchedule(id: number): void {
+    this.chatService.deleteSchedule(id).subscribe({
+      next: () => this.loadSchedules(),
+      error: () => {}
+    });
   }
 }

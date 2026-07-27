@@ -1,0 +1,47 @@
+{
+  "evaluation_timestamp": "2026-05-29T03:57:53Z",
+  "metrics": {
+    "mean_precision_at_k": 1.0,
+    "mean_recall_at_k": 2.0,
+    "mean_mrr": 0.25,
+    "mean_grounding_score": 0.95
+  },
+  "query_details": [
+    {
+      "query": "How long does a national police check take in Australia?",
+      "latency_seconds": 25.15,
+      "precision_at_k": 1.0,
+      "recall_at_k": 2.33,
+      "reciprocal_rank": 0.0,
+      "grounding_score": 0.95,
+      "generation_mode": "llm"
+    },
+    {
+      "query": "What identity documents do I need to supply for a background check?",
+      "latency_seconds": 14.35,
+      "precision_at_k": 1.0,
+      "recall_at_k": 2.33,
+      "reciprocal_rank": 0.0,
+      "grounding_score": 0.95,
+      "generation_mode": "llm"
+    },
+    {
+      "query": "What are the rules for spent convictions under Commonwealth law?",
+      "latency_seconds": 14.44,
+      "precision_at_k": 1.0,
+      "recall_at_k": 2.33,
+      "reciprocal_rank": 0.0,
+      "grounding_score": 0.95,
+      "generation_mode": "llm"
+    },
+    {
+      "query": "Vietnam travel visa requirements and tour packages.",
+      "latency_seconds": 14.6,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "grounding_score": 0.95,
+      "generation_mode": "llm"
+    }
+  ]
+}

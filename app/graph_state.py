@@ -8,6 +8,9 @@ class ParsedData(TypedDict, total=False):
     audience: str
     tone: str
     length: str
+    language: str
+    target_sections: int
+    target_images: int
     context_note: str
 
 class RetrievedDoc(TypedDict):
@@ -37,6 +40,34 @@ class GraphState(TypedDict):
     # Editor feedback
     editor_feedback: str | None
     revision_count: int
+    previous_draft: str | None  # Comparison Gate: track draft before revision
     
     # UI Metadata
     quality_gate_blocked: bool
+    retrieval_meta: dict
+    
+    # Agentic Loop Tracking
+    retrieval_attempts: int
+    tried_queries: list[str]
+    rag_feedback: str | None
+    loop_step: int
+    global_step_count: int  # Circuit Breaker: total node visits across ALL retry loops
+    
+    # Supervisor Architecture
+    complexity_level: str  # "simple" or "complex"
+    supervisor_notes: str
+
+    # Edit Intent: when user wants to modify existing blog (skip RAG)
+    edit_instruction: str | None
+
+    # E2E / API flag
+    from_api: bool
+
+    # ML/DL Quality Control Pipeline
+    ml_features: dict  # Feature vector extracted by ML Data Collector
+    ml_quality_prediction: dict | None  # ML model prediction result
+    
+    # LLM Scorecard Evaluation
+    editor_evaluation: dict | None
+
+

@@ -16,7 +16,7 @@ import { ReportStatus } from './chat.models';
 import { ChatSessionSummary, ChatSessionHistory } from './chat.models';
 
 export interface StreamEvent {
-  type: 'meta' | 'done' | 'error' | 'thinking';
+  type: 'meta' | 'done' | 'error' | 'thinking' | 'chunk';
   data: any;
 }
 
@@ -131,7 +131,7 @@ export class ChatService {
     return this.http.get<ChatSessionHistory>(`${this.apiBase}/chat/sessions/${sessionId}`);
   }
 
-  exportChat(markdown: string, format: 'docx' | 'html' = 'docx'): Observable<Blob> {
+  exportChat(markdown: string, format: 'docx' | 'pdf' | 'html' = 'docx'): Observable<Blob> {
     return this.http.post(
       `${this.apiBase}/chat/export`,
       { markdown, format },
@@ -176,6 +176,56 @@ export class ChatService {
 
   getTokenUsage(): Observable<any> {
     return this.http.get<any>(`${this.apiBase}/admin/token-usage`);
+  }
+
+  getPendingReviews(): Observable<import('./chat.models').PendingReview[]> {
+    return this.http.get<import('./chat.models').PendingReview[]>(`${this.apiBase}/admin/pending-reviews`);
+  }
+
+  updateReview(runId: string, action: import('./chat.models').UpdateReviewAction): Observable<any> {
+    return this.http.post(`${this.apiBase}/admin/reviews/${runId}`, action);
+  }
+
+  // ── Feedback API ──
+  submitFeedback(reportId: string, rating: number, comment = ''): Observable<any> {
+    return this.http.post(`${this.apiBase}/reports/${reportId}/feedback`, { rating, comment });
+  }
+
+  // ── Analytics API ──
+  getAnalyticsTokens(days = 30): Observable<any> {
+    return this.http.get(`${this.apiBase}/admin/analytics/tokens`, { params: { days } });
+  }
+
+  getAnalyticsQuality(days = 30): Observable<any> {
+    return this.http.get(`${this.apiBase}/admin/analytics/quality`, { params: { days } });
+  }
+
+  getAnalyticsCache(): Observable<any> {
+    return this.http.get(`${this.apiBase}/admin/analytics/cache`);
+  }
+
+  getAnalyticsFeedback(): Observable<any> {
+    return this.http.get(`${this.apiBase}/admin/analytics/feedback`);
+  }
+
+  // ── Scheduling API ──
+  getSchedules(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.apiBase}/admin/schedule`);
+  }
+
+  createSchedule(topic: string, language: string, cronExpression: string): Observable<any> {
+    return this.http.post(`${this.apiBase}/admin/schedule`, {
+      topic, language, cron_expression: cronExpression, is_active: true,
+    });
+  }
+
+  deleteSchedule(scheduleId: number): Observable<any> {
+    return this.http.delete(`${this.apiBase}/admin/schedule/${scheduleId}`);
+  }
+
+  // ── User Token Budget API ──
+  getUserBudget(): Observable<any> {
+    return this.http.get(`${this.apiBase}/user/token-budget`);
   }
 }
 

@@ -15,6 +15,17 @@ CREATE TABLE IF NOT EXISTS validex_knowledge (
     approved BOOLEAN NOT NULL,
     content TEXT NOT NULL,
     embedding vector(1536) NOT NULL,
+    -- Legal metadata (Trụ Cột 3: Metadata Enrichment)
+    status TEXT NOT NULL DEFAULT 'in_force',              -- 'in_force', 'repealed', 'amended'
+    jurisdiction TEXT NOT NULL DEFAULT 'Commonwealth',     -- 'Commonwealth', 'NSW', 'VIC', 'QLD', etc.
+    document_type TEXT NOT NULL DEFAULT 'webpage',         -- 'legislation', 'regulation', 'guide', 'faq', 'webpage', 'pdf'
+    act_name TEXT NOT NULL DEFAULT '',                     -- e.g. 'Crimes Act 1914'
+    section_ref TEXT NOT NULL DEFAULT '',                  -- e.g. 'Part VIIC - Section 85ZM'
+    effective_date TEXT NOT NULL DEFAULT '',               -- ISO date: '2024-01-01'
+    parent_context TEXT NOT NULL DEFAULT '',               -- Breadcrumb: 'Crimes Act 1914 > Part VIIC > Division 3'
+    -- Delta Sync tracking
+    last_verified_at TIMESTAMPTZ,
+    superseded_by TEXT DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     fts_content tsvector GENERATED ALWAYS AS (to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, ''))) STORED
 );
@@ -24,6 +35,15 @@ CREATE INDEX IF NOT EXISTS idx_validex_knowledge_fts ON validex_knowledge USING 
 CREATE INDEX IF NOT EXISTS idx_validex_knowledge_topic ON validex_knowledge(topic);
 CREATE INDEX IF NOT EXISTS idx_validex_knowledge_source_domain ON validex_knowledge(source_domain);
 CREATE INDEX IF NOT EXISTS idx_validex_knowledge_provider ON validex_knowledge(embedding_provider);
+
+-- Legal metadata indexes
+CREATE INDEX IF NOT EXISTS idx_validex_knowledge_status ON validex_knowledge(status);
+CREATE INDEX IF NOT EXISTS idx_validex_knowledge_jurisdiction ON validex_knowledge(jurisdiction);
+CREATE INDEX IF NOT EXISTS idx_validex_knowledge_document_type ON validex_knowledge(document_type);
+CREATE INDEX IF NOT EXISTS idx_validex_knowledge_act_name ON validex_knowledge(act_name) WHERE act_name != '';
+-- Composite: the retriever's most common filter pattern
+CREATE INDEX IF NOT EXISTS idx_validex_knowledge_status_jurisdiction ON validex_knowledge(status, jurisdiction);
+
 
 -- HNSW ANN index: better than IVFFlat for small/medium datasets (<100k rows).
 -- IVFFlat requires ~lists*30 rows (lists=100 → 3000 rows) to train well and degrades below that.
@@ -39,11 +59,11 @@ WITH (m = 16, ef_construction = 64);
 -- USING ivfflat (embedding vector_cosine_ops)
 -- WITH (lists = 100);
 
--- Semantic Cache Table
+-- Semantic Cache Table (Updated to 384 dimensions for Local SentenceTransformers)
 CREATE TABLE IF NOT EXISTS validex_semantic_cache (
     id SERIAL PRIMARY KEY,
     prompt_text TEXT NOT NULL,
-    prompt_embedding vector(1536) NOT NULL,
+    prompt_embedding vector(384) NOT NULL,
     generated_response JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -53,3 +73,15 @@ CREATE INDEX IF NOT EXISTS idx_validex_semantic_cache_embedding_hnsw
 ON validex_semantic_cache
 USING hnsw (prompt_embedding vector_cosine_ops)
 WITH (m = 16, ef_construction = 64);
+
+-- Token Usage Tracking Table
+CREATE TABLE IF NOT EXISTS token_usage_log (
+    id SERIAL PRIMARY KEY,
+    date TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INT NOT NULL DEFAULT 0,
+    output_tokens INT NOT NULL DEFAULT 0,
+    request_count INT NOT NULL DEFAULT 0,
+    error_count INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

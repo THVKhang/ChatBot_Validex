@@ -1,0 +1,13 @@
+Employer compliance in background screening requires a structured approach to consent, processing, decision-making, record retention, and ongoing governance. Australian employers have legal obligations under privacy law, anti-discrimination law, and industry-specific regulations when conducting police checks and other background screening.
+
+Consent is the foundation of lawful screening. Before initiating a police check, the employer must obtain the applicant's informed, written consent. The consent form should clearly state the purpose of the check, what information will be obtained, who will have access to the results, and how long the information will be retained. Under the Privacy Act 1988, personal information collected for screening purposes must only be used for that purpose.
+
+When a police check returns a disclosable result (a non-clean outcome), the employer must follow a fair assessment process. This means evaluating the relevance of the disclosed information to the specific role. Key factors to consider include the nature of the offence, how long ago it occurred, the applicant's age at the time, the applicant's conduct since the offence, and the specific duties and risk profile of the role.
+
+Employers should not adopt blanket policies that automatically exclude applicants with any criminal history. The Australian Human Rights Commission advises that criminal record discrimination may constitute unlawful discrimination under federal and state anti-discrimination legislation. Each case should be assessed individually based on the inherent requirements of the role.
+
+Record retention obligations require employers to store screening results securely and for no longer than necessary. Industry guidelines recommend retaining police check results for no more than 12 months unless a longer period is required by law or regulation. Access to screening results should be restricted to authorised personnel only — typically the HR compliance officer or designated decision-maker.
+
+Ongoing governance includes conducting periodic audits of screening practices, updating screening policies when legislation changes, training hiring managers on lawful assessment procedures, and maintaining a register of all checks conducted. Employers in regulated industries (childcare, aged care, healthcare, financial services) should review their screening requirements annually.
+
+For organisations using Validex, compliance is supported through automated consent collection, secure result delivery, audit trail maintenance, and integration with HR systems to track screening status across the workforce.

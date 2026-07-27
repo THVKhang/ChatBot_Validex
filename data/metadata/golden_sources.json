@@ -1,0 +1,198 @@
+{
+  "federal": [
+    {
+      "url": "https://www.acic.gov.au/our-services/national-police-checking-service",
+      "jurisdiction": "Commonwealth",
+      "topic": "police_check",
+      "source_type": "webpage",
+      "title": "ACIC - National Police Checking Service"
+    },
+    {
+      "url": "https://www.acic.gov.au/our-services/national-police-checking-service/information-applicants-background-checks",
+      "jurisdiction": "Commonwealth",
+      "topic": "police_check",
+      "source_type": "guide",
+      "title": "ACIC - Information for Applicants"
+    },
+    {
+      "url": "https://www.acic.gov.au/our-services/national-police-checking-service/frequently-asked-questions",
+      "jurisdiction": "Commonwealth",
+      "topic": "police_check",
+      "source_type": "faq",
+      "title": "ACIC - NPCS FAQ"
+    },
+    {
+      "url": "https://www.oaic.gov.au/privacy/privacy-guidance-for-organisations-and-government-agencies",
+      "jurisdiction": "Commonwealth",
+      "topic": "compliance",
+      "source_type": "guide",
+      "title": "OAIC - Privacy Guidance for Organisations"
+    },
+    {
+      "url": "https://www.legislation.gov.au/C2004A03712/latest/text",
+      "jurisdiction": "Commonwealth",
+      "topic": "legislation",
+      "source_type": "legislation",
+      "act_name": "Crimes Act 1914",
+      "title": "Crimes Act 1914 (Cth) - Full Text"
+    },
+    {
+      "url": "https://www.legislation.gov.au/C2004A03712/latest/text",
+      "jurisdiction": "Commonwealth",
+      "topic": "legislation",
+      "source_type": "legislation",
+      "act_name": "Privacy Act 1988",
+      "title": "Privacy Act 1988 (Cth)"
+    },
+    {
+      "url": "https://www.afp.gov.au/what-we-do/police-checks",
+      "jurisdiction": "Commonwealth",
+      "topic": "police_check",
+      "source_type": "webpage",
+      "title": "AFP - Police Checks"
+    }
+  ],
+  "tables": [
+    {
+      "url": "https://www.servicesaustralia.gov.au/how-to-confirm-your-identity",
+      "jurisdiction": "Commonwealth",
+      "topic": "100_point_id",
+      "source_type": "guide",
+      "title": "Services Australia - Identity Confirmation (100-Point)"
+    },
+    {
+      "url": "https://immi.homeaffairs.gov.au/visas/already-have-a-visa/check-visa-details-and-conditions/check-conditions-online",
+      "jurisdiction": "Commonwealth",
+      "topic": "immigration",
+      "source_type": "guide",
+      "title": "Home Affairs - VEVO Check Conditions"
+    },
+    {
+      "url": "https://www.fairwork.gov.au/find-help-for/visa-holders-migrants",
+      "jurisdiction": "Commonwealth",
+      "topic": "immigration",
+      "source_type": "guide",
+      "title": "Fair Work - Visa Holders and Migrants"
+    }
+  ],
+  "state_specific": [
+    {
+      "url": "https://www.ocg.nsw.gov.au/working-with-children-check",
+      "jurisdiction": "NSW",
+      "topic": "wwcc",
+      "source_type": "guide",
+      "title": "NSW - Working With Children Check (OCG)"
+    },
+    {
+      "url": "https://legislation.nsw.gov.au/view/html/inforce/current/act-1998-009",
+      "jurisdiction": "NSW",
+      "topic": "legislation",
+      "source_type": "legislation",
+      "act_name": "Criminal Records Act 1991 (NSW)",
+      "title": "Criminal Records Act 1991 (NSW)"
+    },
+    {
+      "url": "https://www.workingwithchildren.vic.gov.au/",
+      "jurisdiction": "VIC",
+      "topic": "wwcc",
+      "source_type": "guide",
+      "title": "VIC - Working With Children Check"
+    },
+    {
+      "url": "https://www.legislation.vic.gov.au/in-force/acts/sentencing-act-1991",
+      "jurisdiction": "VIC",
+      "topic": "legislation",
+      "source_type": "legislation",
+      "act_name": "Sentencing Act 1991 (VIC)",
+      "title": "Sentencing Act 1991 (VIC) - Spent Convictions"
+    },
+    {
+      "url": "https://www.qld.gov.au/law/crime-and-police/criminal-records-background-checks/blue-card-system",
+      "jurisdiction": "QLD",
+      "topic": "wwcc",
+      "source_type": "guide",
+      "title": "QLD - Blue Card System (WWCC)"
+    },
+    {
+      "url": "https://www.legislation.qld.gov.au/view/html/inforce/current/act-1986-020",
+      "jurisdiction": "QLD",
+      "topic": "legislation",
+      "source_type": "legislation",
+      "act_name": "Criminal Law (Rehabilitation of Offenders) Act 1986 (QLD)",
+      "title": "Criminal Law Rehabilitation Act 1986 (QLD)"
+    },
+    {
+      "url": "https://www.wa.gov.au/service/community-services/community-support/working-children-check",
+      "jurisdiction": "WA",
+      "topic": "compliance",
+      "source_type": "guide",
+      "title": "WA - Working With Children Check"
+    },
+    {
+      "url": "https://www.legislation.wa.gov.au/legislation/statutes.nsf/law_a822.html",
+      "jurisdiction": "WA",
+      "topic": "legislation",
+      "source_type": "legislation",
+      "act_name": "Spent Convictions Act 1988 (WA)",
+      "title": "Spent Convictions Act 1988 (WA)"
+    },
+    {
+      "url": "https://www.sa.gov.au/topics/rights-and-law/criminal-law/criminal-records/spent-convictions",
+      "jurisdiction": "SA",
+      "topic": "spent_convictions",
+      "source_type": "guide",
+      "title": "SA - Spent Convictions"
+    },
+    {
+      "url": "https://www.cbos.tas.gov.au/topics/licensing-and-registration/registrations/working-with-vulnerable-people",
+      "jurisdiction": "TAS",
+      "topic": "wwcc",
+      "source_type": "guide",
+      "title": "TAS - Working with Vulnerable People"
+    },
+    {
+      "url": "https://www.accesscanberra.act.gov.au/s/article/working-with-vulnerable-people-registration",
+      "jurisdiction": "ACT",
+      "topic": "wwcc",
+      "source_type": "guide",
+      "title": "ACT - Working with Vulnerable People Registration"
+    },
+    {
+      "url": "https://nt.gov.au/law/crime/police-check",
+      "jurisdiction": "NT",
+      "topic": "police_check",
+      "source_type": "guide",
+      "title": "NT - Police Check"
+    }
+  ],
+  "industry": [
+    {
+      "url": "https://www.agedcarequality.gov.au/providers/worker-screening",
+      "jurisdiction": "Commonwealth",
+      "topic": "aged_care",
+      "source_type": "guide",
+      "title": "Aged Care Quality - Worker Screening"
+    },
+    {
+      "url": "https://www.ndiscommission.gov.au/workers/worker-screening",
+      "jurisdiction": "Commonwealth",
+      "topic": "ndis",
+      "source_type": "guide",
+      "title": "NDIS Commission - Worker Screening"
+    },
+    {
+      "url": "https://www.ahpra.gov.au/registration/criminal-history-checks.aspx",
+      "jurisdiction": "Commonwealth",
+      "topic": "healthcare",
+      "source_type": "guide",
+      "title": "Ahpra - Criminal History Checks for Health Practitioners"
+    },
+    {
+      "url": "https://www.agsva.gov.au/security-clearances",
+      "jurisdiction": "Commonwealth",
+      "topic": "security_clearance",
+      "source_type": "guide",
+      "title": "AGSVA - Security Clearances"
+    }
+  ]
+}

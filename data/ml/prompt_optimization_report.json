@@ -1,0 +1,43 @@
+{
+  "best_candidate": "Prompt_B",
+  "best_score": 0.34,
+  "summary": {
+    "Prompt_A": {
+      "average_overall": 0.2776,
+      "average_jaccard": 0.2587,
+      "average_readability": 0.0,
+      "average_no_fluff": 1.0
+    },
+    "Prompt_B": {
+      "average_overall": 0.34,
+      "average_jaccard": 0.3,
+      "average_readability": 0.8333,
+      "average_no_fluff": 0.0
+    }
+  },
+  "details": {
+    "Prompt_A": [
+      {
+        "score": 0.2776,
+        "jaccard": 0.2587,
+        "readability": 0.0,
+        "no_fluff": 1.0,
+        "cta_match": 0.0,
+        "case_id": "gen_001",
+        "generated_text": "**Police Check Processing Time in Australia: What First-Time Applicants Need to Know**\n\nThe Australian Criminal Intelligence Commission (ACIC) manages the National Police Check system, which is governed by the **Australian Federal Police Act 1979**. As a first-time applicant, it's essential to understand the police check processing time in Australia to avoid delays and ensure a smooth onboarding process.\n\n**Understanding Police Check Requirements**\n\nTo initiate a police check, you'll need to provide valid identification documents, such as a **driver's license** or **passport**. You'll also need to complete a **National Police Check application form**, which requires personal and contact details. Make sure to:\n\n* Provide accurate and up-to-date information\n* Sign the form in the presence of an authorized witness (if required)\n* Attach the necessary identification documents\n\n**Processing Time and Validity Criteria**\n\nThe police check processing time in Australia typically takes one to three business days. However, this timeframe may vary depending on the data source and verification complexity. For example:\n\n* **Standard checks**: usually take one to three business days\n* **Enhanced checks**: may take longer, up to 10 business days\n* **International checks**: may take several weeks or even months\n\n**Tips for First-Time Applicants**\n\nTo ensure a smooth police check process, first-time applicants should:\n\n* Prepare ID documents early to avoid delays\n* Confirm form details carefully to avoid errors\n* Allow extra time before onboarding deadlines\n* Check the status of your application regularly to avoid missing updates"
+      }
+    ],
+    "Prompt_B": [
+      {
+        "score": 0.34,
+        "jaccard": 0.3,
+        "readability": 0.8333,
+        "no_fluff": 0.0,
+        "cta_match": 0.0,
+        "case_id": "gen_001",
+        "generated_text": "In conclusion, a police check in Australia can take anywhere from one to three business days to process. However, this timeframe can vary depending on the complexity of the verification process and the data source used. \n\nTo ensure a smooth application process, first-time applicants should prepare their identification documents well in advance. This includes having all necessary documents, such as a valid passport or driver's license, ready to go. \n\nIt's also essential to double-check the details on the application form to avoid any delays. Make sure to enter all information correctly, including your name, date of birth, and address. \n\nAllowing extra time before onboarding deadlines is crucial, as delays can occur due to various reasons. A clear understanding of the police check process can help reduce stress and improve completion rates. \n\nBy following these steps and being prepared, first-time applicants can navigate the police check process with ease and confidence."
+      }
+    ],
+    "Prompt_C": []
+  }
+}
