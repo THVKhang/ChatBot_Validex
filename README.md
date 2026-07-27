@@ -1,331 +1,601 @@
 # ChatBot Validex
 
-AI-powered blog generation platform for Australian Police Check and Background Screening content. Built with a **multi-agent RAG pipeline** (LangGraph), **cross-encoder reranking**, and a **multi-layer content quality engine** to produce publication-ready articles for [validex.com.au](https://validex.com.au).
+**AI-powered blog generation platform** for Australian Police Check & Background Screening content.
 
-## Architecture Overview
+Built with **LangGraph multi-agent pipeline** (9 nodes), **pgvector RAG**, **cross-encoder reranking**, and a **4-layer content quality engine** to produce publication-ready articles for [validex.com.au](https://validex.com.au).
+
+---
+
+## Table of Contents
+
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Project Structure](#project-structure)
+- [API Reference (35 Endpoints)](#api-reference)
+- [Pipeline Architecture](#pipeline-architecture)
+- [Database Schema](#database-schema)
+- [Configuration Reference](#configuration-reference)
+- [Deployment](#deployment)
+- [Testing](#testing)
+- [Maintenance Runbooks](#maintenance-runbooks)
+- [License](#license)
+
+---
+
+## Architecture
 
 ```
-User Prompt
-    │
-    ▼
-┌─────────┐    ┌────────────┐    ┌───────────────┐    ┌────────────┐
-│  Parser  │───▶│ Researcher │───▶│ RAG Evaluator │───▶│ Supervisor │
-│  (NLP)   │    │ (Multi-Q)  │    │  (Grounding)  │    │  (Router)  │
-└─────────┘    └────────────┘    └───────────────┘    └────────────┘
-                     │                                       │
-              ┌──────┴──────┐                         ┌──────┴──────┐
-              │  Reranker   │                         │   Writer    │
-              │(CrossEnc.)  │                         │ (3-Stage)   │
-              └─────────────┘                         └──────┬──────┘
-                                                             │
-                                                      ┌──────┴──────┐
-                                                      │   Editor    │
-                                                      │ (Hybrid QA) │
-                                                      └─────────────┘
-                                                             │
-                                                             ▼
-                                                      Published Blog
+                          ┌──────────────────────────────────┐
+                          │    Angular 19 Frontend (SPA)     │
+                          │   app.ts · chat.service.ts       │
+                          │   auth.service.ts · markdown     │
+                          └──────────────┬───────────────────┘
+                                         │ HTTP / SSE
+                          ┌──────────────▼───────────────────┐
+                          │    FastAPI (api_server.py)        │
+                          │  35 endpoints · JWT auth · CORS  │
+                          │  Rate limiting · LLM semaphore   │
+                          └──────────────┬───────────────────┘
+                                         │
+                ┌────────────────────────▼──────────────────────────┐
+                │              main.py — Orchestrator                │
+                │   Semantic Cache → LangGraph → sanitize_payload   │
+                └────────────────────────┬──────────────────────────┘
+                                         │
+        ┌─────────────────────────────────▼──────────────────────────────────┐
+        │                    LangGraph State Machine (9 Nodes)               │
+        │                                                                    │
+        │  Parser → Researcher → RAG Evaluator → Supervisor                 │
+        │                                          ↓           ↓             │
+        │                                      Writer    Deep Researcher     │
+        │                                        ↓            ↓              │
+        │                                      Editor ←──── Writer           │
+        │                                        ↓                           │
+        │                                   ML Quality Gate → ML Collector   │
+        └────────────────────────────────────────────────────────────────────┘
+                                         │
+                ┌────────────────────────▼──────────────────────────┐
+                │                  Data Layer                       │
+                │  PostgreSQL + pgvector │ Redis │ Unsplash API     │
+                └──────────────────────────────────────────────────┘
 ```
+
+### Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| **Frontend** | Angular 19, TypeScript, SCSS |
+| **Backend** | Python 3.11+, FastAPI, Uvicorn |
+| **AI/ML Pipeline** | LangGraph, LangChain, Gemini / OpenAI |
+| **Vector Database** | PostgreSQL + pgvector (HNSW index) |
+| **Caching** | Redis (sessions, rate limits), Semantic Cache (embedding-based) |
+| **Embeddings** | Google `text-embedding-004` / OpenAI `text-embedding-3-small` |
+| **Local ML** | ONNX Cross-Encoder (reranker), Sentence-Transformers, NLI |
+| **Auth** | JWT (HS256) + bcrypt |
+| **Export** | python-docx, xhtml2pdf, markdown2 |
+
+---
+
+## Prerequisites
+
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| Python | 3.11+ | Required for `typing` features |
+| Node.js | 18+ | For Angular frontend |
+| PostgreSQL | 14+ | With `pgvector` extension enabled |
+| Redis | 6+ | Optional but recommended for sessions |
+| Google API Key | — | Free tier available via [AI Studio](https://aistudio.google.com/) |
+
+---
 
 ## Quick Start
 
-1. Install dependencies
+### 1. Clone & Setup Python Environment
 
 ```bash
+git clone https://github.com/THVKhang/ChatBot_Validex.git
+cd ChatBot_Validex
+
+# Create virtual environment
+python -m venv .venv
+
+# Activate (Windows)
+.\.venv\Scripts\activate
+
+# Activate (macOS/Linux)
+source .venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-2. Run backend API
-
-**Option 1: The simple way (Starts BOTH Backend and Frontend)**
-Just run the master script. It will auto-detect available ports and start everything:
-```bash
-python run.py
-```
-
-**Option 2: Using uvicorn directly**
-```bash
-# Windows
-.\.venv\Scripts\activate
-python -m uvicorn app.api_server:app --reload --host 0.0.0.0 --port 8000
-
-# macOS / Linux
-source .venv/bin/activate
-python -m uvicorn app.api_server:app --reload --host 0.0.0.0 --port 8000
-```
-
-3. Run frontend
+### 2. Configure Environment
 
 ```bash
-cd ui/angular-frontend
-npm install  # (Only needed the first time)
-npm start
+cp .env.example .env
+# Edit .env with your values (see Configuration Reference below)
 ```
 
-4. Run tests
+**Minimum required variables:**
+```env
+GOOGLE_API_KEY=your_google_api_key
+DATABASE_URL=postgresql://user:pass@host:5432/dbname?sslmode=require
+JWT_SECRET_KEY=your_random_secret_string
+USE_LIVE_LLM=1
+```
+
+### 3. Initialize Database
 
 ```bash
-# Windows
-.\.venv\Scripts\python.exe -m pytest -q
-
-# macOS / Linux
-./.venv/bin/python -m pytest -q
-```
-
-## Gemini API Setup (Google AI Studio)
-
-Use this mode when you want free-tier testing for generation + embeddings with Gemini.
-
-1. Install integration package:
-
-```bash
-pip install langchain-google-genai
-```
-
-2. Update `.env`:
-   1. `GOOGLE_API_KEY=your_google_key`
-   2. `LLM_PROVIDER=google`
-   3. `EMBEDDING_PROVIDER=google`
-   4. `GOOGLE_MODEL_NAME=models/gemini-2.5-flash`
-   5. `GOOGLE_EMBEDDING_MODEL=models/gemini-embedding-001`
-   6. `USE_LIVE_LLM=1`
-
-3. Notes:
-   1. `OPENAI_API_KEY` can stay empty when using Google provider.
-   2. Structured output still works with `USE_STRUCTURED_OUTPUT=1`.
-   3. If pgvector dimensions differ from previous embeddings, recreate table or re-ingest consistently.
-
-## Agentic RAG Pipeline (LangGraph)
-
-The system uses a **LangGraph StateGraph** with specialized agent nodes. Each node is a focused expert that transforms the shared state:
-
-| Node | Role | Key Features |
-|------|------|-------------|
-| **Parser** | NLP intent extraction | Detects topic, tone, audience, length, how-to vs informational intent |
-| **Researcher** | Multi-query retrieval + web search | Query expansion via local semantics, deep scraping, research cache |
-| **Reranker** | Cross-encoder relevance scoring | ms-marco-MiniLM-L-12-v2 (ONNX, CPU, ~50ms), topic isolation penalty |
-| **RAG Evaluator** | Grounding quality gate | Validates retrieved context is sufficient before generation |
-| **Supervisor** | Agentic loop controller | Routes to Writer or back to Researcher (max 4 iterations) |
-| **Writer** | 3-stage blog generation | Stage 1: Outline planning → Stage 2: Chunked parallel generation → Stage 3: Self-review |
-| **Editor** | Hybrid quality assurance | Layer 0: Code-based structural checks → Layer 1: SEO analysis → Layer 2: LLM evaluation |
-
-### Writer 3-Stage Pipeline
-
-```
-Stage 1: _plan_outline()
-  ├── Detect how-to intent → force Step 1, Step 2, Step 3...
-  ├── Topic focus: "Stay on {topic}, don't mix check types"
-  └── Anti-repetition: "Each section covers DIFFERENT aspects"
-
-Stage 2: _generate() — Chunked parallel generation
-  ├── Per-section LLM calls with assigned key points
-  └── Mandatory outline injection: "Cover ONLY assigned points"
-
-Stage 3: _self_review()
-  ├── 9 quality checks: accuracy, citations, coherence, completeness,
-  │   tone, format compliance, no repetition, topic focus, no file paths
-  └── Rewrites draft if structural issues detected
-```
-
-### Editor Hybrid Quality Gate
-
-```
-Layer 0: Code-based structural checks (0 LLM tokens)
-  ├── E01: Repetition detection (4-gram analysis)
-  ├── E03: Length compliance (min/max word count)
-  ├── E04: Heading structure (minimum ## sections)
-  ├── E05: Paragraph balance (thin paragraph detection)
-  ├── E06: Conclusion check
-  ├── E08: File path leak detection (file://C:/ patterns)
-  ├── E09: Step-by-step compliance (verify numbered steps when requested)
-  └── E10: Repetitive intro detection (>60% word overlap between openers)
-
-Layer 1: SEO + Readability checks (0 LLM tokens)
-  └── Keyword density, heading hierarchy, meta tag analysis
-
-Layer 2: LLM evaluation (uses separate Editor model)
-  └── Debate Agent pattern: different model/temperature from Writer
-```
-
-### Debate Agent Pattern
-
-The Writer and Editor use **different LLM configurations** to prevent self-confirmation bias:
-
-| Agent | Model | Temperature | Purpose |
-|-------|-------|-------------|---------|
-| Writer | `GOOGLE_MODEL_NAME` (gemini-2.5-flash) | 0.7 (creative) | Prose quality, varied vocabulary |
-| Editor | `EDITOR_GOOGLE_MODEL_NAME` (configurable) | 0.1 (strict) | Objective evaluation, consistent scoring |
-
-## Content Quality Engine
-
-The system enforces content quality through multiple defense layers:
-
-### Source Path Sanitization (3-layer)
-1. **Reference builder** (`_doc_reference_line`): Converts `file://C:/...` paths to `validex.com.au` or `act_name` references
-2. **Draft post-processor** (`main.py`): Regex strips any remaining `file://` URLs and `C:\` paths
-3. **Sources list sanitizer** (`main.py`): Extracts filenames from local paths in `sources_used`
-
-### Topic Isolation
-1. **Retriever penalty**: WWCC docs get 0.4× relevance score when query is about police checks (and vice versa)
-2. **System prompt rule**: LLM instructed to focus ONLY on the check type in the user's question
-3. **Self-review check**: Removes off-topic content about unrelated check types
-
-### Anti-Repetition
-1. **Outline injection**: "Cover ONLY assigned key points. Do NOT repeat across sections"
-2. **Self-review check #7**: Detects and removes duplicate facts
-3. **Editor E10**: Flags sections with >60% word overlap in opening sentences
-4. **System prompt guardrail**: "Every paragraph must be analytically distinct"
-
-## Documentation
-
-Main weekly documents:
-1. [Week 1](docs/week1.md)
-2. [Week 2](docs/week2.md)
-3. [Week 3](docs/week3.md)
-
-Detailed weekly breakdown:
-1. [Week 1 folder](docs/week1)
-2. [Week 2 folder](docs/week2)
-3. [Week 3 folder](docs/week3)
-
-## Core Components
-
-| Component | Files | Description |
-|-----------|-------|-------------|
-| **Backend API** | [app/api_server.py](app/api_server.py) | FastAPI server, rate limiting, auth, CORS |
-| **RAG Pipeline** | [app/langchain_pipeline.py](app/langchain_pipeline.py) | Core LLM orchestration, prompt templates, structured output |
-| **Agent Graph** | [app/graph.py](app/graph.py), [app/graph_state.py](app/graph_state.py) | LangGraph StateGraph definition |
-| **Writer Agent** | [app/agents/writer_node.py](app/agents/writer_node.py) | 3-stage blog generation (plan → generate → self-review) |
-| **Editor Agent** | [app/agents/editor_node.py](app/agents/editor_node.py) | Hybrid quality gate (code + LLM) |
-| **Researcher Agent** | [app/agents/researcher_node.py](app/agents/researcher_node.py) | Multi-query retrieval + web search + scraping |
-| **Reranker** | [app/reranker.py](app/reranker.py) | Cross-encoder reranking (FlashRank ONNX) |
-| **Local Semantics** | [app/local_semantics.py](app/local_semantics.py) | Sentence-transformer embeddings for 0-token operations |
-| **Data Collection** | [app/collect_au_sources.py](app/collect_au_sources.py) | Australian government source scraper |
-| **Vector Ingestion** | [app/ingest_pgvector.py](app/ingest_pgvector.py) | PostgreSQL pgvector chunk ingestion |
-| **Frontend** | [ui/angular-frontend/](ui/angular-frontend/) | Angular dashboard with blog preview |
-
-## Environment Variables
-
-Feature behavior is controlled by environment variables in [app/config.py](app/config.py).
-
-### Key Settings
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_PROVIDER` | `auto` | `google`, `openai`, or `auto` |
-| `GOOGLE_MODEL_NAME` | `models/gemini-2.5-flash` | Primary generation model |
-| `GOOGLE_FAST_MODEL_NAME` | `models/gemini-2.0-flash-lite` | Fast model for planning/review |
-| `USE_LIVE_LLM` | `0` | Enable live LLM calls (set to `1` for production) |
-| `USE_PGVECTOR_RETRIEVAL` | `1` | Use PostgreSQL pgvector for retrieval |
-| `USE_STRUCTURED_OUTPUT` | `0` | Enable Pydantic structured output (fallback path) |
-| `USE_AGENTIC_RAG` | `1` | Enable multi-agent LangGraph pipeline |
-| `USE_UNSPLASH_IMAGES` | `1` | Enable Unsplash image lookup per section |
-| `ALLOW_HYBRID_FALLBACK` | `1` | Allow web search when RAG context insufficient |
-| `ENFORCE_QUALITY_GATE` | `1` | Enable Editor quality checks |
-| `WRITER_TEMPERATURE` | `0.7` | Creative temperature for Writer |
-| `EDITOR_TEMPERATURE` | `0.1` | Strict temperature for Editor |
-
-### Hybrid Fallback Behavior
-
-When retrieval is `out_of_domain` or `low_confidence`:
-1. `ALLOW_HYBRID_FALLBACK=1` enables generation using web search + general knowledge.
-2. Generated draft includes `HYBRID_WARNING_TEXT` as a transparency contract.
-3. Runtime metadata includes `runtime.external_knowledge_used=true`.
-4. Set `ALLOW_HYBRID_FALLBACK=0` to restore strict "Need More Context" behavior.
-
-## Structured Output and Auto Images
-
-The generation pipeline supports structured JSON output and section-level image lookup.
-
-1. Structured Output (`with_structured_output` + Pydantic):
-   1. LLM is asked to return schema fields: `title`, `introduction`, `sections[]`, `conclusion`, `meta_tags`.
-   2. Each section requires `header`, `content`, `image_search_keyword`.
-   3. Backend renders this structure into markdown with deterministic headings and blocks.
-
-2. Unsplash Tool / Function Calling flow:
-   1. LLM (or agent) proposes `image_search_keyword` per section.
-   2. Backend calls Unsplash Search API to fetch a real image URL.
-   3. If Unsplash is unavailable or API key is missing, system falls back to keyword-based `source.unsplash.com` image URL.
-
-3. Environment variables:
-   1. `USE_UNSPLASH_IMAGES=1`
-   2. `UNSPLASH_ACCESS_KEY=...`
-   3. `UNSPLASH_API_BASE=https://api.unsplash.com`
-   4. `UNSPLASH_TIMEOUT_SECONDS=8`
-
-## Token Budgeting for RAG Blog Length
-
-The pipeline estimates token budget per prompt length and adjusts retrieval depth automatically.
-
-1. Output token targets:
-   1. Short (`400 chu`) -> about `600` output tokens
-   2. Medium (`800 chu`) -> about `1200` output tokens
-   3. Long (`1200 chu`) -> about `1800` output tokens
-
-2. Input token budget rule:
-   1. `INPUT_OUTPUT_RATIO_MIN=1.5`
-   2. `INPUT_OUTPUT_RATIO_MAX=2.0`
-   3. This means the system targets input context around `1.5x` to `2.0x` of output size.
-
-3. Dynamic retrieval `TOP_K` by length profile:
-   1. Short: `TOP_K_SHORT_MIN=3`, `TOP_K_SHORT_MAX=4`
-   2. Medium: `TOP_K_MEDIUM_MIN=6`, `TOP_K_MEDIUM_MAX=8`
-   3. Long: `TOP_K_LONG_MIN=10`, `TOP_K_LONG_MAX=12`
-
-4. Runtime diagnostics in API response:
-   1. `runtime.token_budget.output_tokens_target`
-   2. `runtime.token_budget.output_tokens_estimated`
-   3. `runtime.token_budget.input_tokens_target_min`, `input_tokens_target`, `input_tokens_target_max`
-   4. `runtime.token_budget.input_tokens_estimated`
-   5. `runtime.token_budget.recommended_top_k`
-   6. `runtime.token_budget.input_budget_sufficient`
-
-## Vector Ingestion Checks
-
-1. Preflight database connectivity and pgvector extension:
-
-```bash
+# Verify PostgreSQL connection
 python -m app.check_pg_connection
-```
 
-2. Ingest canonical JSONL chunks into PostgreSQL vector table:
+# Create tables + indexes
+psql "$DATABASE_URL" -f sql/database.sql
 
-```bash
+# Ingest knowledge base into pgvector
 python -m app.ingest_pgvector
-```
 
-3. Verify ingestion result (rows, indexes, vector sanity):
-
-```bash
+# Verify ingestion
 python -m app.verify_pgvector_ingest
 ```
 
-4. Apply SQL bootstrap (extension + table + indexes) if needed:
+### 4. Start Application
 
+**Option A: All-in-One** (recommended)
 ```bash
-psql "$DATABASE_URL" -f sql/database.sql
+python run.py
+# Starts backend on :8000 + frontend on :8001
 ```
 
-5. Runtime retrieval order:
-   1. PostgreSQL pgvector (when `USE_PGVECTOR_RETRIEVAL=1` and DB is reachable)
-   2. Pinecone (when enabled)
-   3. Local guarded retrieval fallback
+**Option B: Separate Processes**
+```bash
+# Terminal 1: Backend
+python -m uvicorn app.api_server:app --reload --host 0.0.0.0 --port 8000
 
-## CI/CD
+# Terminal 2: Frontend
+cd ui/angular-frontend
+npm install   # first time only
+npm start
+```
+
+### 5. Open Browser
+
+- **Frontend**: http://localhost:8001 (or http://localhost:4200 if running via `npm start` defaults)
+- **API Docs**: http://localhost:8000/docs (Swagger UI)
+- **Health Check**: http://localhost:8000/api/health
+
+### 6. Run Tests
+
+```bash
+# All tests
+python -m pytest tests/ -q
+
+# Specific module
+python -m pytest tests/test_parser.py -v
+
+# With coverage
+python -m pytest tests/ --cov=app --cov-report=html
+```
+
+---
+
+## Project Structure
+
+```
+ChatBot_Validex/
+├── app/                          # Backend application (51 modules)
+│   ├── api_server.py             # FastAPI server (35 endpoints, 1605 lines)
+│   ├── main.py                   # Central orchestrator (process_prompt)
+│   ├── config.py                 # 50+ settings from .env
+│   ├── auth.py                   # JWT + bcrypt authentication
+│   │
+│   ├── graph.py                  # LangGraph state machine definition
+│   ├── graph_state.py            # Shared state schema (TypedDict)
+│   │
+│   ├── agents/                   # LangGraph node implementations
+│   │   ├── parser_node.py        # Intent/topic extraction
+│   │   ├── researcher_node.py    # Multi-query RAG retrieval
+│   │   ├── rag_evaluator_node.py # Context quality scoring
+│   │   ├── writer_node.py        # 3-stage blog generation + edit mode
+│   │   ├── editor_node.py        # 4-layer quality gate
+│   │   ├── ml_gate_node.py       # ML quality prediction
+│   │   ├── ml_collector_node.py  # Training data collection
+│   │   ├── discovery_agent.py    # AI-powered source discovery
+│   │   └── scraper.py            # Web scraper for deep research
+│   │
+│   ├── llm/                      # LLM provider abstraction
+│   │   ├── provider.py           # Multi-provider factory (Gemini/OpenAI/Groq)
+│   │   └── token_tracker.py      # Per-user daily token budgets
+│   │
+│   ├── ml/                       # ML/DL training pipeline
+│   │   ├── ml_data_collector.py  # Feature extraction
+│   │   ├── ml_quality_gate.py    # Quality prediction model
+│   │   ├── ml_trainer.py         # XGBoost / Random Forest trainer
+│   │   ├── ml_feedback_loop.py   # Auto-retrain on new data
+│   │   ├── embedding_trainer.py  # Fine-tune retrieval embeddings
+│   │   ├── reranker_trainer.py   # Train cross-encoder
+│   │   └── contrastive_data_builder.py  # Build training pairs
+│   │
+│   ├── langchain_pipeline.py     # Core LLM orchestration (142KB)
+│   ├── generator.py              # Outline templates + blog assembly
+│   ├── parser.py                 # Regex prompt parser
+│   ├── reranker.py               # ONNX cross-encoder reranker
+│   ├── rag_evaluator.py          # Multi-dimensional RAG scoring
+│   ├── local_semantics.py        # Sentence-transformer embeddings
+│   ├── local_nli.py              # NLI fact verification
+│   │
+│   ├── ingest_pgvector.py        # Vector ingestion to PostgreSQL
+│   ├── collect_au_sources.py     # Australian gov data crawler (60KB)
+│   ├── legal_chunker.py          # Jurisdiction-aware chunking
+│   ├── metadata_enricher.py      # Auto-tag jurisdiction/topic
+│   ├── worker.py                 # Cron jobs (ingestion, scheduling)
+│   │
+│   ├── session_manager.py        # In-memory session state
+│   ├── session_store.py          # PostgreSQL session persistence
+│   ├── redis_session.py          # Redis-backed sessions
+│   ├── semantic_cache.py         # Embedding-based query dedup
+│   ├── db_pool.py                # Connection pooling
+│   ├── report_store.py           # CRUD for saved reports
+│   ├── publisher.py              # Report → Markdown/HTML export
+│   ├── prompt_guard.py           # Injection/jailbreak detection
+│   └── analytics.py              # Token/quality/feedback analytics
+│
+├── ui/angular-frontend/          # Angular 19 SPA
+│   └── src/app/
+│       ├── app.ts                # Main component (44KB)
+│       ├── app.html              # Template (42KB)
+│       ├── app.scss              # Styles (84KB)
+│       ├── chat.service.ts       # API client
+│       ├── chat.models.ts        # TypeScript interfaces
+│       ├── auth.service.ts       # Auth client
+│       ├── auth.interceptor.ts   # JWT interceptor
+│       └── markdown.pipe.ts      # Markdown → HTML renderer
+│
+├── tests/                        # 37 test files
+├── sql/                          # Database schemas
+│   ├── database.sql              # Main schema (pgvector + cache + tokens)
+│   ├── sessions.sql              # Session tables
+│   ├── mlops.sql                 # ML tracking tables
+│   └── migrate_legal_metadata.sql
+│
+├── docs/                         # Weekly documentation
+├── data/                         # Knowledge base data files
+├── .env.example                  # Environment variable template
+├── requirements.txt              # Python dependencies
+├── run.py                        # All-in-one starter script
+└── run_server.bat                # Windows shortcut
+```
+
+---
+
+## API Reference
+
+### Authentication (`/api/auth/*`)
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/auth/register` | Public | Register `{username, password}` |
+| `POST` | `/api/auth/login` | Public | Login → `{access_token, token_type}` |
+
+### Chat (`/api/chat/*`)
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/chat` | Optional | Generate blog (synchronous) |
+| `POST` | `/api/chat/stream` | Optional | Generate blog (SSE streaming) |
+| `POST` | `/api/chat/upload` | Required | Upload PDF/DOCX for context |
+| `POST` | `/api/chat/export` | Public | Export markdown → DOCX/PDF/HTML |
+| `GET` | `/api/chat/sessions` | Optional | List chat sessions |
+| `GET` | `/api/chat/sessions/{id}` | Optional | Get session history |
+
+### Reports (`/api/reports/*`)
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/reports` | Public | Save report |
+| `GET` | `/api/reports` | Public | List reports |
+| `GET` | `/api/reports/{id}` | Public | Get report detail |
+| `DELETE` | `/api/reports/{id}` | Public | Delete report |
+| `PATCH` | `/api/reports/{id}/status` | Public | Update status (`Draft→Reviewed→Approved`) |
+| `POST` | `/api/reports/{id}/publish` | Public | Publish approved report |
+| `POST` | `/api/reports/{id}/feedback` | Optional | Submit thumbs up/down |
+
+### Admin (`/api/admin/*`) — Requires admin JWT
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/admin/ingest` | Trigger knowledge base re-ingestion |
+| `GET` | `/api/admin/ingest/status` | Ingestion job status |
+| `POST` | `/api/admin/discover` | AI Discovery Agent: find new sources |
+| `GET` | `/api/admin/users` | List all users |
+| `GET` | `/api/admin/crawl-history` | Crawl job logs |
+| `GET` | `/api/admin/token-usage` | Token usage dashboard |
+| `GET` | `/api/admin/pending-reviews` | HITL: pending article reviews |
+| `POST` | `/api/admin/reviews/{run_id}` | HITL: approve/reject article |
+
+### Analytics (`/api/admin/analytics/*`)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/admin/analytics/tokens` | Token usage over time |
+| `GET` | `/api/admin/analytics/quality` | Editor verdict distribution |
+| `GET` | `/api/admin/analytics/cache` | Semantic cache statistics |
+| `GET` | `/api/admin/analytics/feedback` | User feedback stats |
+
+### Scheduling (`/api/admin/schedule/*`)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/admin/schedule` | Create blog generation schedule |
+| `GET` | `/api/admin/schedule` | List schedules |
+| `DELETE` | `/api/admin/schedule/{id}` | Delete schedule |
+
+### Monitoring
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/health` | Deep health check (DB, Redis, Pool) |
+| `GET` | `/api/metrics` | Application metrics (JSON) |
+| `GET` | `/metrics` | Prometheus-compatible metrics |
+| `GET` | `/api/user/token-budget` | User's remaining daily tokens |
+| `GET` | `/api/source-analytics` | Knowledge base source stats |
+| `GET` | `/api/knowledge/health` | Knowledge base health report |
+
+---
+
+## Pipeline Architecture
+
+### LangGraph State Machine — 9 Nodes
+
+```
+START → Parser ──→ Researcher → RAG Evaluator → Supervisor
+         │  (edit)                    ↕ retry        │
+         ↓                                    ┌──────┴──────┐
+       Writer ←─── Editor            Writer   Deep Researcher
+         │           ↕ loop<3          ↑           │
+         ↓                             └───────────┘
+   ML Quality Gate → ML Collector → END
+```
+
+| Node | Module | Role |
+|------|--------|------|
+| **Parser** | `parser_node.py` | Extract intent, topic, tone, audience, length |
+| **Researcher** | `researcher_node.py` | 8-step RAG: multi-query → pgvector → rerank → compress |
+| **RAG Evaluator** | `rag_evaluator_node.py` | Score retrieval quality (relevance, coverage, diversity) |
+| **Supervisor** | `graph.py` | Route by complexity: simple → Writer, complex → Deep Researcher |
+| **Deep Researcher** | `graph.py` | Extended legal queries for complex topics |
+| **Writer** | `writer_node.py` | 3-stage generation (Plan → Draft → Self-Review) + edit fast-path |
+| **Editor** | `editor_node.py` | 4-layer quality gate (structural → SEO → fast-accept → LLM) |
+| **ML Quality Gate** | `ml_gate_node.py` | ML model quality prediction (shadow/enforce modes) |
+| **ML Collector** | `ml_collector_node.py` | Training data collection (passive, never blocks) |
+
+### Circuit Breakers
+
+| Breaker | Limit | Prevents |
+|---------|-------|----------|
+| Global Step | 8 total node visits | Infinite loops across nested retries |
+| RAG Retry | 2 attempts | Researcher loops |
+| Editor Loop | 3 iterations | Writer↔Editor cycles |
+| ML Gate | 1 block | ML model re-routing |
+
+---
+
+## Database Schema
+
+### Main Tables
+
+| Table | File | Purpose |
+|-------|------|---------|
+| `validex_knowledge` | `sql/database.sql` | Knowledge chunks with 1536-dim embeddings |
+| `validex_semantic_cache` | `sql/database.sql` | Semantic cache (384-dim, local embeddings) |
+| `token_usage_log` | `sql/database.sql` | Token consumption tracking |
+| `users` | `sql/sessions.sql` | User accounts (username, bcrypt hash, admin flag) |
+| `chat_sessions` | `sql/sessions.sql` | Session history (JSONB turns) |
+| `reports` | auto-created | Saved blog reports |
+| `blog_schedule` | auto-created | Cron-based generation schedules |
+| `crawl_logs` | auto-created | Data ingestion job logs |
+| `prompt_ab_tests` | `sql/mlops.sql` | AB test / HITL review tracking |
+
+### Key Indexes
+
+```sql
+-- HNSW vector index for fast similarity search
+CREATE INDEX idx_validex_knowledge_embedding_hnsw
+ON validex_knowledge USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+
+-- Full-text search index
+CREATE INDEX idx_validex_knowledge_fts
+ON validex_knowledge USING GIN (fts_content);
+
+-- Composite filter index (retriever's most common pattern)
+CREATE INDEX idx_validex_knowledge_status_jurisdiction
+ON validex_knowledge(status, jurisdiction);
+```
+
+---
+
+## Configuration Reference
+
+All settings in [app/config.py](app/config.py), loaded from `.env`. See [.env.example](.env.example) for full template.
+
+### Critical Settings
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `GOOGLE_API_KEY` | — | **Yes** | Gemini API key |
+| `DATABASE_URL` | — | **Yes** | PostgreSQL connection string |
+| `JWT_SECRET_KEY` | — | **Yes** | JWT signing secret |
+| `USE_LIVE_LLM` | `0` | — | Enable live LLM calls (`1` for production) |
+
+### LLM Models
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | `auto` | `auto` / `google` / `openai` |
+| `LLM_MODEL_PRO` | `gemini-2.5-flash` | Writer model (creative, temp 0.7) |
+| `LLM_MODEL_FAST` | `gemini-2.0-flash-lite` | Parser/planner model (fast, temp 0.3) |
+| `EDITOR_TEMPERATURE` | `0.1` | Editor evaluation temperature |
+| `WRITER_TEMPERATURE` | `0.7` | Writer generation temperature |
+
+### Rate Limiting
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RATE_LIMIT_PER_MINUTE` | `30` | Max requests per IP per minute |
+| `BURST_LIMIT_PER_10S` | `5` | Max burst per 10 seconds |
+| `MAX_CONCURRENT_PER_IP` | `3` | Max concurrent per IP |
+| `MAX_CONCURRENT_LLM_REQUESTS` | `10` | Global LLM semaphore |
+| `REQUEST_TIMEOUT_SECONDS` | `180` | Per-request timeout |
+
+### Token Budgets
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QUOTA_FREE` | `25,000` | Daily tokens for free tier |
+| `QUOTA_STARTER` | `80,000` | Daily tokens for starter tier |
+| `QUOTA_PRO` | `250,000` | Daily tokens for pro tier |
+| `QUOTA_ENTERPRISE` | `1,000,000` | Daily tokens for enterprise tier |
+
+---
+
+## Deployment
+
+### Production Checklist
+
+- [ ] Set `USE_LIVE_LLM=1`
+- [ ] Set `USE_AGENTIC_RAG=1`
+- [ ] Set strong `JWT_SECRET_KEY`
+- [ ] Set `ALLOWED_ORIGINS` to production domain
+- [ ] Run `sql/database.sql` on production database
+- [ ] Run `python -m app.ingest_pgvector` to populate knowledge base
+- [ ] Configure Redis for sessions (`USE_REDIS_SESSIONS=1`)
+- [ ] Set up reverse proxy (nginx) for HTTPS
+- [ ] Build Angular frontend: `cd ui/angular-frontend && npm run build`
+- [ ] Set `LANGCHAIN_TRACING_V2=true` for LangSmith monitoring
+
+### Docker (Optional)
+
+```bash
+# Backend
+uvicorn app.api_server:app --host 0.0.0.0 --port 8000
+
+# Frontend (serve built assets)
+# Built files go to ui/angular-frontend/dist/angular-frontend/browser/
+# api_server.py auto-serves these at the catch-all route
+```
+
+### CI/CD
 
 | Workflow | Schedule | Description |
 |----------|----------|-------------|
-| [delta_sync.yml](.github/workflows/delta_sync.yml) | Weekly (Sun 2AM UTC) | Syncs new Australian government sources, re-embeds, updates pgvector |
+| `delta_sync.yml` | Weekly (Sun 2AM UTC) | Crawl new sources → chunk → embed → pgvector |
 
-## API Endpoints
+---
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/chat` | POST | Generate blog from prompt |
-| `/api/health` | GET | Server health + runtime mode |
-| `/api/metrics` | GET | Generation metrics (latency, cache hit rate) |
-| `/api/sessions` | GET | Active session listing |
-| `/api/admin/cache/clear` | POST | Clear semantic cache (requires admin key) |
+## Testing
+
+37 test files organized by category:
+
+| Category | Tests | Coverage |
+|----------|-------|----------|
+| Pipeline | `test_e2e_pipeline`, `test_main_flow` | End-to-end generation |
+| Graph | `test_graph_state_machine`, `test_circuit_breaker` | Routing + breakers |
+| Parser | `test_parser`, `test_prompt_parser_llm`, `test_prompt_edit_constraints` | Intent detection |
+| Retrieval | `test_retriever`, `test_hybrid_fallback`, `test_semantic_cache` | RAG + fallback |
+| Generation | `test_generator`, `test_structured_output`, `test_token_budgeting` | Templates + budgets |
+| Quality | `test_editor`, `test_output_fixes`, `test_accuracy_evaluation` | Quality gate |
+| Data | `test_hierarchical_chunking`, `test_golden_facts`, `test_knowledge_gap` | Ingestion + knowledge |
+| API | `test_api_edge_cases`, `test_api_reports`, `test_export` | Endpoints |
+| Security | `test_auth_security`, `test_prompt_guard_adversarial` | Auth + injection |
+| Scalability | `test_concurrency`, `test_scalability_simulation` | Load testing |
+
+```bash
+# Run all tests
+python -m pytest tests/ -q
+
+# Run specific category
+python -m pytest tests/ -k "test_parser or test_graph" -v
+
+# Run with coverage report
+python -m pytest tests/ --cov=app --cov-report=html
+open htmlcov/index.html
+```
+
+---
+
+## Maintenance Runbooks
+
+### Re-ingest Knowledge Base
+
+```bash
+# 1. Crawl new Australian sources
+python -m app.collect_au_sources
+
+# 2. Ingest into pgvector
+python -m app.ingest_pgvector
+
+# 3. Verify
+python -m app.verify_pgvector_ingest
+```
+
+### Clear Semantic Cache
+
+```bash
+psql "$DATABASE_URL" -c "TRUNCATE validex_semantic_cache;"
+```
+
+### Re-embed Stale Chunks
+
+```bash
+python -m app.refresh_embeddings
+```
+
+### Train ML Quality Model
+
+```bash
+python -m app.ml.ml_trainer
+# Auto-promote shadow → enforce when F1 > 0.85
+```
+
+### Run Gap Analysis
+
+```bash
+python run_gap_analysis.py
+# Identifies topics missing from knowledge base
+```
+
+### Database Maintenance
+
+```bash
+# Check connection pool status
+curl http://localhost:8000/api/health | jq '.connection_pool'
+
+# Vacuum pgvector table
+psql "$DATABASE_URL" -c "VACUUM ANALYZE validex_knowledge;"
+
+# Reindex HNSW (after large ingestion)
+psql "$DATABASE_URL" -c "REINDEX INDEX idx_validex_knowledge_embedding_hnsw;"
+```
+
+### Promote User to Admin
+
+```bash
+psql "$DATABASE_URL" -c "UPDATE users SET is_admin = TRUE WHERE username = 'your_username';"
+```
+
+---
+
+## Documentation
+
+- **Pipeline Walkthrough**: See `walkthrough.md` artifact for full architectural documentation
+- **Weekly Reports**: [docs/week1.md](docs/week1.md), [docs/week2.md](docs/week2.md), [docs/week3.md](docs/week3.md)
+- **Data Workflow**: [docs/data_workflow.md](docs/data_workflow.md)
+- **API Swagger**: http://localhost:8000/docs (when server is running)
+
+---
 
 ## License
 
