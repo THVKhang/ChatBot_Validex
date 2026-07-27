@@ -222,3 +222,13 @@ ui/angular-frontend/dist/
 
 # Validex cache
 data/validex_cache.db
+
+# Generated outputs & logs
+_error.log
+logs/
+*.log
+scratch_evaluation_results.json
+resilience_report.json
+
+# Scratch test scripts (use tests/ directory instead)
+_test_*.py
