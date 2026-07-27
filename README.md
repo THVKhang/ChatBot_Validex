@@ -590,9 +590,10 @@ psql "$DATABASE_URL" -c "UPDATE users SET is_admin = TRUE WHERE username = 'your
 
 ## Documentation
 
-- **Pipeline Walkthrough**: See `walkthrough.md` artifact for full architectural documentation
-- **Weekly Reports**: [docs/week1.md](docs/week1.md), [docs/week2.md](docs/week2.md), [docs/week3.md](docs/week3.md)
-- **Data Workflow**: [docs/data_workflow.md](docs/data_workflow.md)
+- **API Reference**: [docs/API.md](docs/API.md) — All 35 endpoints with request/response examples
+- **Deployment Guide**: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — Setup, runbooks, troubleshooting
+- **Environment Template**: [.env.example](.env.example) — All configuration variables
+- **Database Schema**: [sql/database.sql](sql/database.sql) — Tables, indexes, pgvector setup
 - **API Swagger**: http://localhost:8000/docs (when server is running)
 
 ---
