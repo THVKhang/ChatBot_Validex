@@ -2,9 +2,41 @@ from abc import ABC, abstractmethod
 from typing import Any, List, Dict
 import json
 import logging
+import re
+from app.config import settings
 from app.database import DatabaseManager
 
 logger = logging.getLogger(__name__)
+
+_WORD_RE = re.compile(r"[A-Za-z0-9]+")
+
+# Table names are interpolated into SQL (identifiers cannot be bound as
+# parameters). config._normalize_pgvector_table already enforces this shape on
+# the configured value; re-checking here protects callers that pass one in.
+_SAFE_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+
+
+def _safe_table(table_name: str) -> str:
+    """Validate a table name before it is interpolated into a statement."""
+    if not _SAFE_TABLE_NAME_RE.match(str(table_name or "")):
+        raise ValueError(
+            f"Unsafe table name {table_name!r}: expected letters, digits and underscores only."
+        )
+    return table_name
+
+
+def build_keyword_tsquery(query: str) -> str:
+    """Turn a topic string into a websearch_to_tsquery expression that can match.
+
+    websearch_to_tsquery ANDs bare terms together, so a normal multi-word topic
+    ("spent convictions scheme Crimes Act") requires every term to appear in the
+    same chunk and matches nothing — which silently reduced the hybrid search to
+    its semantic half. ORing the terms lets the keyword branch contribute, and
+    ts_rank still ranks chunks covering more of the terms higher.
+    """
+    terms = [term for term in _WORD_RE.findall(query) if len(term) > 2]
+    return " OR ".join(terms) if terms else query
+
 
 class VectorStoreRepository(ABC):
     """Abstract interface for Vector Store interactions."""
@@ -53,7 +85,58 @@ class PGVectorRepository(VectorStoreRepository):
     def __init__(self, db_manager: DatabaseManager = None):
         self.db_manager = db_manager or DatabaseManager()
 
+    def table_embedding_dimension(self, table_name: str) -> int | None:
+        """Return the declared vector dimension of ``table_name.embedding``.
+
+        Returns ``None`` when the table (or the column) does not exist yet.
+        """
+        table_name = _safe_table(table_name)
+        with self.db_manager.get_connection(prepare_threshold=None) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT a.atttypmod
+                    FROM pg_attribute a
+                    JOIN pg_class c ON c.oid = a.attrelid
+                    WHERE c.relname = %s AND a.attname = 'embedding' AND a.attnum > 0
+                    """,
+                    (table_name,),
+                )
+                row = cur.fetchone()
+        if not row or row[0] is None or row[0] <= 0:
+            return None
+        return int(row[0])
+
+    def stored_embedding_providers(self, table_name: str) -> set[str]:
+        """Return the distinct embedding providers already present in the table.
+
+        Empty when the table does not exist yet.
+        """
+        table_name = _safe_table(table_name)
+        with self.db_manager.get_connection(prepare_threshold=None) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass(%s)", (table_name,))
+                row = cur.fetchone()
+                if not row or row[0] is None:
+                    return set()
+                cur.execute(
+                    f"SELECT DISTINCT coalesce(embedding_provider, 'unknown') FROM {table_name}"
+                )
+                return {str(r[0]) for r in cur.fetchall()}
+
     def initialize_schema(self, table_name: str, dimension: int) -> None:
+        table_name = _safe_table(table_name)
+        # Guard against silently writing into a table built for a different
+        # embedding model: pgvector would reject the INSERT with an opaque
+        # error, and 'CREATE TABLE IF NOT EXISTS' below would not fix it.
+        existing_dimension = self.table_embedding_dimension(table_name)
+        if existing_dimension is not None and existing_dimension != dimension:
+            raise RuntimeError(
+                f"Table '{table_name}' stores vector({existing_dimension}) embeddings but the "
+                f"configured embedding model produces {dimension} dimensions. Re-ingest into a "
+                f"new table, or run app/refresh_embeddings.py to rebuild the existing one."
+            )
+
         with self.db_manager.get_connection(prepare_threshold=None) as conn:
             with conn.cursor() as cur:
                 cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -84,7 +167,10 @@ class PGVectorRepository(VectorStoreRepository):
                         parent_id TEXT,
                         last_verified_at TIMESTAMPTZ,
                         superseded_by TEXT DEFAULT NULL,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        fts_content tsvector GENERATED ALWAYS AS (
+                            to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, ''))
+                        ) STORED
                     )
                     """
                 )
@@ -112,6 +198,17 @@ class PGVectorRepository(VectorStoreRepository):
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS parent_id TEXT")
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS last_verified_at TIMESTAMPTZ")
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS superseded_by TEXT")
+                # hybrid_search() reads fts_content; without it every keyword branch
+                # raises and the whole hybrid search silently degrades to the local
+                # file fallback. Keep this in sync with sql/database.sql.
+                cur.execute(
+                    f"""
+                    ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS fts_content tsvector
+                    GENERATED ALWAYS AS (
+                        to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, ''))
+                    ) STORED
+                    """
+                )
                 # Indexes
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_topic ON {table_name}(topic)")
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_source_domain ON {table_name}(source_domain)")
@@ -119,9 +216,23 @@ class PGVectorRepository(VectorStoreRepository):
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_parent_id ON {table_name}(parent_id)")
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_jurisdiction ON {table_name}(jurisdiction)")
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_status_jurisdiction ON {table_name}(status, jurisdiction)")
+                # Keyword branch of hybrid_search
+                cur.execute(
+                    f"CREATE INDEX IF NOT EXISTS idx_{table_name}_fts ON {table_name} USING GIN (fts_content)"
+                )
+                # ANN index for the semantic branch. Without it pgvector falls back
+                # to a sequential scan over the whole table on every query.
+                cur.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS idx_{table_name}_embedding_hnsw
+                    ON {table_name} USING hnsw (embedding vector_cosine_ops)
+                    WITH (m = 16, ef_construction = 64)
+                    """
+                )
                 conn.commit()
 
     def upsert_records(self, table_name: str, records: List[Dict[str, Any]]) -> None:
+        table_name = _safe_table(table_name)
         if not records:
             return
 
@@ -177,6 +288,7 @@ class PGVectorRepository(VectorStoreRepository):
                 conn.commit()
 
     def delete_records(self, table_name: str, chunk_ids: List[str]) -> int:
+        table_name = _safe_table(table_name)
         if not chunk_ids:
             return 0
         with self.db_manager.get_connection(prepare_threshold=None) as conn:
@@ -198,67 +310,112 @@ class PGVectorRepository(VectorStoreRepository):
         require_non_fake: bool = False,
         status_filter: str = "in_force",
         jurisdiction_filter: str | None = None,
+        min_similarity: float | None = None,
     ) -> List[Dict[str, Any]]:
         """Hybrid search combining semantic + keyword with RRF fusion.
 
+        The two branches are fused with a FULL OUTER JOIN on chunk_id so a chunk
+        found by *both* branches accumulates both reciprocal-rank terms — that is
+        the entire point of RRF, and a UNION ALL cannot express it (it emits the
+        same chunk twice, each row carrying only half the score).
+
         CRITICAL: Defaults to status='in_force' to prevent citing repealed legislation.
         """
+        table_name = _safe_table(table_name)
         vector_literal = "[" + ",".join(f"{float(item):.8f}" for item in query_vector) + "]"
 
+        if min_similarity is None:
+            min_similarity = float(getattr(settings, "pgvector_min_similarity", 0.0) or 0.0)
+
+        params: Dict[str, Any] = {
+            "query_vector": vector_literal,
+            "query": build_keyword_tsquery(query),
+            "pool": max(1, top_k) * 4,
+            "top_k": top_k,
+            "min_similarity": min_similarity,
+        }
+
+        # Filters are parameterised: these values reach the query as bind
+        # parameters, never as interpolated SQL text.
         extra_filters = ""
         if require_non_fake:
             extra_filters += " AND coalesce(embedding_provider, 'unknown') != 'fake'"
         if status_filter:
-            extra_filters += f" AND status = '{status_filter}'"
+            extra_filters += " AND status = %(status_filter)s"
+            params["status_filter"] = status_filter
         if jurisdiction_filter:
-            extra_filters += f" AND jurisdiction = '{jurisdiction_filter}'"
+            extra_filters += " AND jurisdiction = %(jurisdiction_filter)s"
+            params["jurisdiction_filter"] = jurisdiction_filter
 
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    WITH semantic_search AS (
-                        SELECT 
-                            chunk_id, 
-                            doc_id, content, source_url, source_domain, source_type, 
-                            topic, region, title, authority_score, approved,
-                            jurisdiction, act_name, section_ref, parent_context, status, parent_id,
-                            1 - (embedding <=> %s::vector) AS similarity,
-                            RANK() OVER (ORDER BY embedding <=> %s::vector) AS semantic_rank
+                    WITH semantic_pool AS (
+                        -- Pure ANN top-N so the HNSW index can serve the ordering;
+                        -- ranking happens afterwards over just these rows.
+                        SELECT
+                            chunk_id,
+                            1 - (embedding <=> %(query_vector)s::vector) AS semantic_similarity
                         FROM {table_name}
                         WHERE approved = true {extra_filters}
-                        ORDER BY semantic_rank
-                        LIMIT %s
+                        ORDER BY embedding <=> %(query_vector)s::vector
+                        LIMIT %(pool)s
+                    ),
+                    semantic_search AS (
+                        SELECT
+                            chunk_id,
+                            semantic_similarity,
+                            ROW_NUMBER() OVER (ORDER BY semantic_similarity DESC) AS semantic_rank
+                        FROM semantic_pool
+                    ),
+                    keyword_pool AS (
+                        SELECT
+                            chunk_id,
+                            ts_rank(fts_content, websearch_to_tsquery('english', %(query)s)) AS keyword_score
+                        FROM {table_name}
+                        WHERE approved = true {extra_filters}
+                          AND fts_content @@ websearch_to_tsquery('english', %(query)s)
+                        ORDER BY keyword_score DESC
+                        LIMIT %(pool)s
                     ),
                     keyword_search AS (
-                        SELECT 
-                            chunk_id, 
-                            doc_id, content, source_url, source_domain, source_type, 
-                            topic, region, title, authority_score, approved,
-                            jurisdiction, act_name, section_ref, parent_context, status, parent_id,
-                            ts_rank(fts_content, websearch_to_tsquery('english', %s)) AS similarity,
-                            RANK() OVER (ORDER BY ts_rank(fts_content, websearch_to_tsquery('english', %s)) DESC) AS keyword_rank
-                        FROM {table_name}
-                        WHERE approved = true {extra_filters}
-                          AND fts_content @@ websearch_to_tsquery('english', %s)
-                        ORDER BY keyword_rank
-                        LIMIT %s
+                        SELECT
+                            chunk_id,
+                            keyword_score,
+                            ROW_NUMBER() OVER (ORDER BY keyword_score DESC) AS keyword_rank
+                        FROM keyword_pool
+                    ),
+                    fused AS (
+                        SELECT
+                            COALESCE(s.chunk_id, k.chunk_id) AS chunk_id,
+                            s.semantic_similarity,
+                            k.keyword_score,
+                            s.semantic_rank,
+                            k.keyword_rank,
+                            COALESCE(1.0 / (60 + s.semantic_rank), 0.0)
+                              + COALESCE(1.0 / (60 + k.keyword_rank), 0.0) AS rrf_score
+                        FROM semantic_search s
+                        FULL OUTER JOIN keyword_search k ON s.chunk_id = k.chunk_id
                     )
-                    SELECT 
-                        chunk_id, doc_id, content, source_url, source_domain, source_type, 
-                        topic, region, title, authority_score, approved,
-                        jurisdiction, act_name, section_ref, parent_context, status, parent_id,
-                        similarity, semantic_rank, keyword_rank,
-                        COALESCE(1.0 / (60 + semantic_rank), 0.0) + COALESCE(1.0 / (60 + keyword_rank), 0.0) AS rrf_score
-                    FROM (
-                        SELECT chunk_id, doc_id, content, source_url, source_domain, source_type, topic, region, title, authority_score, approved, jurisdiction, act_name, section_ref, parent_context, status, parent_id, similarity, NULL::int AS semantic_rank, keyword_rank FROM keyword_search
-                        UNION ALL
-                        SELECT chunk_id, doc_id, content, source_url, source_domain, source_type, topic, region, title, authority_score, approved, jurisdiction, act_name, section_ref, parent_context, status, parent_id, similarity, semantic_rank, NULL::int AS keyword_rank FROM semantic_search
-                    ) combined
-                    ORDER BY rrf_score DESC
-                    LIMIT %s;
+                    SELECT
+                        t.chunk_id, t.doc_id, t.content, t.source_url, t.source_domain, t.source_type,
+                        t.topic, t.region, t.title, t.authority_score, t.approved,
+                        t.jurisdiction, t.act_name, t.section_ref, t.parent_context, t.status, t.parent_id,
+                        t.effective_date, t.last_verified_at, t.created_at,
+                        COALESCE(f.semantic_similarity, 0.0) AS similarity,
+                        f.keyword_score,
+                        f.semantic_rank, f.keyword_rank, f.rrf_score
+                    FROM fused f
+                    JOIN {table_name} t ON t.chunk_id = f.chunk_id
+                    -- Relevance floor: a chunk pulled in by the ANN branch must clear
+                    -- min_similarity. Keyword-only hits have no cosine and pass through.
+                    WHERE f.semantic_similarity IS NULL
+                       OR f.semantic_similarity >= %(min_similarity)s
+                    ORDER BY f.rrf_score DESC
+                    LIMIT %(top_k)s;
                     """,
-                    (vector_literal, vector_literal, top_k * 2, query, query, query, top_k * 2, top_k),
+                    params,
                 )
                 rows = cur.fetchall()
 
@@ -282,14 +439,19 @@ class PGVectorRepository(VectorStoreRepository):
                 "parent_context": row[14],
                 "status": row[15],
                 "parent_id": row[16],
-                "similarity": row[17],
-                "semantic_rank": row[18],
-                "keyword_rank": row[19],
-                "rrf_score": row[20],
+                "effective_date": row[17],
+                "last_verified_at": row[18],
+                "created_at": row[19],
+                "similarity": row[20],
+                "keyword_score": row[21],
+                "semantic_rank": row[22],
+                "keyword_rank": row[23],
+                "rrf_score": row[24],
             })
         return results
 
     def upsert_parents(self, table_name: str, parents: List[Dict[str, Any]]) -> None:
+        table_name = _safe_table(table_name)
         if not parents:
             return
         upsert_sql = f"""
@@ -310,6 +472,7 @@ class PGVectorRepository(VectorStoreRepository):
                 conn.commit()
 
     def get_parent_content(self, table_name: str, parent_id: str) -> str | None:
+        table_name = _safe_table(table_name)
         sql = f"SELECT content FROM {table_name}_parents WHERE parent_id = %s"
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
@@ -328,6 +491,7 @@ class PGVectorRepository(VectorStoreRepository):
         Used by Delta Sync when legislation is amended/repealed.
         Old chunks are kept for audit trail but excluded from search.
         """
+        table_name = _safe_table(table_name)
         if not chunk_ids:
             return 0
         with self.db_manager.get_connection(prepare_threshold=None) as conn:

@@ -154,7 +154,27 @@ def _extract_topic(prompt: str, prompt_lower: str, intent: str) -> str:
     if first_line:
         raw_first_line = first_line
         first_line = re.sub(
-            r"^(write|create|generate|draft|viet|viết|soan|soạn)\s+",
+            # Instruction verbs, not just the "write a blog" family: prompts like
+            # "Explain the WWCC requirements..." previously kept the verb and the
+            # whole sentence became the topic, so the H1 read as an instruction.
+            r"^(write|create|generate|draft|explain|describe|discuss|cover|outline|"
+            r"summari[sz]e|tell\s+me\s+about|give\s+me|produce|prepare|"
+            r"viet|viết|soan|soạn|giai\s*thich|giải\s*thích)\s+",
+            "",
+            first_line,
+            flags=re.IGNORECASE,
+        )
+        # Strip a full "a professional blog post for <audience> explaining ..."
+        # preamble so the topic is the SUBJECT, not the instruction. The narrow
+        # rule below only matched "a blog <x>", so a normal request left the
+        # whole sentence as the topic — which then became the H1 and got spliced
+        # into every generated heading ("Overview of a professional blog post for").
+        first_line = re.sub(
+            r"^(?:a|an|the)\s+"
+            r"(?:[\w-]+\s+){0,3}?"
+            r"(?:blog\s+post|blog|article|post|guide|piece|write[- ]?up|essay)\s+"
+            r"(?:(?:for|aimed\s+at|targeting)\s+[^,]{3,60}?\s+)?"
+            r"(?:about|on|explaining|that\s+explains|which\s+explains|covering|discussing|regarding|detailing)\s+",
             "",
             first_line,
             flags=re.IGNORECASE,
@@ -195,6 +215,20 @@ def _clean_topic_text(topic: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
+
+    # Drop a trailing elaboration clause. "…requirements in NSW for employers,
+    # including who needs one and how to verify it" is one subject plus a list of
+    # sub-questions; keeping the list made the H1 a sentence and diluted the SEO
+    # keyword density across a dozen incidental words.
+    cleaned = re.sub(
+        r",\s*(including|such as|plus|as well as|covering|along with)\b.*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # A leading article adds nothing to a title or a keyword.
+    cleaned = re.sub(r"^(a|an|the)\s+", "", cleaned, flags=re.IGNORECASE)
 
     cleaned = cleaned.strip(" .,!?:;\n\t")
     return cleaned or "current draft"

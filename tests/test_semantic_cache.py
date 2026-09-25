@@ -7,7 +7,10 @@ def test_semantic_cache_flow(monkeypatch):
     
     # Force settings.cache_enabled to True for this test using object.__setattr__
     object.__setattr__(settings, "cache_enabled", True)
-    monkeypatch.setattr(semantic_cache, "dsn", "postgresql://fake_dsn")
+    monkeypatch.setattr("app.semantic_cache._get_dsn", lambda: "postgresql://fake_dsn")
+    # The cache borrows connections from the shared pool; the schema check is
+    # exercised separately, so short-circuit it here.
+    monkeypatch.setattr(semantic_cache, "_schema_ready", True)
 
     # Mock the embedding generation
     def mock_get_embedding(self, text):
@@ -51,8 +54,13 @@ def test_semantic_cache_flow(monkeypatch):
         def cursor(self): return MockCursor()
         def commit(self): pass
 
-    import psycopg
-    monkeypatch.setattr(psycopg, "connect", lambda dsn: MockConnection())
+    from contextlib import contextmanager
+
+    @contextmanager
+    def mock_get_connection():
+        yield MockConnection()
+
+    monkeypatch.setattr("app.semantic_cache.get_connection", mock_get_connection)
 
     prompt = "Test prompt for semantic caching 123"
     response = {

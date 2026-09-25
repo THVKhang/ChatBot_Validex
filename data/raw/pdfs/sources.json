@@ -1,0 +1,11 @@
+{
+  "_README": "Map each PDF filename to the URL it was downloaded from. Ingestion uses this as the chunk's source_url so generated articles can cite the real publisher. Leave a value empty if you genuinely do not know the origin — the citation will then read 'Source document (no public URL on file)' rather than inventing a link. Do NOT guess: a wrong citation is worse than none for compliance content.",
+
+  "2106_pre-employment_screening_resource_sheet.pdf": "",
+  "AGSVA Security Clearance Applicant Guide Book.pdf": "",
+  "NPC-100PointChecklist-18042019.pdf": "",
+  "NPCS Agreement for controlled access (1).pdf": "",
+  "communities_overarching_employment_and_engagement_screening_policy.pdf": "",
+  "integrity-employment-criteria.pdf": "",
+  "pre-employment-screening-guideline.pdf": ""
+}

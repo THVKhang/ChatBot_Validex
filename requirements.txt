@@ -1,34 +1,58 @@
+# Pins reflect the versions this project is actually developed and tested
+# against (verified against the .venv on 2026-09-23). The LangChain entries in
+# particular had drifted a full major version behind what is installed, so a
+# fresh `pip install -r requirements.txt` used to produce a 0.3.x environment
+# in which langchain.agents cannot import at all.
+
 # ── Core Framework ──────────────────────────────────────────
 python-dotenv==1.0.1
 fastapi==0.116.1
 uvicorn==0.35.0
+pydantic==2.10.1
 
 # ── LangChain / LangGraph ──────────────────────────────────
-langchain==0.3.7
-langchain-core==0.3.18
-langchain-openai==0.2.8
-langchain-community==0.3.7
-langchain-pinecone>=0.2.3
-langchain-google-genai>=2.0.0
-langgraph>=1.1.0
+# LangChain 1.x removed initialize_agent / AgentType; agent code must use
+# langchain.agents.create_agent or langgraph.prebuilt.create_react_agent.
+langchain==1.2.18
+langchain-core==1.4.0
+langchain-openai==1.2.1
+langchain-community==0.4.1
+langchain-text-splitters==1.1.2
+langchain-google-genai==4.2.2
+langgraph==1.1.10
+
+# ── Local ML: embeddings, reranking, NLI ───────────────────
+# EMBEDDING_PROVIDER=local runs on sentence-transformers with the fine-tuned
+# bge-base model in data/models/. Omitting these made local embedding — the
+# project's default — impossible to install from this file.
+sentence-transformers==5.4.1
+transformers==5.8.0
+torch==2.11.0
+numpy==2.4.4
+scikit-learn==1.8.0
+flashrank==0.2.10
+onnxruntime==1.25.0
 
 # ── Authentication ─────────────────────────────────────────
 PyJWT>=2.8.0
 bcrypt>=4.1.0
 
 # ── Database & Vector Store ────────────────────────────────
+# INGEST_MODE=raw_sql talks to pgvector through psycopg directly; the `pgvector`
+# Python package is not imported anywhere, so it is not a dependency.
 psycopg[binary]==3.2.3
 psycopg_pool>=3.2.0
 psycopg2-binary==2.9.10
-pgvector==0.3.6
-pinecone==6.0.2
+sqlalchemy==2.0.49
 redis==5.2.1
 
 # ── HTTP & Web Scraping ────────────────────────────────────
-requests==2.32.3
+requests==2.33.1
 httpx>=0.27.0
 curl_cffi==0.7.3
 beautifulsoup4==4.12.3
+ddgs==9.14.1
+duckduckgo-search==8.1.1
 
 # ── Document Parsing ──────────────────────────────────────
 pypdf==5.1.0
@@ -39,8 +63,18 @@ python-docx>=1.1.0
 markdown2>=2.4.13
 xhtml2pdf>=0.2.15
 
+# ── Observability ──────────────────────────────────────────
+prometheus-client==0.25.0
+
 # ── Utilities ──────────────────────────────────────────────
 filelock>=3.13.0
 
 # ── Testing ────────────────────────────────────────────────
 pytest==8.3.5
+
+# ── Optional: Pinecone retrieval (USE_PINECONE_RETRIEVAL=1) ─
+# Imported lazily and guarded, so the app runs without them. pinecone 6.0.2 is
+# present in the current venv but langchain-pinecone is not, so the path is
+# dead as it stands — install both to enable it.
+# pinecone==6.0.2
+# langchain-pinecone>=0.2.3

@@ -36,10 +36,13 @@ DEFAULT_TARGETS = [
     "https://www.oaic.gov.au/privacy",
     # State-level police checks
     "https://www.police.nsw.gov.au/online_services/national_police_check",
-    "https://www.police.vic.gov.au/national-police-check",
-    "https://www.police.qld.gov.au/units/criminal-history-screening",
+    "https://www.police.vic.gov.au/national-police-records-check",  # old /national-police-check now 404s
+    "https://www.police.qld.gov.au/safety-and-preventing-crime/criminal-history-screening",  # old /units/... now 404s
     # WWCC (Working With Children Check)
-    "https://www.kidsguardian.nsw.gov.au/working-with-children",
+    # kidsguardian.nsw.gov.au no longer resolves (agency folded into the Office of
+    # the Children's Guardian); service.nsw.gov.au carries the applicant-facing detail.
+    "https://ocg.nsw.gov.au/child-safe-scheme",
+    "https://www.service.nsw.gov.au/transaction/apply-working-children-check",
     "https://www.workingwithchildren.vic.gov.au/",
     # Aged Care & NDIS
     "https://www.ndiscommission.gov.au/workers/worker-screening",
@@ -58,7 +61,7 @@ DEFAULT_TARGETS = [
     # VIC Legislation
     "https://www.legislation.vic.gov.au/in-force/acts/spent-convictions-act-2021",  # Spent Convictions Act 2021 (Vic)
     # QLD Legislation
-    "https://www.legislation.qld.gov.au/view/html/inforce/current/act-2004-015",  # Criminal Law (Rehabilitation) Act 1986 (QLD)
+    "https://www.legislation.qld.gov.au/view/whole/html/inforce/current/act-2000-060",  # Working with Children (Risk Management and Screening) Act 2000 (QLD)
 ]
 
 ALLOWED_DOMAINS = {
@@ -70,6 +73,8 @@ ALLOWED_DOMAINS = {
     "afp.gov.au", "www.afp.gov.au",
     "oaic.gov.au", "www.oaic.gov.au",
     # State police
+    "ocg.nsw.gov.au", "www.ocg.nsw.gov.au",
+    "service.nsw.gov.au", "www.service.nsw.gov.au",
     "police.nsw.gov.au", "www.police.nsw.gov.au",
     "police.vic.gov.au", "www.police.vic.gov.au",
     "police.qld.gov.au", "www.police.qld.gov.au",
@@ -196,6 +201,29 @@ def _keyword_match_count(text: str, keywords: list[str] | None = None) -> int:
     return hits
 
 
+# Amendment-history notation used in the endnotes of every consolidated act:
+# "s 181 ins 2010 No. 5 s 58 amd 2014 No. 28 s 55 om 2024 No. 50 s 41".
+# Those tables are long enough to clear the word count and carry exactly the
+# domain keywords the filter looks for ("police commissioner", "application",
+# "notice"), so they sail through and then surface in retrieval as legislative
+# bookkeeping instead of the rule the reader asked about.
+_AMENDMENT_MARKER_RE = re.compile(
+    r"(?:^|[^A-Za-z])(?:ins|om|amd|sub|renum|reloc|prev|exp)\s+\d{4}\s+No\.\s*\d+",
+    re.IGNORECASE,
+)
+MAX_AMENDMENT_MARKER_DENSITY = 0.01  # markers per word
+
+
+def _is_amendment_history(chunk: str, word_count: int) -> bool:
+    """True when a chunk is an endnote/amendment table rather than operative text."""
+    if word_count <= 0:
+        return False
+    markers = len(_AMENDMENT_MARKER_RE.findall(chunk))
+    if markers == 0:
+        return False
+    return (markers / word_count) > MAX_AMENDMENT_MARKER_DENSITY
+
+
 def _is_quality_chunk(
     chunk: str,
     min_words: int = MIN_CHUNK_WORDS,
@@ -203,6 +231,9 @@ def _is_quality_chunk(
 ) -> bool:
     words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", chunk)
     if len(words) < max(1, min_words):
+        return False
+
+    if _is_amendment_history(chunk, len(words)):
         return False
 
     required_hits = max(2, max(1, min_keyword_matches))
@@ -838,7 +869,55 @@ def _topic_from_filename(stem: str) -> str:
     return "compliance"
 
 
+PDF_SOURCES_MANIFEST = "sources.json"
+_pdf_manifest_cache: dict[str, dict[str, str]] = {}
+
+
+def _load_pdf_manifest(pdf_dir: Path) -> dict[str, str]:
+    """Map "<filename>.pdf" -> origin URL, from <pdf_dir>/sources.json.
+
+    PDFs are dropped into the folder by hand, so their origin URL is never
+    captured automatically. Without it every chunk was stamped with a local
+    disk path, and the citation layer then had to invent a URL — which is how
+    government PDFs ended up credited to validex.com.au.
+    """
+    key = str(pdf_dir.resolve())
+    if key in _pdf_manifest_cache:
+        return _pdf_manifest_cache[key]
+
+    manifest: dict[str, str] = {}
+    path = pdf_dir / PDF_SOURCES_MANIFEST
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                # Keys starting with "_" are documentation, not filenames.
+                manifest = {
+                    str(k): str(v).strip()
+                    for k, v in raw.items()
+                    if not str(k).startswith("_") and str(v).strip()
+                }
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Could not read %s: %s", path, exc)
+
+    if not manifest:
+        state = "has no filled-in entries" if path.exists() else "is missing"
+        logger.warning(
+            "%s %s in %s — ingested PDFs will carry no citable source URL and will "
+            "be cited by title only. Fill in {\"file.pdf\": \"https://origin/url\"} "
+            "so citations point at the real publisher.",
+            PDF_SOURCES_MANIFEST, state, pdf_dir,
+        )
+    _pdf_manifest_cache[key] = manifest
+    return manifest
+
+
 def _source_key_from_pdf_path(pdf_path: Path) -> str:
+    """Origin URL for a local PDF, or a file:// key when none is recorded."""
+    manifest = _load_pdf_manifest(pdf_path.parent)
+    origin = manifest.get(pdf_path.name)
+    if origin:
+        return origin
     return f"file://{pdf_path.resolve().as_posix()}"
 
 

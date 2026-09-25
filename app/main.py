@@ -90,6 +90,57 @@ def _sanitize_ui_artifacts(text: str) -> str:
     return cleaned.strip()
 
 
+def _ends_cleanly(body: str) -> bool:
+    """True when a section body ends at a natural stopping point.
+
+    Bullets, headings and table rows legitimately end without terminal
+    punctuation; running prose does not.
+    """
+    if not body.strip():
+        return True
+    last = body.rstrip().rsplit("\n", 1)[-1].strip()
+    if last.startswith(("-", "*", "#", "|", ">")):
+        return True
+    return last.endswith((".", "!", "?", ":", "]", "**"))
+
+
+def _repair_truncated_sections(draft: str) -> str:
+    """Trim every section body back to its last complete sentence.
+
+    A section that ends "...building trust and maintaining" is a failed or
+    throttled LLM call, not finished prose. Publishing one sentence less is
+    always better than publishing half of one.
+    """
+    if not draft or not draft.strip():
+        return draft
+
+    from app.langchain_pipeline import _trim_to_last_complete_sentence
+
+    # Keep the heading lines exactly as they are; only bodies get trimmed.
+    blocks = re.split(r"(?m)^(#{1,6} .*)$", draft)
+    if len(blocks) == 1:
+        return _trim_to_last_complete_sentence(draft)
+
+    out = [blocks[0].rstrip() and _trim_to_last_complete_sentence(blocks[0]) or blocks[0]]
+    for index in range(1, len(blocks), 2):
+        heading = blocks[index]
+        body = blocks[index + 1] if index + 1 < len(blocks) else ""
+        trimmed = _trim_to_last_complete_sentence(body).strip()
+
+        # A body with no complete sentence at all cannot be salvaged by trimming.
+        # Publishing a heading above a dangling fragment is worse than omitting
+        # the section, so drop both — the same call the generator makes when a
+        # section comes back unusable.
+        if trimmed and not _ends_cleanly(trimmed):
+            _logger.warning("Dropping section with no complete sentence: %s", heading.strip())
+            continue
+
+        # Preserve the blank line that separated heading from body.
+        out.append(f"\n{heading}\n")
+        out.append(f"\n{trimmed}\n" if trimmed else "\n")
+    return re.sub(r"\n{3,}", "\n\n", "".join(out)).strip() + "\n"
+
+
 def sanitize_payload(payload: dict) -> dict:
     """Sanitize a generated payload: file paths, system prompt leaks, SEO analysis.
 
@@ -99,8 +150,18 @@ def sanitize_payload(payload: dict) -> dict:
     generated = payload.get("generated", {})
     draft = generated.get("draft", "")
 
+    # 0. Repair sections cut off mid-sentence. This runs here, at the single
+    #    chokepoint every payload passes through, rather than inside one
+    #    generation strategy — a throttled or failed call can truncate output on
+    #    any of the generation paths, and only this one is guaranteed to run.
+    draft = _repair_truncated_sections(draft)
+
     # 1. File Path & UI Artifact Sanitization
-    draft = re.sub(r'file://[^\s\]\)]+', 'https://www.validex.com.au', draft)
+    # Drop the URL half of a citation whose source is a local file rather than
+    # swapping in validex.com.au: that credited Validex for ACIC, OAIC and
+    # legislation PDFs and gave readers a link that cannot verify the claim.
+    draft = re.sub(r'\s*\|\s*URL:\s*file://[^\]\s]+', ' | Source document', draft, flags=re.IGNORECASE)
+    draft = re.sub(r'file://[^\s\]\)]+', 'source document', draft)
     draft = re.sub(r'[A-Z]:\\\\[^\s\]\)]+', '', draft)
     draft = re.sub(r'[A-Z]:/Users/[^\s\]\)]+', '', draft)
     draft = _sanitize_ui_artifacts(draft)

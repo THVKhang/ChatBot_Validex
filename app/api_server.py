@@ -118,10 +118,21 @@ app.add_middleware(
 try:
     from app.auth import auth_router, get_current_user_id, get_current_admin_user
     app.include_router(auth_router)
-except ImportError:
-    # Handle tests/mock cases
-    def get_current_user_id(): return None
-    def get_current_admin_user(): return {"username": "admin", "is_admin": True}
+except ImportError as _auth_import_error:
+    # This used to substitute a stub that returned {"is_admin": True} to every
+    # caller, so any ImportError — a missing PyJWT or bcrypt in a fresh install,
+    # a typo in a transitive import — silently left every /api/admin/* route
+    # unauthenticated while the app came up looking healthy. Fail closed: the
+    # app still boots (tests import this module without a DB), but anything
+    # behind an auth dependency refuses instead of waving the caller through.
+    logger.error("Auth module unavailable, all authenticated routes will refuse: %s",
+                 _auth_import_error)
+
+    def get_current_user_id():
+        raise HTTPException(status_code=503, detail="Authentication unavailable")
+
+    def get_current_admin_user():
+        raise HTTPException(status_code=503, detail="Authentication unavailable")
 
 # ── Session Store (Redis-backed with in-memory fallback) ──
 from app.redis_session import RedisSessionStore
@@ -1003,7 +1014,15 @@ async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | 
     
                 # Calculate quality score from editor evaluation
                 revision_count = final_state.get("revision_count", 0)
-                quality_blocked = bool(final_state.get("quality_gate_blocked"))
+                # The editor only sets quality_gate_blocked when its LLM rubric
+                # scores below 5. A draft force-published after failing the
+                # deterministic gate leaves editor_feedback set instead, and was
+                # being reported through the API as clean. main.py already ORs
+                # these two; this path had drifted.
+                quality_blocked = bool(
+                    final_state.get("quality_gate_blocked")
+                    or final_state.get("editor_feedback")
+                )
                 # Estimate quality: if editor accepted first time = high quality
                 estimated_quality = max(5, 10 - (revision_count - 1) * 2) if not quality_blocked else 4
     
@@ -1015,12 +1034,16 @@ async def chat_stream(request: ChatRequest, req: Request = None, user_id: int | 
                         "outline": final_state.get("outline", []),
                         "draft": final_state.get("draft", ""),
                         "sources_used": final_state.get("sources_used", []),
+                        # A missing editor_evaluation means nothing graded this
+                        # draft. Reporting a fabricated 9/9/9 "ACCEPT" made an
+                        # ungraded article indistinguishable from one that
+                        # passed the gate.
                         "evaluation": final_state.get("editor_evaluation") or {
-                            "relevance": 9,
-                            "coherence": 9,
-                            "factuality": 9,
-                            "overall": 9,
-                            "verdict": "ACCEPT",
+                            "relevance": None,
+                            "coherence": None,
+                            "factuality": None,
+                            "overall": None,
+                            "verdict": "NOT_EVALUATED",
                             "issues": []
                         },
                     },

@@ -23,6 +23,27 @@ from app.parser import ParsedPrompt
 
 logger = logging.getLogger(__name__)
 
+# Cosine-similarity calibration band for the local sentence encoder.
+#
+# BGE-class encoders compress their similarity range: unrelated text still
+# scores ~0.35-0.42, so a band anchored near zero marks everything "relevant".
+# These bounds were measured against the live corpus with the fine-tuned
+# bge-base model — blended (0.7*max + 0.3*avg) similarity of the top-5 retrieved
+# chunks over five on-topic and five off-topic queries:
+#
+#     on-topic   0.525 .. 0.813   (WWCC, spent convictions, NDIS, police checks)
+#     off-topic  0.335 .. 0.414   (sourdough, hiking, asyncio, jazz, bicycles)
+#
+# Floor sits just above the off-topic ceiling, ceiling near the on-topic best.
+# RE-MEASURE THESE IF THE ENCODER CHANGES — they are model-specific, not
+# universal cosine thresholds.
+RELEVANCE_FLOOR = 0.42
+RELEVANCE_CEILING = 0.80
+
+# A sub-aspect counts as covered once some document reaches this similarity.
+# Sits inside the same measured gap, above off-topic noise.
+COVERAGE_SIM_THRESHOLD = 0.55
+
 
 class EvaluationResult(BaseModel):
     """Structured output for context evaluation."""
@@ -62,8 +83,13 @@ class RAGEvaluator:
             max_sim = float(max(sims))
             avg_sim = float(sum(sims) / len(sims))
 
-            # Map raw similarity (typically 0.1-0.6) to 0.0-1.0
-            return min(1.0, max(0.0, (max_sim * 2.0) + (avg_sim * 0.5)))
+            # Blend best-match and overall similarity, then rescale the band that
+            # actually discriminates for MiniLM/BGE-class encoders. The previous
+            # formula ((max*2)+(avg*0.5)) saturated at 1.0 from max_sim >= 0.4,
+            # which made this dimension a constant for anything on-topic.
+            blended = (0.7 * max_sim) + (0.3 * avg_sim)
+            normalized = (blended - RELEVANCE_FLOOR) / (RELEVANCE_CEILING - RELEVANCE_FLOOR)
+            return min(1.0, max(0.0, normalized))
         except Exception as exc:
             logger.error("Relevance scoring failed: %s", exc)
             return 0.5
@@ -97,14 +123,15 @@ class RAGEvaluator:
                 return 0.0, sub_aspects
 
             doc_embs = get_embeddings(doc_texts)
+            # One batched encode for every aspect instead of one call per aspect.
+            aspect_embs = get_embeddings(sub_aspects)
 
             covered = 0
             missing = []
-            for aspect in sub_aspects:
-                aspect_emb = get_embedding(aspect)
+            for aspect, aspect_emb in zip(sub_aspects, aspect_embs):
                 sims = batch_cosine_similarity(aspect_emb, doc_embs)
                 best_sim = float(max(sims))
-                if best_sim >= 0.25:
+                if best_sim >= COVERAGE_SIM_THRESHOLD:
                     covered += 1
                 else:
                     missing.append(aspect)
@@ -127,13 +154,15 @@ class RAGEvaluator:
             doc_texts = [doc.page_content[:400] for doc in docs[:5]]
             doc_embs = get_embeddings(doc_texts)
 
-            # Calculate average pairwise similarity
+            # Average pairwise cosine similarity. Must go through
+            # batch_cosine_similarity: a raw dot product is only equal to cosine
+            # when the encoder happens to emit unit-norm vectors, which is not
+            # guaranteed across the fine-tuned and fallback models.
             total_sim = 0.0
             pair_count = 0
             for i in range(len(doc_embs)):
                 for j in range(i + 1, len(doc_embs)):
-                    import numpy as np
-                    sim = float(np.dot(doc_embs[i], doc_embs[j]))
+                    sim = float(batch_cosine_similarity(doc_embs[i], doc_embs[j:j + 1])[0])
                     total_sim += sim
                     pair_count += 1
 

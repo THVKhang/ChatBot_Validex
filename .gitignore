@@ -232,3 +232,9 @@ resilience_report.json
 
 # Scratch test scripts (use tests/ directory instead)
 _test_*.py
+
+.env.*
+!.env.example
+*.bak
+exp_*.json
+verify*.json

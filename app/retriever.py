@@ -11,6 +11,8 @@ from datetime import datetime
 import json
 import logging
 from pathlib import Path
+import threading
+from typing import Any
 
 from app.local_semantics import get_embedding, get_embeddings, cosine_similarity, batch_cosine_similarity
 from app.utils import tokenize
@@ -60,8 +62,16 @@ def _load_metadata_index(metadata_path: str | None) -> dict[str, MetadataRecord]
     except json.JSONDecodeError:
         return {}
 
+    # Accept only a list of objects: a dict payload would otherwise iterate its
+    # keys and blow up on item.get() below.
+    if not isinstance(payload, list):
+        logger.warning("Metadata index %s is not a list of records — ignoring", path)
+        return {}
+
     index: dict[str, MetadataRecord] = {}
     for item in payload:
+        if not isinstance(item, dict):
+            continue
         file_stem = item.get("file_stem")
         if not file_stem:
             continue
@@ -98,6 +108,40 @@ def _domain_tokens(metadata_index: dict[str, MetadataRecord]) -> set[str]:
     return tokens
 
 
+_CORPUS_CACHE_LOCK = threading.Lock()
+_CORPUS_CACHE: dict[str, Any] = {"signature": None, "contents": [], "embeddings": None}
+
+# Only the head of each document is embedded, for speed.
+_DOC_EMBED_CHARS = 1000
+
+
+def _corpus_embeddings(file_paths: list[Path]) -> tuple[list[str], Any]:
+    """Read and embed the processed corpus, caching until the files change.
+
+    Re-encoding every document on every query made retrieval O(corpus) per
+    request. The cache is keyed on each file's path, size and mtime, so edits
+    and new documents still invalidate it.
+    """
+    signature = tuple((str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in file_paths)
+
+    with _CORPUS_CACHE_LOCK:
+        if _CORPUS_CACHE["signature"] == signature:
+            return _CORPUS_CACHE["contents"], _CORPUS_CACHE["embeddings"]
+
+    contents = [p.read_text(encoding="utf-8") for p in file_paths]
+    try:
+        embeddings = get_embeddings([c[:_DOC_EMBED_CHARS] for c in contents])
+    except Exception as exc:
+        logger.error("Failed to embed local corpus: %s", exc)
+        return contents, None
+
+    with _CORPUS_CACHE_LOCK:
+        _CORPUS_CACHE["signature"] = signature
+        _CORPUS_CACHE["contents"] = contents
+        _CORPUS_CACHE["embeddings"] = embeddings
+    return contents, embeddings
+
+
 def retrieve_top_k(
     query: str,
     data_dir: str,
@@ -110,16 +154,17 @@ def retrieve_top_k(
         return []
 
     metadata_index = _load_metadata_index(metadata_path)
-    
-    file_paths = list(base_dir.glob("*.txt"))
+
+    file_paths = sorted(base_dir.glob("*.txt"))
     if not file_paths:
         return []
 
-    # Load contents and encode
-    contents = [p.read_text(encoding="utf-8") for p in file_paths]
+    contents, doc_embs = _corpus_embeddings(file_paths)
+    if doc_embs is None:
+        return []
+
     query_emb = get_embedding(query)
-    doc_embs = get_embeddings([c[:1000] for c in contents])  # Embed first 1000 chars for speed
-    
+
     # Compute similarity scores
     similarities = batch_cosine_similarity(query_emb, doc_embs)
     
@@ -170,17 +215,23 @@ def retrieve_with_guard(
         return RetrievalDecision([], "out_of_domain", 0.0, 0, "query does not match current RAG domain")
 
     # 2. Retrieve candidates semantically
-    candidates = retrieve_top_k(query, data_dir, len(list(base_dir.glob("*.txt"))), metadata_path)
+    corpus_size = sum(1 for _ in base_dir.glob("*.txt"))
+    candidates = retrieve_top_k(query, data_dir, corpus_size, metadata_path)
     if not candidates:
         return RetrievalDecision([], "no_match", 0.0, 0, "no relevant document found")
 
     top_score = candidates[0].score
-    second_score = candidates[1].score if len(candidates) > 1 else 0
-    
-    # Confidence metrics
+
+    # Confidence metrics. The margin between the best and second-best document
+    # only means something when there *is* a second document — otherwise a lone
+    # irrelevant file would score a perfect gap and pass the guard.
     score_confidence = min(1.0, top_score / 100.0)
-    gap_confidence = (top_score - second_score) / (top_score + 1.0)
-    confidence = max(score_confidence, gap_confidence)
+    if len(candidates) > 1:
+        second_score = candidates[1].score
+        gap_confidence = (top_score - second_score) / (top_score + 1.0)
+        confidence = max(score_confidence, gap_confidence)
+    else:
+        confidence = score_confidence
 
     # Backwards compatibility: scale min_top_score from 0-15 lexical scale to 0-100 semantic scale
     actual_min_top_score = min_top_score

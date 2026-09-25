@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover - optional dependency
     GoogleGenerativeAIEmbeddings = None
 
 from app.config import settings
+from app.llm.provider import extract_text
 
 
 load_dotenv()
@@ -120,7 +121,7 @@ def summarize_table_via_llm(table_md: str) -> str:
         try:
             if llm:
                 response = llm.invoke(prompt)
-                return getattr(response, "content", str(response)).strip()
+                return extract_text(response).strip()
         except Exception as exc:
             exc_str = str(exc)
             if "429" in exc_str or "quota" in exc_str.lower() or "limit" in exc_str.lower() or "ResourceExhausted" in exc_str:
@@ -212,26 +213,80 @@ def extract_and_summarize_tables(
     return "\n".join(cleaned_lines), table_children, table_parents
 
 
-def split_text_into_paragraphs(text: str, max_chars: int = 1500) -> list[str]:
-    paragraphs = text.split("\n\n")
-    chunks = []
-    current = []
-    current_len = 0
-    for p in paragraphs:
-        p = p.strip()
-        if not p:
+def _split_oversized_paragraph(paragraph: str, max_chars: int) -> list[str]:
+    """Break a single paragraph that alone exceeds ``max_chars``.
+
+    Splits on sentence boundaries where possible so a chunk stays readable, and
+    falls back to a hard character cut for text with no sentence breaks (tables,
+    long enumerations). Without this an oversized paragraph became one unbounded
+    chunk that could blow past the embedding model's token limit.
+    """
+    sentences = re.split(r"(?<=[.!?])\s+", paragraph)
+    pieces: list[str] = []
+    current = ""
+    for sentence in sentences:
+        while len(sentence) > max_chars:
+            if current:
+                pieces.append(current)
+                current = ""
+            pieces.append(sentence[:max_chars])
+            sentence = sentence[max_chars:]
+        if not sentence:
             continue
-        if current_len + len(p) + 2 <= max_chars:
-            current.append(p)
-            current_len += len(p) + 2
+        candidate = f"{current} {sentence}".strip() if current else sentence
+        if len(candidate) <= max_chars:
+            current = candidate
         else:
             if current:
-                chunks.append("\n\n".join(current))
-            current = [p]
-            current_len = len(p)
+                pieces.append(current)
+            current = sentence
+    if current:
+        pieces.append(current)
+    return pieces
+
+
+def split_text_into_paragraphs(
+    text: str,
+    max_chars: int = 1500,
+    overlap_chars: int = 200,
+) -> list[str]:
+    """Pack paragraphs into chunks of at most ``max_chars``, with tail overlap.
+
+    ``overlap_chars`` of the previous chunk is prepended to the next one so an
+    answer that straddles a chunk boundary stays retrievable from at least one
+    side of the split.
+    """
+    paragraphs: list[str] = []
+    for raw in text.split("\n\n"):
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if len(stripped) > max_chars:
+            paragraphs.extend(_split_oversized_paragraph(stripped, max_chars))
+        else:
+            paragraphs.append(stripped)
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for p in paragraphs:
+        if current and current_len + len(p) + 2 > max_chars:
+            chunks.append("\n\n".join(current))
+            current = []
+            current_len = 0
+        current.append(p)
+        current_len += len(p) + 2
     if current:
         chunks.append("\n\n".join(current))
-    return chunks
+
+    if overlap_chars <= 0 or len(chunks) < 2:
+        return chunks
+
+    overlapped = [chunks[0]]
+    for previous, chunk in zip(chunks, chunks[1:]):
+        tail = previous[-overlap_chars:].lstrip()
+        overlapped.append(f"{tail}\n\n{chunk}" if tail else chunk)
+    return overlapped
 
 
 def split_non_legal_hierarchical(doc: dict, table_name: str) -> tuple[list[dict], list[dict]]:
@@ -537,10 +592,33 @@ def _embed_records(records: list[dict[str, Any]]) -> tuple[list[list[float]], in
         return vectors, fake_dim, "fake"
 
     texts = [str(item.get("text", "")) for item in records]
-    vectors = embedding_client.embed_documents(texts)
+
+    # Embed in batches: both Google and OpenAI cap the number of inputs (and the
+    # total tokens) per request, so a single call over a full ingest run fails
+    # once the corpus grows.
+    batch_size = max(1, int(os.getenv("EMBEDDING_BATCH_SIZE", "64")))
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start:start + batch_size]
+        batch_vectors = embedding_client.embed_documents(batch)
+        if len(batch_vectors) != len(batch):
+            raise RuntimeError(
+                f"Embedding provider returned {len(batch_vectors)} vectors for {len(batch)} inputs"
+            )
+        vectors.extend(batch_vectors)
+        logger.info("Embedded %d/%d chunks", len(vectors), len(texts))
+
     if not vectors:
         return [], 0, _provider or "unknown"
-    return vectors, len(vectors[0]), _provider or "unknown"
+
+    dimension = len(vectors[0])
+    mismatched = [i for i, vec in enumerate(vectors) if len(vec) != dimension]
+    if mismatched:
+        raise RuntimeError(
+            f"Embedding provider returned inconsistent dimensions "
+            f"(expected {dimension}, first offender at index {mismatched[0]})"
+        )
+    return vectors, dimension, _provider or "unknown"
 
 
 def ingest_jsonl_to_pgvector(
@@ -605,6 +683,21 @@ def ingest_jsonl_to_pgvector(
 
     from app.vector_repository import PGVectorRepository
     repo = PGVectorRepository()
+
+    # Embeddings from different providers occupy different vector spaces. Mixing
+    # them in one table produces cosine distances that are pure noise, and
+    # nothing downstream can detect it — so refuse the write instead.
+    if changed_records and embedding_provider not in {"unknown", "fake"}:
+        existing_providers = repo.stored_embedding_providers(table_name)
+        foreign = existing_providers - {embedding_provider, "unknown", "fake"}
+        if foreign and os.getenv("ALLOW_MIXED_EMBEDDING_PROVIDERS", "0") != "1":
+            raise RuntimeError(
+                f"Table '{table_name}' already holds embeddings from {sorted(foreign)} but this run "
+                f"uses '{embedding_provider}'. Vectors from different providers are not comparable. "
+                f"Re-embed the table (app/refresh_embeddings.py), ingest into a separate table, or "
+                f"set ALLOW_MIXED_EMBEDDING_PROVIDERS=1 to override."
+            )
+
     repo.initialize_schema(table_name, safe_dimension)
 
     # Upsert parent chunks associated with changed child chunks

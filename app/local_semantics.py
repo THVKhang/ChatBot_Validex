@@ -5,6 +5,7 @@ between topics, sentences, and documents without calling OpenAI APIs.
 """
 
 import logging
+import threading
 from typing import Any
 import numpy as np
 
@@ -12,28 +13,40 @@ logger = logging.getLogger(__name__)
 
 # Global singleton to hold the model in memory
 _MODEL = None
+_MODEL_LOCK = threading.Lock()
 
 
 def get_model() -> Any:
     """Lazy load the sentence transformer model to save memory if unused."""
     global _MODEL
     if _MODEL is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-            import os
-            
-            # Prioritize fine-tuned Validex model
-            finetuned_path = os.path.join("data", "models", "bge-base-finetuned-validex")
-            if os.path.isdir(finetuned_path) and os.path.isfile(os.path.join(finetuned_path, "config.json")):
-                logger.info("Loading FINE-TUNED Validex Semantic Model (%s)...", finetuned_path)
-                _MODEL = SentenceTransformer(finetuned_path)
-            else:
-                logger.info("Loading fallback Local Semantic Model (all-MiniLM-L6-v2)...")
-                _MODEL = SentenceTransformer("all-MiniLM-L6-v2")
-            logger.info("Local Semantic Model loaded successfully.")
-        except ImportError:
-            logger.error("Failed to load sentence_transformers. Please install it.")
-            raise
+        # Serialise loading so concurrent requests don't each build a model.
+        with _MODEL_LOCK:
+            if _MODEL is not None:
+                return _MODEL
+            return _load_model_locked()
+    return _MODEL
+
+
+def _load_model_locked() -> Any:
+    """Build the singleton. Callers must hold ``_MODEL_LOCK``."""
+    global _MODEL
+    try:
+        from sentence_transformers import SentenceTransformer
+        import os
+
+        # Prioritize fine-tuned Validex model
+        finetuned_path = os.path.join("data", "models", "bge-base-finetuned-validex")
+        if os.path.isdir(finetuned_path) and os.path.isfile(os.path.join(finetuned_path, "config.json")):
+            logger.info("Loading FINE-TUNED Validex Semantic Model (%s)...", finetuned_path)
+            _MODEL = SentenceTransformer(finetuned_path)
+        else:
+            logger.info("Loading fallback Local Semantic Model (all-MiniLM-L6-v2)...")
+            _MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+        logger.info("Local Semantic Model loaded successfully.")
+    except ImportError:
+        logger.error("Failed to load sentence_transformers. Please install it.")
+        raise
     return _MODEL
 
 

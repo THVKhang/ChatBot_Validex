@@ -95,7 +95,11 @@ def run_prompt_sweep(
             top_scores.append(round(sim, 4))
             top_titles.append(title)
 
-        best_sim = top_scores[0] if top_scores else 0.0
+        # Take the BEST semantic similarity, not the first row's. Rows come back
+        # ordered by RRF, and a keyword-only hit carries no cosine score (0.0),
+        # so reading position 0 reported a well-covered topic as a blind spot
+        # whenever the keyword branch happened to win the fusion.
+        best_sim = max(top_scores) if top_scores else 0.0
         is_blind_spot = best_sim < threshold
 
         entry = {

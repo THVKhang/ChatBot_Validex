@@ -133,3 +133,40 @@ def test_retrieve_routing_simple_vs_complex():
         assert len(bundle_complex.documents) == 1
         assert bundle_complex.documents[0].page_content == "### Parent Chunk Full Content - 2000 tokens of details..."
         mock_repo.get_parent_content.assert_called_with("validex_knowledge", "parent_1")
+
+
+def test_split_text_into_paragraphs_hard_splits_oversized_paragraph():
+    """A single paragraph longer than max_chars must not become one giant chunk."""
+    from app.ingest_pgvector import split_text_into_paragraphs
+
+    long_paragraph = " ".join(f"Sentence number {i} about police checks." for i in range(400))
+    assert len(long_paragraph) > 3000
+
+    chunks = split_text_into_paragraphs(long_paragraph, max_chars=500, overlap_chars=0)
+
+    assert len(chunks) > 1
+    assert all(len(c) <= 500 for c in chunks), [len(c) for c in chunks]
+
+
+def test_split_text_into_paragraphs_no_sentence_breaks():
+    """Text with no sentence boundaries still gets cut to max_chars."""
+    from app.ingest_pgvector import split_text_into_paragraphs
+
+    blob = "x" * 2500
+    chunks = split_text_into_paragraphs(blob, max_chars=400, overlap_chars=0)
+
+    assert all(len(c) <= 400 for c in chunks)
+    assert "".join(chunks) == blob
+
+
+def test_split_text_into_paragraphs_applies_overlap():
+    """Each chunk after the first carries a tail of the previous one."""
+    from app.ingest_pgvector import split_text_into_paragraphs
+
+    text = "\n\n".join(f"Paragraph {i} " + ("word " * 40) for i in range(6))
+    chunks = split_text_into_paragraphs(text, max_chars=600, overlap_chars=100)
+
+    assert len(chunks) > 1
+    for previous, chunk in zip(chunks, chunks[1:]):
+        tail = previous[-100:].lstrip()
+        assert chunk.startswith(tail)

@@ -7,6 +7,7 @@ All 3 stages are ACTIVE:
 """
 import json
 import logging
+from app.llm.provider import extract_text
 import re
 from langchain_core.documents import Document
 from app.graph_state import GraphState
@@ -14,6 +15,7 @@ from app.langchain_pipeline import pipeline
 from app.parser import ParsedPrompt, LANGUAGE_MAP
 from app.generator import GeneratedBlog
 from app.local_nli import verify_facts_nli
+from app.config import length_word_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -102,79 +104,6 @@ def _fetch_real_image(keyword: str, topic: str) -> tuple[str, str]:
     return (image_url, alt_text)
 
 
-def _plan_outline(parsed: ParsedPrompt, docs: list[Document]) -> list[dict]:
-    """Stage 1: LLM generates a detailed outline with key points per section."""
-    # Use fast LLM for planning
-    llm_to_use = getattr(pipeline, "_fast_llm", pipeline._llm) or pipeline._llm
-    if llm_to_use is None:
-        return []
-
-    doc_summaries = "\n".join([
-        f"- [{d.metadata.get('title', 'Source')}]: {d.page_content[:200]}"
-        for d in docs[:5]
-    ])
-
-    # Determine section count from user settings
-    target_sections = parsed.target_sections if parsed.target_sections > 0 else 5
-
-    # Detect if user wants step-by-step format
-    prompt_lower = parsed.raw_prompt.lower()
-    is_howto = any(signal in prompt_lower for signal in [
-        "step-by-step", "step by step", "how to", "how do i", "how can i",
-        "guide", "walkthrough", "tutorial", "apply for", "applying for",
-    ])
-
-    if is_howto:
-        format_instruction = (
-            "CRITICAL FORMAT RULES:\n"
-            "1. Structure the outline as NUMBERED STEPS (Step 1, Step 2, Step 3, etc.)\n"
-            "2. Each step must be a concrete, actionable instruction the reader can follow\n"
-            "3. Steps should be in chronological order of the actual process\n"
-            "4. First section = Introduction, Last section = Conclusion\n"
-            "5. DO NOT create generic headings like 'Key Factors' or 'What This Means for You'\n"
-            "6. Example step headings: 'Step 1: Determine Which Type of Check You Need', "
-            "'Step 2: Prepare Your 100-Point ID Documents', 'Step 3: Choose an Accredited Provider'\n"
-        )
-    else:
-        format_instruction = (
-            "CRITICAL FORMAT RULES:\n"
-            "1. Make headings specific and compelling, not generic\n"
-            "2. First section = Introduction, Last section = Conclusion and Strategic Next Steps\n"
-        )
-
-    prompt = (
-        f"You are planning a blog article about: {parsed.topic}\n"
-        f"Audience: {parsed.audience} | Tone: {parsed.tone} | Length: {parsed.length}\n"
-        f"Language: Write in {LANGUAGE_MAP.get(parsed.language, 'English')}\n\n"
-        "Available source material:\n"
-        f"{doc_summaries}\n\n"
-        "Create a detailed outline for this blog. Return ONLY a JSON array where each item has:\n"
-        '- "heading": section heading\n'
-        '- "key_points": array of 2-3 key points to cover\n'
-        '- "relevant_sources": which sources to cite\n\n'
-        f"{format_instruction}\n"
-        f"Include {target_sections}-{target_sections + 2} sections to ensure the final blog exceeds 700 words.\n"
-        f"TOPIC FOCUS: Stay strictly on '{parsed.topic}'. Do NOT mix in information about different types of checks "
-        "unless the user explicitly asks for comparison. For example, if the topic is 'police check', do NOT "
-        "include Working With Children Check (WWCC) details unless directly relevant.\n"
-        "Each section must cover DIFFERENT aspects — do NOT repeat the same facts across sections.\n"
-        "Return ONLY the JSON array."
-    )
-
-    try:
-        response = llm_to_use.invoke(prompt)
-        raw = getattr(response, "content", str(response))
-        match = re.search(r"\[[\s\S]*\]", raw)
-        if match:
-            outline = json.loads(match.group(0))
-            if isinstance(outline, list) and len(outline) >= 3:
-                logger.info(f"Writer Plan: generated outline with {len(outline)} sections")
-                return outline
-    except Exception as exc:
-        logger.warning(f"Writer Plan failed: {exc}")
-
-    return []
-
 
 def _self_review(draft: str, parsed: ParsedPrompt, docs: list[Document]) -> str:
     """Stage 3: LLM self-reviews and improves the draft before Editor."""
@@ -226,51 +155,74 @@ def _self_review(draft: str, parsed: ParsedPrompt, docs: list[Document]) -> str:
         f"Audience: {parsed.audience}\n"
         f"Tone: {parsed.tone}\n"
         f"Available sources: {', '.join(doc_titles)}\n\n"
-        f"Draft to review:\n{draft[:4000]}\n\n"
-        "Return the IMPROVED version of the draft. Keep the same markdown format.\n"
-        "Fix any issues you find. Do NOT add conversational commentary.\n"
+        # Send the WHOLE draft. Truncating the input here silently amputated the
+        # article: the reviewer returned an "improved" version of only the part
+        # it was shown, that replaced the full draft, and the missing tail took
+        # the conclusion with it — which then tripped the editor's no-conclusion
+        # check and cost a full revision cycle every single run.
+        f"Draft to review:\n{draft}\n\n"
+        "Return the IMPROVED version of the draft, IN FULL. Keep the same markdown\n"
+        "format and keep EVERY '## ' section that the draft already has, including\n"
+        "the conclusion. Fix issues; do not drop or summarise whole sections.\n"
+        "Do NOT add conversational commentary.\n"
         "Output ONLY the improved markdown blog post."
     )
 
+    original_headings = set(re.findall(r"(?m)^##\s+(.+?)\s*$", draft))
+
     try:
         response = llm_to_use.invoke(prompt)
-        improved = getattr(response, "content", str(response)).strip()
-        # Basic validation
-        if len(improved) > len(draft) * 0.5 and "##" in improved:
-            logger.info(f"Writer Self-Review: improved draft ({len(draft)} → {len(improved)} chars)")
-            return improved
-        logger.warning("Self-review output failed validation, keeping original")
+        improved = extract_text(response).strip()
+
+        if "##" not in improved:
+            logger.warning("Self-review returned no headings, keeping original")
+            return draft
+
+        # A review that loses content is not an improvement. Reject it rather
+        # than let a shorter, structurally-broken draft reach the editor.
+        improved_headings = set(re.findall(r"(?m)^##\s+(.+?)\s*$", improved))
+        lost = original_headings - improved_headings
+        if lost:
+            logger.warning(
+                "Self-review dropped %d section(s) %s — keeping original",
+                len(lost), sorted(lost)[:3],
+            )
+            return draft
+        if len(improved) < len(draft) * 0.8:
+            logger.warning(
+                "Self-review shrank draft %d → %d chars (>20%% lost) — keeping original",
+                len(draft), len(improved),
+            )
+            return draft
+
+        logger.info(f"Writer Self-Review: improved draft ({len(draft)} → {len(improved)} chars)")
+        return improved
     except Exception as exc:
         logger.warning(f"Writer Self-Review failed: {exc}")
 
     return draft
 
 
-def _inject_outline_into_instructions(parsed: ParsedPrompt, outline: list[dict]) -> ParsedPrompt:
-    """Inject the planned outline into custom_instructions so the generator follows it."""
-    if not outline:
-        return parsed
+def _inject_word_budget(parsed: ParsedPrompt) -> ParsedPrompt:
+    """Put the word budget at the head of custom_instructions on every pass.
 
-    outline_text = (
-        "MANDATORY OUTLINE — YOU MUST USE THESE EXACT HEADINGS IN ORDER.\n"
-        "Each section MUST cover ONLY its assigned key points. Do NOT repeat information across sections.\n"
-        "Do NOT add extra sections or change the heading text.\n\n"
+    The generator's system prompt defers to this for the concrete numbers, so
+    it has to be present every time. It used to ride along inside the outline
+    injection, which only runs on the first attempt — so a draft rejected for
+    being too long was rewritten with no word budget at all, overshot again,
+    and burned both revisions before the circuit breaker published it anyway.
+    """
+    min_words, target_words, max_words = length_word_bounds(parsed.length)
+    budget = (
+        f"WORD BUDGET (hard requirement): write about {target_words} words. "
+        f"Fewer than {min_words} or more than {max_words} words is rejected. "
+        f"Prefer cutting detail over exceeding {max_words}.\n"
     )
-    for i, section in enumerate(outline, 1):
-        heading = section.get("heading", f"Section {i}")
-        key_points = section.get("key_points", [])
-        points_str = "; ".join(key_points) if key_points else ""
-        outline_text += f"{i}. {heading}"
-        if points_str:
-            outline_text += f" — Cover ONLY: {points_str}"
-        outline_text += "\n"
-
-    if parsed.custom_instructions:
-        parsed.custom_instructions = f"{outline_text}\n{parsed.custom_instructions}"
-    else:
-        parsed.custom_instructions = outline_text
-
+    parsed.custom_instructions = (
+        f"{budget}\n{parsed.custom_instructions}" if parsed.custom_instructions else budget
+    )
     return parsed
+
 
 
 from app.agents.base import BaseAgentNode
@@ -456,7 +408,7 @@ class WriterAgentNode(BaseAgentNode):
                     )
                 try:
                     response = llm_to_use.invoke(edit_prompt)
-                    edited_draft = getattr(response, "content", str(response)).strip()
+                    edited_draft = extract_text(response).strip()
                     # Validate the edit produced something reasonable
                     # Adaptive validation based on content type
                     if is_format_change or not is_previous_blog:
@@ -506,18 +458,17 @@ class WriterAgentNode(BaseAgentNode):
                         "loop_step": state.get("loop_step", 0) + 1,
                     }
     
-        # ── Stage 1: PLAN (only on first attempt, skip on revisions) ──
-        if revision_count == 0 and not feedback:
-            outline = _plan_outline(parsed, docs)
-            if outline:
-                parsed = _inject_outline_into_instructions(parsed, outline)
-                logger.info(f"Writer Stage 1: Outline injected ({len(outline)} sections)")
-            else:
-                logger.info("Writer Stage 1: Outline skipped (LLM unavailable or failed)")
-        else:
-            logger.info("Writer Stage 1: Outline skipped (revision/feedback mode)")
+        # Stage 1 used to plan an outline here and push it into
+        # custom_instructions. The live generation path
+        # (_generate_all_sections_in_one_call) never read custom_instructions,
+        # so the plan was a paid fast-LLM call per article whose result was
+        # discarded. Now that the field does reach the model, re-injecting a
+        # second "MANDATORY OUTLINE" would contradict the heading list the
+        # generator builds from the length profile. Sections are sized by
+        # config.length_section_count instead.
     
         # ── Stage 2: DRAFT (Active RAG enabled) ──
+        parsed = _inject_word_budget(parsed)
         llm_trace = {}
         payload = {
             "effective_parsed": parsed,

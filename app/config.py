@@ -8,6 +8,23 @@ load_dotenv()
 
 import re
 
+def _google_model(shared_var: str, google_var: str, default: str) -> str:
+    """Resolve a Gemini model name without inheriting a non-Gemini one.
+
+    LLM_MODEL_PRO / LLM_MODEL_FAST are shared between the OpenAI-compatible
+    client and the Gemini client. Pointing them at a non-Gemini model (a Groq
+    llama, an Anthropic model behind a router) therefore used to build the
+    Gemini client with a name it cannot serve, so it 404'd and the fallback
+    chain — the whole point of having two providers — was dead on arrival.
+    Only honour the shared variable when it actually names a Gemini model.
+    """
+    shared = os.getenv(shared_var, "").strip()
+    if shared and (shared.startswith("models/") or "gemini" in shared.lower()
+                   or "gemma" in shared.lower()):
+        return shared
+    return os.getenv(google_var, "").strip() or default
+
+
 def _normalize_pgvector_table(value: str | None) -> str:
     normalized = str(value or "").strip()
     if not normalized or normalized == "rag_blog_chunks":
@@ -21,8 +38,15 @@ def _normalize_pgvector_table(value: str | None) -> str:
 class Settings:
     model_name: str = os.getenv("LLM_MODEL_PRO", os.getenv("MODEL_NAME", "gpt-4o-mini"))
     fast_model_name: str = os.getenv("LLM_MODEL_FAST", os.getenv("FAST_MODEL_NAME", "llama-3.1-8b-instant"))
-    google_model_name: str = os.getenv("LLM_MODEL_PRO", os.getenv("GOOGLE_MODEL_NAME", "models/gemini-2.5-flash"))
-    google_fast_model_name: str = os.getenv("LLM_MODEL_FAST", os.getenv("GOOGLE_FAST_MODEL_NAME", "models/gemini-2.0-flash-lite"))
+    # Defaults use the floating "-latest" aliases on purpose: pinned Gemini
+    # versions get retired and then every call 404s (models/gemini-2.0-flash-lite
+    # died exactly this way), which the fallback chain cannot recover from.
+    google_model_name: str = _google_model(
+        "LLM_MODEL_PRO", "GOOGLE_MODEL_NAME", "models/gemini-flash-latest"
+    )
+    google_fast_model_name: str = _google_model(
+        "LLM_MODEL_FAST", "GOOGLE_FAST_MODEL_NAME", "models/gemini-flash-lite-latest"
+    )
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     google_embedding_model: str = os.getenv("GOOGLE_EMBEDDING_MODEL", "models/text-embedding-004")
     llm_provider: str = os.getenv("LLM_PROVIDER", "auto")
@@ -31,6 +55,10 @@ class Settings:
     output_tokens_short: int = int(os.getenv("OUTPUT_TOKENS_SHORT", "600"))
     output_tokens_medium: int = int(os.getenv("OUTPUT_TOKENS_MEDIUM", "1200"))
     output_tokens_long: int = int(os.getenv("OUTPUT_TOKENS_LONG", "1800"))
+    # The writer's own output ceiling. 2048 could not physically hold the 'long'
+    # profile's 1755-word maximum (~2340 prose tokens before markdown), so long
+    # articles were being clipped and then sentence-trimmed back.
+    writer_max_output_tokens: int = int(os.getenv("WRITER_MAX_OUTPUT_TOKENS", "3072"))
     input_output_ratio_min: float = float(os.getenv("INPUT_OUTPUT_RATIO_MIN", "1.5"))
     input_output_ratio_max: float = float(os.getenv("INPUT_OUTPUT_RATIO_MAX", "2.0"))
     chunk_token_estimate: int = int(os.getenv("CHUNK_TOKEN_ESTIMATE", "260"))
@@ -114,6 +142,14 @@ class Settings:
     cache_enabled: bool = os.getenv("CACHE_ENABLED", "1") == "1"
     cache_max_entries: int = int(os.getenv("CACHE_MAX_ENTRIES", "100"))
     cache_ttl_seconds: int = int(os.getenv("CACHE_TTL_SECONDS", "900"))
+    # Generation strategy. Single-pass writes the whole article in one LLM call
+    # (~5s measured) instead of one call per section (~7 calls plus revisions),
+    # which is what keeps a request under a minute and inside free-tier quotas.
+    # Set SINGLE_PASS_GENERATION=0 to fall back to per-section generation.
+    single_pass_generation: bool = os.getenv("SINGLE_PASS_GENERATION", "1") == "1"
+    # Semantic cache (pgvector)
+    semantic_cache_threshold: float = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.95"))
+    semantic_cache_ttl_days: int = int(os.getenv("SEMANTIC_CACHE_TTL_DAYS", "30"))
     # Admin API
     admin_api_key: str = os.getenv("ADMIN_API_KEY", "")
     # AI Discovery Agent
@@ -149,3 +185,46 @@ class Settings:
 
 settings = Settings()
 
+
+# Words per token for English prose — used to turn the OUTPUT_TOKENS_* budgets
+# into word counts the writer can be told to hit and the editor can check.
+_WORDS_PER_TOKEN = 0.75
+# How far a draft may fall short of / overshoot the target before the editor
+# rejects it. Deliberately wide: the gate exists to catch a draft that missed
+# the brief, not to police an exact word count.
+_LENGTH_FLOOR_RATIO = 0.6
+_LENGTH_CEILING_RATIO = 1.3
+
+
+def length_word_bounds(profile: str) -> tuple[int, int, int]:
+    """Return ``(min_words, target_words, max_words)`` for a length profile.
+
+    This is the single source of truth for article length. It exists because
+    three places used to disagree: the writer's outline prompt demanded "the
+    final blog exceeds 700 words" for *every* profile, the generator's system
+    prompt hardcoded "NEVER produce fewer than 700 words", and the editor
+    rejected any 'short' draft over 300 words. A short article therefore could
+    not clear the quality gate no matter what the model wrote — the editor
+    rejected 100% of short drafts and the loop's circuit breaker published them
+    unreviewed. Deriving all three from OUTPUT_TOKENS_* keeps them consistent.
+    """
+    tokens = {
+        "short": settings.output_tokens_short,
+        "long": settings.output_tokens_long,
+    }.get(profile, settings.output_tokens_medium)
+    target = int(round(tokens * _WORDS_PER_TOKEN))
+    return (
+        int(round(target * _LENGTH_FLOOR_RATIO)),
+        target,
+        int(round(target * _LENGTH_CEILING_RATIO)),
+    )
+
+
+def length_section_count(profile: str) -> int:
+    """H2 section count for a length profile.
+
+    4 is the floor because editor_node's fast-accept path requires
+    ``heading_count >= 4``. This is the lever that actually moves article
+    length: the generator sizes its word target from the number of headings.
+    """
+    return {"short": 4, "long": 8}.get(profile, 6)

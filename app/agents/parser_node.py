@@ -1,6 +1,7 @@
 """Smart Parser Node — uses LLM for intent detection with regex fallback."""
 import json
 import logging
+from app.llm.provider import extract_text
 import re
 from app.graph_state import GraphState
 from app.parser import parse_prompt, ParsedPrompt
@@ -39,7 +40,7 @@ def _llm_parse_intent(prompt: str) -> dict | None:
             SystemMessage(content=system),
             HumanMessage(content=f'"{user_message}"'),
         ])
-        raw = getattr(response, "content", str(response)).strip()
+        raw = extract_text(response).strip()
         
         # Try pipe-delimited parse first
         # Strip any surrounding quotes/backticks

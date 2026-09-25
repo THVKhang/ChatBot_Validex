@@ -1,3 +1,15 @@
+-- Embedding dimensions must match the configured EMBEDDING_PROVIDER:
+--   local  bge-base-finetuned-validex .... 768  (current default)
+--   google models/text-embedding-004 ..... 768
+--   openai text-embedding-3-small ........ 1536
+-- Override without editing this file:  psql -v embedding_dim=1536 -f sql/database.sql
+-- app/vector_repository.py:initialize_schema() creates the same shape at runtime
+-- and refuses to write when the table's dimension disagrees with the model.
+\if :{?embedding_dim}
+\else
+    \set embedding_dim 768
+\endif
+
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS validex_knowledge (
@@ -14,7 +26,7 @@ CREATE TABLE IF NOT EXISTS validex_knowledge (
     authority_score DOUBLE PRECISION NOT NULL,
     approved BOOLEAN NOT NULL,
     content TEXT NOT NULL,
-    embedding vector(1536) NOT NULL,
+    embedding vector(:embedding_dim) NOT NULL,
     -- Legal metadata (Trụ Cột 3: Metadata Enrichment)
     status TEXT NOT NULL DEFAULT 'in_force',              -- 'in_force', 'repealed', 'amended'
     jurisdiction TEXT NOT NULL DEFAULT 'Commonwealth',     -- 'Commonwealth', 'NSW', 'VIC', 'QLD', etc.
@@ -59,14 +71,22 @@ WITH (m = 16, ef_construction = 64);
 -- USING ivfflat (embedding vector_cosine_ops)
 -- WITH (lists = 100);
 
--- Semantic Cache Table (Updated to 384 dimensions for Local SentenceTransformers)
+-- Semantic Cache Table. Dimensions follow the *local* encoder in
+-- app/local_semantics.py (bge-base-finetuned-validex = 768, all-MiniLM-L6-v2 =
+-- 384), which is not necessarily the knowledge-base encoder. app/semantic_cache.py
+-- owns this table at runtime: it verifies the dimension on first use and
+-- rebuilds the table if the encoder changed, since vectors from a different
+-- model are not comparable and the cache would only ever miss.
 CREATE TABLE IF NOT EXISTS validex_semantic_cache (
     id SERIAL PRIMARY KEY,
     prompt_text TEXT NOT NULL,
-    prompt_embedding vector(384) NOT NULL,
+    prompt_embedding vector(:embedding_dim) NOT NULL,
     generated_response JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_validex_semantic_cache_prompt
+ON validex_semantic_cache (md5(prompt_text));
 
 -- Index for semantic cache using HNSW for fast similarity search
 CREATE INDEX IF NOT EXISTS idx_validex_semantic_cache_embedding_hnsw

@@ -9,6 +9,12 @@ from psycopg import sql
 
 from app.config import settings
 
+# Embedding providers that produce real vectors. Anything outside this set is
+# either the "fake" placeholder provider or an unknown/legacy value, and must
+# not count toward ready_for_retrieval. "local" is sentence-transformers, which
+# is the default the project ships with (EMBEDDING_PROVIDER=local).
+_GENUINE_EMBEDDING_PROVIDERS = ("google", "openai", "local")
+
 
 def _connection_dsn() -> str:
     dsn = os.getenv("DATABASE_URL", "").strip()
@@ -168,7 +174,9 @@ def fetch_knowledge_health(table_name: str | None = None) -> dict[str, Any]:
                 )
                 provider_rows = [(str(provider), int(chunks)) for provider, chunks in cur.fetchall()]
                 provider_map = {provider: chunks for provider, chunks in provider_rows}
-                genuine_chunks = int(provider_map.get("google", 0) + provider_map.get("openai", 0))
+                genuine_chunks = sum(
+                    int(provider_map.get(name, 0)) for name in _GENUINE_EMBEDDING_PROVIDERS
+                )
                 fake_chunks = int(provider_map.get("fake", 0))
                 other_chunks = max(0, int(total_chunks) - genuine_chunks - fake_chunks)
             else:

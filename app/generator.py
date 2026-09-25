@@ -3,6 +3,7 @@ import re
 from urllib.parse import quote_plus
 
 from app.parser import ParsedPrompt
+from app.config import length_section_count
 from app.retriever import RetrievedDoc
 
 
@@ -703,9 +704,15 @@ def format_title(topic: str) -> str:
     compact = " ".join(words)
 
     stop_words = {"a", "an", "the", "and", "or", "for", "to", "of", "in", "on", "with"}
+    parts = compact.split()
     titled: list[str] = []
-    for index, word in enumerate(compact.split()):
-        if index > 0 and index < len(compact.split()) - 1 and word.lower() in stop_words:
+    for index, word in enumerate(parts):
+        # str.capitalize() would turn NSW into "Nsw" and NDIS into "Ndis".
+        # Anything already written as an acronym keeps its own casing.
+        core = word.strip("(),.:;\"'")
+        if len(core) > 1 and core.isupper():
+            titled.append(word)
+        elif index > 0 and index < len(parts) - 1 and word.lower() in stop_words:
             titled.append(word.lower())
         else:
             titled.append(word.capitalize())
@@ -767,6 +774,41 @@ _OUTLINE_TEMPLATES = {
 }
 
 
+def _fit_outline_to_length(
+    outline: list[str], n_target: int, extras: list[str]
+) -> list[str]:
+    """Resize a template outline to ``n_target`` sections.
+
+    Section count is the real length lever: the generator derives its word
+    target from ``len(outline)``. 'short' and 'medium' both used to get the
+    same 6-section template, which is why short articles came out as long as
+    medium ones.
+
+    Trimming keeps the first and last sections, and sheds optional sections
+    before numbered steps — dropping "Step 2" while keeping "Step 3" would
+    leave a how-to that cannot be followed.
+    """
+    if len(outline) == n_target:
+        return outline
+    if len(outline) < n_target:
+        outline = list(outline)
+        extras = list(extras)
+        while len(outline) < n_target and extras:
+            outline.insert(-1, extras.pop(0))
+        return outline
+
+    first, last, middle = outline[0], outline[-1], outline[1:-1]
+    keep_slots = max(0, n_target - 2)
+    protected = [h for h in middle if re.match(r"(?i)^step\s*\d", h)]
+    optional = [h for h in middle if h not in protected]
+    while len(protected) + len(optional) > keep_slots and optional:
+        optional.pop()
+    while len(protected) > keep_slots:
+        protected.pop()
+    survivors = set(protected) | set(optional)
+    return [first] + [h for h in middle if h in survivors] + [last]
+
+
 def _build_topic_aware_outline(parsed: ParsedPrompt) -> list[str]:
     """Build an outline that reflects the user's actual INTENT and LANGUAGE.
 
@@ -794,6 +836,16 @@ def _build_topic_aware_outline(parsed: ParsedPrompt) -> list[str]:
         if "expire" in cleaned_topic.lower() and "expiry" not in cleaned_topic.lower():
             cleaned_topic = re.sub(r'(?i)\bexpire\b', 'Expiry & Validity', cleaned_topic).strip()
     
+    # Headings read badly when the topic is a multi-clause sentence: naively
+    # taking the first five words produced "Overview of a professional blog post
+    # for". Reduce to the leading noun phrase instead.
+    lead_clause = cleaned_topic.split(",")[0].strip()
+    if len(lead_clause.split()) >= 2:
+        cleaned_topic = lead_clause
+    # "a National Police Check is" -> "National Police Check"
+    cleaned_topic = re.sub(r"(?i)\s+\b(is|are|was|were|means|works)\b\s*$", "", cleaned_topic).strip()
+    cleaned_topic = re.sub(r"(?i)^(a|an|the)\s+", "", cleaned_topic).strip()
+
     topic_words = cleaned_topic.split()
     short_topic = " ".join(topic_words[:5]) if len(topic_words) > 5 else cleaned_topic
 
@@ -852,8 +904,14 @@ def _build_topic_aware_outline(parsed: ParsedPrompt) -> list[str]:
             while len(outline) < target:
                 outline.insert(-1, f"Analysis: Aspect {len(outline)}")
 
-    elif parsed.length == "long":
-        outline.insert(-1, templates["extras"][0])
+    else:
+        # Previously: `if length == "long": insert one extra section`. That single
+        # section was the only effect parsed.length had anywhere in the live
+        # generation path, which is why short/medium/long produced overlapping
+        # lengths. An explicit target_sections still outranks the profile.
+        outline = _fit_outline_to_length(
+            outline, length_section_count(parsed.length), list(templates["extras"])
+        )
 
     return outline
 

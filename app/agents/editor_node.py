@@ -8,6 +8,7 @@ Three evaluation layers:
 """
 import json
 import logging
+from app.llm.provider import extract_text
 import re
 from typing import Any
 from collections import Counter
@@ -15,10 +16,108 @@ from collections import Counter
 from app.graph_state import GraphState
 from app.langchain_pipeline import pipeline
 from app.ab_test_logger import log_prompt_evaluation
-from app.config import settings
+from app.config import settings, length_word_bounds
 
 logger = logging.getLogger(__name__)
 
+
+# Minimum Flesch Reading Ease a draft must reach to pass the editor. 50-70 is
+# the ideal band for blog prose, but compliance writing that cites legislation
+# rarely gets there, so the gate sits lower. Keep this constant and the feedback
+# message in sync — they disagreed before, and the writer chased the wrong bar.
+READING_EASE_FLOOR = 30
+
+# Average share of the draft each significant topic word may occupy. Keep these
+# constants and the feedback messages in sync — a message that states a bar the
+# code does not enforce sends the writer chasing the wrong target.
+KEYWORD_DENSITY_FLOOR = 0.25
+
+# The writer emits this verbatim wherever the corpus does not support a claim.
+# It is an honest disclaimer, so it may legitimately appear several times and
+# must not be counted as repeated prose. Kept as a literal rather than imported
+# from langchain_pipeline to avoid a circular import.
+_MISSING_DATA_SENTINEL = "Internal data does not currently address this topic."
+_MISSING_DATA_RE = re.compile(
+    re.escape(_MISSING_DATA_SENTINEL.rstrip(".")), re.IGNORECASE
+)
+
+# Function words carry no meaning on their own, so an n-gram made mostly of them
+# ("details of whether a", "check is required are") is a grammatical coincidence,
+# not repeated content. Flagging those sent the writer into revision cycles it
+# could never satisfy, because there was nothing substantive to rewrite.
+_FUNCTION_WORDS = frozenset("""
+a an the this that these those and or but if then than so because as of in on at to for
+with from by about into over after before between under above is are was were be been being
+am do does did doing have has had having will would shall should can could may might must
+it its it's they them their there here what which who whom whose when where why how
+whether while during through against among within without upon per via
+you your we our us i me my he she his her not no nor only also very more most such each
+any some all both few other same own too s t don now
+""".split())
+
+
+def _is_meaningful_phrase(phrase: str, min_content_ratio: float = 0.6) -> bool:
+    """True when enough of the phrase is content words to count as repetition."""
+    words = phrase.split()
+    if not words:
+        return False
+    content = [w for w in words if w.lower() not in _FUNCTION_WORDS]
+    return len(content) / len(words) >= min_content_ratio
+KEYWORD_DENSITY_CEILING = 5.0
+
+
+def _reconcile_accepted_evaluation(
+    evaluation: dict, draft: str, word_count: int, length_profile: str
+) -> dict:
+    """Make an accepted draft's scorecard agree with the decision just taken.
+
+    Every accept path used to return the LLM rubric dict verbatim, so a draft
+    the editor had passed still reached the API carrying verdict "REVISE" plus
+    the very complaints the editor had already ruled contradicted. Downstream
+    consumers — and anyone reading a run's output — could not tell an accepted
+    article from a rejected one.
+    """
+    if not evaluation:
+        return evaluation
+    reconciled = dict(evaluation)
+    reconciled["issues"] = _drop_contradicted_issues(
+        reconciled.get("issues", []), draft, word_count, length_profile
+    )
+    reconciled["verdict"] = "ACCEPT"
+    return reconciled
+
+
+def _drop_contradicted_issues(
+    issues: list[str], draft: str, word_count: int, length_profile: str = "medium"
+) -> list[str]:
+    """Remove LLM rubric complaints that the deterministic checks disprove.
+
+    The rubric model repeatedly reported "missing conclusion" on drafts that
+    plainly contained one, plus "inappropriate length" and "poor structure" on
+    drafts that passed the code gate. Each false complaint forced a full revision
+    cycle — retrieval, generation and editing all over again — so it doubled
+    runtime for nothing. Code is authoritative for anything code can measure;
+    the LLM only gets to speak on what it cannot.
+    """
+    lowered = draft.lower()
+    heading_count = len(re.findall(r"(?m)^##\s+", draft))
+    length_lo, _length_target, length_hi = length_word_bounds(length_profile)
+    kept: list[str] = []
+    for issue in issues:
+        text = str(issue).lower()
+        if "conclusion" in text and "conclusion" in lowered:
+            logger.info("Ignoring LLM issue %r — draft does contain a conclusion", issue)
+            continue
+        if any(w in text for w in ("length", "too short", "too long")) and (
+            length_lo <= word_count <= length_hi
+        ):
+            logger.info("Ignoring LLM issue %r — word count %d is in range", issue, word_count)
+            continue
+        if "structure" in text and heading_count >= 4:
+            logger.info("Ignoring LLM issue %r — draft has %d sections", issue, heading_count)
+            continue
+        kept.append(issue)
+    return kept
 
 # ── Flesch-Kincaid Readability (code-based, 0 LLM tokens) ──────────
 
@@ -104,11 +203,21 @@ def _check_seo(draft: str, topic: str) -> list[str]:
     significant_topic_words = {w for w in topic_words if len(w) > 3}
     if significant_topic_words:
         topic_mentions = sum(1 for w in draft_words if w in significant_topic_words)
-        density = topic_mentions / total_words * 100
-        if density < 0.5:
-            issues.append(f"S01:low-keyword-density ({density:.1f}%, target 1-3%)")
-        elif density > 8.0:
-            issues.append(f"S02:keyword-stuffing ({density:.1f}%, target 1-5%)")
+        # Average density PER topic word, not the sum across all of them.
+        # Summing made the metric scale with topic length: a descriptive topic
+        # ("what a National Police Check is, who needs one, and how long it
+        # takes to process") contributes eight countable words, so an article
+        # that mentions each of them normally was flagged as stuffed and lost a
+        # whole revision cycle to it.
+        density = topic_mentions / total_words / len(significant_topic_words) * 100
+        if density < KEYWORD_DENSITY_FLOOR:
+            issues.append(
+                f"S01:low-keyword-density ({density:.1f}%, must reach {KEYWORD_DENSITY_FLOOR}%)"
+            )
+        elif density > KEYWORD_DENSITY_CEILING:
+            issues.append(
+                f"S02:keyword-stuffing ({density:.1f}%, must stay under {KEYWORD_DENSITY_CEILING}%)"
+            )
 
     # S03: Heading hierarchy (should have H2s, optionally H3s)
     h1_count = len(re.findall(r'^# [^#]', draft, re.MULTILINE))
@@ -173,7 +282,7 @@ def _compare_drafts(old_draft: str, new_draft: str, topic: str) -> bool:
 
     try:
         response = llm.invoke(prompt)
-        raw = getattr(response, "content", str(response)).strip()
+        raw = extract_text(response).strip()
         choice = raw.strip().upper()[:1]
         logger.info(f"Comparison Gate: chose Draft {'B (revised)' if choice == 'B' else 'A (original)'} — {raw[:80]}")
         return choice == "B"
@@ -220,7 +329,7 @@ def _llm_evaluate_draft(draft: str, parsed: dict) -> dict:
 
     try:
         response = llm.invoke(prompt)
-        raw = getattr(response, "content", str(response)).strip()
+        raw = extract_text(response).strip()
 
         # Extract JSON from response (handle markdown code fences)
         json_match = re.search(r'\{[^}]+\}', raw, re.DOTALL)
@@ -304,10 +413,20 @@ class EditorAgentNode(BaseAgentNode):
     
         # ── Layer 0: Code-based structural checks (0 LLM tokens) ──────
         length_req = parsed.get("length", "medium")
-        if length_req == "long" and word_count < 400:
-            feedback_items.append("E03:too-short (min 400 words for 'long')")
-        elif length_req == "short" and word_count > 300:
-            feedback_items.append("E07:too-long (max 300 words for 'short')")
+        # Bounds come from length_word_bounds so the writer is held to the same
+        # numbers it was given. The old hardcoded 300-word ceiling for 'short'
+        # contradicted the writer's own "exceeds 700 words" instruction, so
+        # every short draft was rejected here and then force-published by the
+        # loop's circuit breaker.
+        min_words, _target_words, max_words = length_word_bounds(length_req)
+        if word_count < min_words:
+            feedback_items.append(
+                f"E03:too-short (min {min_words} words for '{length_req}')"
+            )
+        elif word_count > max_words:
+            feedback_items.append(
+                f"E07:too-long (max {max_words} words for '{length_req}')"
+            )
     
         if parsed.get("intent") == "create_blog" and heading_count < 2:
             feedback_items.append("E04:insufficient-headings (need ## sections)")
@@ -319,8 +438,19 @@ class EditorAgentNode(BaseAgentNode):
             if len(short_paras) > len(paragraphs) * 0.5:
                 feedback_items.append("E05:thin-paragraphs (multiple sections too short)")
     
-        # Repetition detection — exclude topic-derived n-grams to avoid false positives
-        words = draft.lower().split()
+        # Repetition detection — exclude topic-derived n-grams to avoid false positives.
+        # Citations and the missing-data sentinel are structural markers that are
+        # SUPPOSED to recur: counting them flagged '[source: ...]' and
+        # 'currently address this topic' as repetition, and no rewrite could
+        # remove them, so the draft looped until the circuit breaker fired.
+        prose = re.sub(r"\[Source:[^\]]*\]", " ", draft, flags=re.IGNORECASE)
+        prose = re.sub(r"\[[^\]]*\|\s*URL:[^\]]*\]", " ", prose, flags=re.IGNORECASE)
+        # Match the sentinel as a PREFIX: the writer routinely continues the
+        # sentence ("...does not currently address this topic concerning exact
+        # fee structures"), so an exact full-sentence match never fired.
+        prose = _MISSING_DATA_RE.sub(" ", prose)
+        prose = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", prose)
+        words = prose.lower().split()
         if len(words) > 50:
             topic_lower = parsed.get("topic", "").lower()
             topic_words_set = set(topic_lower.split())
@@ -329,6 +459,9 @@ class EditorAgentNode(BaseAgentNode):
             for phrase, count in Counter(ngrams).items():
                 if count < 5 or len(phrase) < 20:
                     continue
+                # Ignore connective fragments that merely span a clause boundary.
+                if not _is_meaningful_phrase(phrase):
+                    continue
                 # Skip if the phrase is mostly topic words (legitimate domain repetition)
                 phrase_words = set(phrase.split())
                 topic_overlap = len(phrase_words & topic_words_set) / len(phrase_words)
@@ -336,7 +469,15 @@ class EditorAgentNode(BaseAgentNode):
                     continue
                 repeated.append(phrase)
             if repeated:
-                feedback_items.append(f"E01:repetition ({len(repeated)} phrases repeated 5+ times)")
+                # Name the offending phrases. Reporting only a count told the
+                # writer that something was repeated but not what, so the
+                # rewrite could not fix it and the identical rejection came back
+                # next round until the circuit breaker gave up.
+                quoted = "; ".join(f'"{p}"' for p in repeated[:4])
+                feedback_items.append(
+                    f"E01:repetition ({len(repeated)} phrases repeated 5+ times) "
+                    f"— rewrite these, each may appear at most twice: {quoted}"
+                )
     
         # Conclusion check
         if parsed.get("intent") == "create_blog" and 'conclusion' not in draft.lower():
@@ -420,11 +561,17 @@ class EditorAgentNode(BaseAgentNode):
                 else:
                     feedback_items.append(f"R01:too-complex (FK Grade {fk_grade}, target 8-{fk_limit})")
                     
-            if reading_ease < 30:
+            if reading_ease < READING_EASE_FLOOR:
                 if revision_count >= max_iters - 1:
                     logger.warning(f"Draft accepted with low Reading Ease {reading_ease} due to max iterations.")
                 else:
-                    feedback_items.append(f"R02:poor-readability (Flesch {reading_ease}, target 50-70)")
+                    # State the bar that actually gates. Saying "target 50-70"
+                    # while accepting anything >= 30 made the writer spend whole
+                    # revision cycles (7+ LLM calls each) chasing a number that
+                    # was never required to pass.
+                    feedback_items.append(
+                        f"R02:poor-readability (Flesch {reading_ease}, must reach {READING_EASE_FLOOR}, ideal 50-70)"
+                    )
     
         # ── Layer 2: Fast-accept for strong drafts (0 LLM tokens) ─────
         # If code checks found clear issues, skip fast-accept
@@ -433,7 +580,11 @@ class EditorAgentNode(BaseAgentNode):
             logger.info("Editor: code-gate found issues (0 LLM tokens): %s", feedback_items)
             quality_score = None
         # Strong draft with no structural issues → accept immediately
-        elif word_count > 500 and heading_count >= 4 and parsed.get("intent") == "create_blog":
+        elif (
+            word_count >= length_word_bounds(length_req)[0]
+            and heading_count >= 4
+            and parsed.get("intent") == "create_blog"
+        ):
             logger.info("Editor: code-gate ACCEPTED draft (0 LLM tokens, %d words, %d headings)", word_count, heading_count)
             log_prompt_evaluation(
                 prompt_version="v4-hybrid-seo",
@@ -443,7 +594,9 @@ class EditorAgentNode(BaseAgentNode):
                 total_tokens_used=0
             )
             # Evaluate using LLM to always populate scorecard
-            evaluation = _llm_evaluate_draft(draft, parsed)
+            evaluation = _reconcile_accepted_evaluation(
+                _llm_evaluate_draft(draft, parsed), draft, word_count, length_req
+            )
             return {
                 "editor_feedback": None,
                 "revision_count": revision_count + 1,
@@ -468,7 +621,12 @@ class EditorAgentNode(BaseAgentNode):
                         total_tokens_used=0
                     )
                     # Evaluate the restored original draft
-                    evaluation = _llm_evaluate_draft(previous_draft, parsed)
+                    evaluation = _reconcile_accepted_evaluation(
+                        _llm_evaluate_draft(previous_draft, parsed),
+                        previous_draft,
+                        len(previous_draft.split()),
+                        length_req,
+                    )
                     return {
                         "editor_feedback": None,
                         "revision_count": revision_count + 1,
@@ -488,8 +646,10 @@ class EditorAgentNode(BaseAgentNode):
                 verdict = evaluation.get("verdict", "ACCEPT")
     
                 if verdict == "REVISE" and revision_count < 2:
-                    issues = evaluation.get("issues", [])
-                    llm_feedback = evaluation.get("feedback", "") or ", ".join(issues) if issues else ""
+                    issues = _drop_contradicted_issues(
+                        evaluation.get("issues", []), draft, word_count, length_req
+                    )
+                    llm_feedback = ", ".join(issues) if issues else ""
                     if llm_feedback:
                         feedback_parts = [f"Quality review (score {quality_score}/10)"]
                         if evaluation.get("relevance"):
@@ -501,8 +661,10 @@ class EditorAgentNode(BaseAgentNode):
                         feedback_parts.append(f": {llm_feedback}")
                         feedback_items.append(" ".join(feedback_parts))
                 elif verdict == "REJECT" and revision_count < 2:
-                    issues = evaluation.get("issues", [])
-                    llm_feedback = evaluation.get("feedback", "") or ", ".join(issues) if issues else ""
+                    issues = _drop_contradicted_issues(
+                        evaluation.get("issues", []), draft, word_count, length_req
+                    )
+                    llm_feedback = ", ".join(issues) if issues else ""
                     feedback_items.append(f"Quality too low (score {quality_score}/10): {llm_feedback}")
     
         # --- Decision ---
@@ -547,6 +709,10 @@ class EditorAgentNode(BaseAgentNode):
             evaluation = _llm_evaluate_draft(draft, parsed)
             quality_score = evaluation.get("overall", 7)
             
+        evaluation = _reconcile_accepted_evaluation(
+            evaluation, draft, word_count, length_req
+        )
+
         if quality_score:
             logger.info(f"Editor accepted draft (quality={quality_score}/10)")
         else:

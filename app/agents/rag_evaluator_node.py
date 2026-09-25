@@ -58,11 +58,15 @@ class RagEvaluatorAgentNode(BaseAgentNode):
             logger.warning(f"RAG Evaluator: {feedback}")
             return {
                 "rag_feedback": feedback,
+                "rag_score": eval_result.score,
                 "global_step_count": state.get("global_step_count", 0) + 1,
             }
         # Fix #4: Parser cross-verification — warn if relevance is critically low after retry
         result = {
             "rag_feedback": None,
+            # Published so the Supervisor can skip a second research pass when
+            # the context is already strong enough to write from.
+            "rag_score": eval_result.score,
             "global_step_count": state.get("global_step_count", 0) + 1,
         }
         if eval_result.relevance < 0.3 and state.get("retrieval_attempts", 0) >= 1:

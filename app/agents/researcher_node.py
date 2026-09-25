@@ -361,7 +361,10 @@ class ResearcherAgentNode(BaseAgentNode):
             payload = {
                 "effective_topic": query,
                 "retrieval_top_k": recommended_top_k,
-                "complexity_level": complexity_level
+                "complexity_level": complexity_level,
+                # The merged pool is reranked once below; reranking each
+                # per-query result set first is work the merge discards.
+                "skip_rerank": True,
             }
             try:
                 bundle = pipeline._retrieve(payload)
@@ -391,40 +394,41 @@ class ResearcherAgentNode(BaseAgentNode):
         else:
             all_documents = good_docs
     
-        # Limit to top recommended_top_k
-        all_documents = all_documents[:recommended_top_k]
-        
         # ── Reranker: Cross-Encoder reranking for precise relevance ordering ──
-        # Uses ms-marco-MiniLM-L-12-v2 (ONNX, 0 API tokens, ~50ms latency)
+        # Uses ms-marco-MiniLM-L-12-v2 (ONNX, 0 API tokens, ~50ms latency).
+        # The cross-encoder earns its cost by picking K out of a *larger* pool, so
+        # it must run before the top_k cut, not after it.
+        rerank_pool = all_documents[: max(recommended_top_k * 4, recommended_top_k)]
+        reranked_ok = False
         try:
             from app.reranker import get_reranker
             reranker = get_reranker()
-            if all_documents:
-                # Convert Documents to dicts for reranker
-                doc_dicts = []
-                for d in all_documents:
-                    doc_dicts.append({
-                        "doc_id": d.metadata.get("doc_id", ""),
-                        "content": d.page_content,
-                        "score": d.metadata.get("score", 0),
-                        "source": d.metadata.get("source", ""),
-                        "title": d.metadata.get("title", ""),
-                        "source_url": d.metadata.get("source_url", ""),
-                        "relevance_score": d.metadata.get("relevance_score", 0),
-                    })
+            if rerank_pool:
+                # Index into the pool so the full Document metadata survives the
+                # dict round-trip instead of being rebuilt from a handful of keys.
+                doc_dicts = [
+                    {"_index": i, "content": d.page_content, "doc_id": d.metadata.get("doc_id", "")}
+                    for i, d in enumerate(rerank_pool)
+                ]
                 reranked = reranker.rerank(topic, doc_dicts, top_k=recommended_top_k)
-                # Convert back to Document objects
+                # rerank() returns the input untouched when no backend is
+                # available, so the top_k cut has to be applied here regardless.
                 reranked_docs = []
-                for rd in reranked:
-                    reranked_docs.append(Document(
-                        page_content=rd["content"],
-                        metadata={k: v for k, v in rd.items() if k != "content"},
-                    ))
+                for rd in reranked[:recommended_top_k]:
+                    doc = rerank_pool[rd["_index"]]
+                    doc.metadata["rerank_score"] = rd.get("rerank_score", 0.0)
+                    reranked_docs.append(doc)
                 all_documents = reranked_docs
-                logger.info("Researcher: reranked %d documents by Cross-Encoder", len(all_documents))
+                reranked_ok = True
+                logger.info("Researcher: reranked %d → %d documents by Cross-Encoder",
+                            len(rerank_pool), len(all_documents))
         except Exception as exc:
             logger.warning("Reranker unavailable, keeping heuristic order: %s", exc)
-        
+
+        if not reranked_ok:
+            all_documents = all_documents[:recommended_top_k]
+
+
         # Sentence-level deduplication within each doc
         all_documents = [_compress_doc_content(d) for d in all_documents]
         

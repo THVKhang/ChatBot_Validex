@@ -1,14 +1,14 @@
 {
-  "targets_total": 22,
-  "targets_allowed": 22,
-  "chunks_total": 257,
-  "changed_urls": 14,
-  "unchanged_urls": 0,
+  "targets_total": 23,
+  "targets_allowed": 23,
+  "chunks_total": 770,
+  "changed_urls": 10,
+  "unchanged_urls": 6,
   "local_pdf_total": 7,
   "local_pdf_processed": 0,
   "local_pdf_unchanged": 7,
-  "filtered_chunks_total": 6,
-  "rejected_chunks_total": 731,
+  "filtered_chunks_total": 99,
+  "rejected_chunks_total": 6285,
   "rejected_output_path": "data\\samples\\rejected_chunks.jsonl",
   "discovery_exit_reason": "targets_exhausted",
   "discovered_sub_links_tried": [],
@@ -77,27 +77,27 @@
     ],
     "require_stealth": false
   },
-  "errors_total": 8,
+  "errors_total": 7,
   "errors": [
     {
       "url": "https://validex.com.au/webapp/#/core/blogs",
       "error": "empty content"
     },
     {
+      "url": "https://www.oaic.gov.au/privacy",
+      "error": "403 forbidden. Source blocks bot traffic. Download PDF manually into data/raw/pdfs and ingest locally."
+    },
+    {
       "url": "https://www.police.nsw.gov.au/online_services/national_police_check",
-      "error": "Failed to perform, curl: (60) SSL certificate problem: unable to get local issuer certificate. See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+      "error": "403 forbidden. Source blocks bot traffic. Download PDF manually into data/raw/pdfs and ingest locally."
     },
     {
-      "url": "https://www.police.vic.gov.au/national-police-check",
+      "url": "https://www.police.vic.gov.au/national-police-records-check",
+      "error": "empty content"
+    },
+    {
+      "url": "https://www.police.qld.gov.au/safety-and-preventing-crime/criminal-history-screening",
       "error": "HTTP Error 404: "
-    },
-    {
-      "url": "https://www.police.qld.gov.au/units/criminal-history-screening",
-      "error": "HTTP Error 404: "
-    },
-    {
-      "url": "https://www.kidsguardian.nsw.gov.au/working-with-children",
-      "error": "Failed to perform, curl: (6) Could not resolve host: www.kidsguardian.nsw.gov.au. See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
     },
     {
       "url": "https://immi.homeaffairs.gov.au/visas/working-in-australia",
@@ -105,11 +105,7 @@
     },
     {
       "url": "https://legislation.nsw.gov.au/view/html/inforce/current/act-1991-008",
-      "error": "empty content"
-    },
-    {
-      "url": "https://www.legislation.qld.gov.au/view/html/inforce/current/act-2004-015",
-      "error": "HTTP Error 404: "
+      "error": "403 forbidden. Source blocks bot traffic. Download PDF manually into data/raw/pdfs and ingest locally."
     }
   ],
   "output_jsonl": "data\\canonical\\au_blog_chunks.jsonl",

@@ -49,7 +49,12 @@ def log_prompt_evaluation(
     try:
         with psycopg.connect(dsn) as conn:
             with conn.cursor() as cur:
-                # Ensure table has new columns
+                # CREATE TABLE IF NOT EXISTS only builds the table on a fresh
+                # database — on an existing one it is a silent no-op, so the
+                # columns added after the table was first created (variant_id,
+                # latency_ms) never appeared and every INSERT below failed with
+                # `column "variant_id" does not exist`. The ALTERs after this
+                # statement are what actually reconcile an older table.
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS prompt_ab_tests (
                         id SERIAL PRIMARY KEY,
@@ -65,7 +70,16 @@ def log_prompt_evaluation(
                         created_at TIMESTAMPTZ DEFAULT NOW()
                     )
                 """)
-                
+
+                # Backfill columns onto tables created before they existed.
+                for column, ddl in (
+                    ("variant_id", "TEXT"),
+                    ("latency_ms", "DOUBLE PRECISION"),
+                ):
+                    cur.execute(
+                        f"ALTER TABLE prompt_ab_tests ADD COLUMN IF NOT EXISTS {column} {ddl}"
+                    )
+
                 run_id = str(uuid4())
                 cur.execute(
                     """

@@ -2,7 +2,11 @@
 
 Supports both simple (linear) and complex (parallel map-reduce) pipelines.
 The Supervisor Node analyzes topic complexity after parsing and routes accordingly.
-Includes ML/DL Quality Control pipeline integration for training data collection.
+The ML quality-gate and data-collector nodes were removed: the gate ran in
+shadow mode (never blocked), it was trained on a few hundred examples with no
+regression guard, and it added two node visits plus contradictory verdicts to
+every request. The fine-tuned MODELS in data/models/ are unaffected and still in
+use — the knowledge base is embedded with bge-base-finetuned-validex.
 """
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -12,15 +16,13 @@ from app.agents.researcher_node import researcher_node
 from app.agents.rag_evaluator_node import rag_evaluator_node
 from app.agents.writer_node import writer_node
 from app.agents.editor_node import editor_node
-from app.agents.ml_collector_node import ml_collector_node
-from app.agents.ml_gate_node import ml_gate_node
 
 import logging
 
 logger = logging.getLogger(__name__)
 
 # ── Global Circuit Breaker ────────────────────────────────────
-# Maximum total node visits across ALL retry loops (RAG + Editor + ML Gate).
+# Maximum total node visits across ALL retry loops (RAG + Editor).
 # Prevents GraphRecursionError from nested loop combinations.
 GLOBAL_STEP_LIMIT = 8
 
@@ -155,12 +157,27 @@ def route_after_parser(state: GraphState):
 
 
 
+# Context quality above which a second research pass is not worth its cost.
+# Deep_Researcher re-runs the same query expansion over the same corpus, so when
+# retrieval already scored well it returns the documents we have: measured on a
+# WWCC request it spent 31s to merge "7 + 7 -> 7 docs", adding nothing.
+DEEP_RESEARCH_SKIP_SCORE = 0.70
+
+
 def route_after_supervisor(state: GraphState):
     """Route based on complexity: simple goes directly to Writer, complex does deep research first."""
     level = state.get("complexity_level", "simple")
-    if level == "complex":
-        return "Deep_Researcher"
-    return "Writer"
+    if level != "complex":
+        return "Writer"
+
+    score = float(state.get("rag_score") or 0.0)
+    if score >= DEEP_RESEARCH_SKIP_SCORE and not state.get("rag_feedback"):
+        logger.info(
+            "Supervisor: context already strong (score=%.2f >= %.2f) — skipping Deep Researcher.",
+            score, DEEP_RESEARCH_SKIP_SCORE,
+        )
+        return "Writer"
+    return "Deep_Researcher"
 
 
 def route_after_rag_complex(state: GraphState):
@@ -186,8 +203,6 @@ builder.add_node("Supervisor", supervisor_node)
 builder.add_node("Deep_Researcher", deep_researcher_node)
 builder.add_node("Writer", writer_node)
 builder.add_node("Editor", editor_node)
-builder.add_node("ML_Quality_Gate", ml_gate_node)
-builder.add_node("ML_Collector", ml_collector_node)
 
 # Set Entry Point
 builder.set_entry_point("Parser")
@@ -210,9 +225,9 @@ builder.add_edge("Deep_Researcher", "Writer")
 # Writer → Editor
 builder.add_edge("Writer", "Editor")
 
-# Editor: accept (→ ML_Quality_Gate) or reject (→ Writer)
-def route_after_editor_with_ml(state: GraphState):
-    """Route from Editor: If feedback exists, go back to Writer. Else ML Quality Gate."""
+# Editor: accept (→ END) or reject (→ Writer)
+def route_after_editor(state: GraphState):
+    """Route from Editor: if feedback exists go back to Writer, otherwise finish."""
     if state.get("editor_feedback"):
         loop_step = state.get("loop_step", 0)
         revision_count = state.get("revision_count", 0)
@@ -223,64 +238,11 @@ def route_after_editor_with_ml(state: GraphState):
                 "(loop_step=%d, revision_count=%d, global_step=%d). Publishing draft as is.",
                 loop_step, revision_count, global_step,
             )
-            return "ML_Quality_Gate"
+            return END
         return "Writer"
-    return "ML_Quality_Gate"
+    return END
 
-builder.add_conditional_edges("Editor", route_after_editor_with_ml)
-
-# ML Quality Gate: dual-scope routing
-#   - pass → ML_Collector (normal flow)
-#   - block (retrieval issue) → Researcher (fetch more docs)
-#   - block (generation issue) → Writer (rewrite draft)
-def route_after_ml_gate(state: GraphState):
-    """Route from ML Gate based on dual-scope failure diagnosis.
-
-    In SHADOW mode: always passes to ML_Collector (never blocks).
-    In ENFORCE mode: routes to Researcher or Writer based on failure source.
-    """
-    # Global circuit breaker — always takes priority
-    global_step = state.get("global_step_count", 0)
-    if global_step >= GLOBAL_STEP_LIMIT:
-        logger.warning("⚠️ GLOBAL CIRCUIT BREAKER: step %d >= %d. Forcing ML_Collector (END).", global_step, GLOBAL_STEP_LIMIT)
-        return "ML_Collector"
-
-    prediction = state.get("ml_quality_prediction") or {}
-    mode = prediction.get("gate_mode", "shadow")
-
-    # Shadow mode: never block, always pass through
-    if mode == "shadow":
-        return "ML_Collector"
-
-    # Enforce mode: check if ML Gate set blocking feedback
-    if prediction.get("model_available", False):
-        quality = prediction.get("quality_class", "medium")
-        confidence = prediction.get("quality_confidence", 0.0)
-        failure_source = prediction.get("failure_source", "none")
-        revision_count = state.get("revision_count", 0)
-        retrieval_attempts = state.get("retrieval_attempts", 0)
-
-        # Only block when confident AND within retry limits
-        if quality == "low" and confidence >= 0.80 and revision_count < 2:
-            if failure_source == "retrieval" and retrieval_attempts < 2:
-                logger.warning(
-                    "ML Gate [ENFORCE] → Researcher (retrieval weak, quality=%s, conf=%.2f)",
-                    quality, confidence,
-                )
-                return "Researcher"
-            else:
-                logger.warning(
-                    "ML Gate [ENFORCE] → Writer (generation weak, quality=%s, conf=%.2f)",
-                    quality, confidence,
-                )
-                return "Writer"
-
-    return "ML_Collector"
-
-builder.add_conditional_edges("ML_Quality_Gate", route_after_ml_gate)
-
-# ML Collector → END (passive data collection, never blocks)
-builder.add_edge("ML_Collector", END)
+builder.add_conditional_edges("Editor", route_after_editor)
 
 # Compile Graph with Checkpointer for state persistence
 checkpointer = MemorySaver()

@@ -50,6 +50,7 @@ class GraphState(TypedDict):
     retrieval_attempts: int
     tried_queries: list[str]
     rag_feedback: str | None
+    rag_score: float  # weighted RAG Evaluator score, 0.0-1.0
     loop_step: int
     global_step_count: int  # Circuit Breaker: total node visits across ALL retry loops
     

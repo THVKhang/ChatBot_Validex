@@ -5,6 +5,7 @@ ensuring zero hallucinations without spending LLM API tokens.
 """
 
 import logging
+from app.llm.provider import extract_text
 import re
 from typing import Any
 
@@ -12,6 +13,22 @@ logger = logging.getLogger(__name__)
 
 # Global singleton to hold the model in memory
 _NLI_MODEL = None
+
+# Characters of context fed to the NLI model as the premise. The model's window
+# is 512 tokens for premise + hypothesis combined, so ~1500 characters (~375
+# tokens) is what genuinely fits. Measured on a 55-sentence draft: a 4000-char
+# premise cost 19.3s, 1500 chars costs 12.5s, and the extra characters were
+# being truncated away by the tokenizer either way.
+PREMISE_CHAR_LIMIT = 1500
+
+# Sentences that assert nothing factual cannot hallucinate a fact, so they are
+# not worth a forward pass. A sentence is checked when it carries a number, a
+# date, a modal obligation, or a proper-noun-ish token.
+_FACTUAL_MARKERS = re.compile(
+    r"\d|\b(must|should|require[sd]?|need[s]?|cannot|can't|shall|may not|"
+    r"act|regulation|scheme|days?|weeks?|months?|years?|percent|fee|cost)\b",
+    re.IGNORECASE,
+)
 
 
 def get_nli_model() -> Any:
@@ -48,7 +65,7 @@ def _rewrite_contradicting_sentence(sentence: str, context: str) -> str:
             "Return ONLY the rewritten sentence."
         )
         response = llm.invoke(prompt)
-        res = getattr(response, "content", str(response)).strip()
+        res = extract_text(response).strip()
         if res and not res.upper().startswith("EMPTY_STRING"):
             return res
     except Exception as exc:
@@ -66,76 +83,99 @@ def verify_facts_nli(draft: str, context: str) -> str:
     if not draft or not context:
         return draft
         
+    import numpy as np
+
     model = get_nli_model()
-    
+    # nli-deberta-v3-small has a 512-token window that must hold BOTH the
+    # premise and the hypothesis. A 4000-character premise is ~1000 tokens, so
+    # the tokenizer silently discarded more than half of it — the model never
+    # saw that text, but every sentence still paid to encode it. Size the
+    # premise to what actually fits and leave room for the sentence.
+    premise = context[:PREMISE_CHAR_LIMIT]
+
     # Split draft into paragraphs to preserve structure
     paragraphs = draft.split('\n\n')
-    cleaned_paragraphs = []
-    
-    contradictions_found = 0
-    
-    for para in paragraphs:
+
+    # Pass 1 — collect every sentence that needs checking. Scoring them one at a
+    # time meant one model forward pass per sentence, each re-encoding the same
+    # 4000-character premise: ~30s for a single article. A cross-encoder batches
+    # pairs natively, so gather first and score once.
+    layout: list[list[str | None]] = []   # per paragraph: sentence or None placeholder
+    pending: list[tuple[int, int, str]] = []
+    for para_index, para in enumerate(paragraphs):
         if not para.strip() or para.startswith('#'):
-            # Skip empty lines or headings
-            cleaned_paragraphs.append(para)
+            layout.append([para])
             continue
-            
-        # Split paragraph into sentences (basic regex for sentence boundaries)
-        # Handle decimal points, initials, etc., loosely
         sentences = re.split(r'(?<=[.!?])\s+', para)
-        
-        valid_sentences = []
+        row: list[str | None] = []
         for sentence in sentences:
             sentence = sentence.strip()
             if not sentence:
                 continue
-                
-            # If the sentence is too short, assume it's valid (e.g., transitional phrases)
-            if len(sentence.split()) < 4:
-                valid_sentences.append(sentence)
+            # Short fragments (transitions, list labels) are not worth scoring,
+            # and neither are sentences that assert no checkable fact.
+            if len(sentence.split()) < 4 or not _FACTUAL_MARKERS.search(sentence):
+                row.append(sentence)
                 continue
-                
-            # Predict NLI: Pair of (Premise, Hypothesis)
-            # Premise = context, Hypothesis = sentence generated
-            # Labels for nli-deberta-v3 are typically: 0: Contradiction, 1: Entailment, 2: Neutral
+            pending.append((para_index, len(row), sentence))
+            row.append(None)
+        layout.append(row)
+
+    # Pass 2 — one batched prediction for every candidate sentence.
+    # Labels for nli-deberta-v3: 0: Contradiction, 1: Entailment, 2: Neutral
+    probabilities = []
+    if pending:
+        try:
+            raw = np.asarray(model.predict([[premise, s] for _, _, s in pending]))
+            if raw.ndim == 1:
+                raw = raw.reshape(1, -1)
+            exp = np.exp(raw - raw.max(axis=-1, keepdims=True))
+            probabilities = exp / exp.sum(axis=-1, keepdims=True)
+        except Exception as exc:
+            logger.error("NLI batch prediction failed (%s) — keeping draft unchanged", exc)
+            return draft
+
+    # Pass 3 — rewrite or drop only what the model flagged.
+    contradictions_found = 0
+    for offset, (para_index, slot, sentence) in enumerate(pending):
+        prob_contradiction = float(probabilities[offset][0])
+        prob_entailment = float(probabilities[offset][1])
+
+        if not (prob_contradiction > 0.60 and prob_entailment < 0.20):
+            layout[para_index][slot] = sentence
+            continue
+
+        logger.warning(
+            "NLI flagged Contradiction (prob: %.2f). Rewriting sentence: '%s'",
+            prob_contradiction, sentence,
+        )
+        contradictions_found += 1
+        replacement = None
+        rewritten = _rewrite_contradicting_sentence(sentence, context)
+        if rewritten:
             try:
-                scores = model.predict([context[:4000], sentence])
-                # We want to catch explicit Contradictions.
-                # If Contradiction (index 0) has the highest score and is significantly higher than Entailment (index 1)
-                import numpy as np
-                # Apply softmax to get probabilities
-                probs = np.exp(scores) / np.sum(np.exp(scores), axis=-1, keepdims=True)
-                
-                prob_contradiction = float(probs[0])
-                prob_entailment = float(probs[1])
-                
-                # If contradiction probability > 50% AND entailment is very low, it's a hallucination
-                if prob_contradiction > 0.60 and prob_entailment < 0.20:
-                    logger.warning(f"NLI flagged Contradiction (prob: {prob_contradiction:.2f}). Rewriting sentence: '{sentence}'")
-                    rewritten = _rewrite_contradicting_sentence(sentence, context)
-                    if rewritten:
-                        # Double-check the rewritten sentence with NLI
-                        new_scores = model.predict([context[:4000], rewritten])
-                        new_probs = np.exp(new_scores) / np.sum(np.exp(new_scores), axis=-1, keepdims=True)
-                        if new_probs[0] < 0.50:  # If new contradiction prob is low enough
-                            valid_sentences.append(rewritten)
-                            logger.info(f"NLI Smoothing successful: '{rewritten}'")
-                        else:
-                            logger.warning("Rewritten sentence still contradicts. Dropping entirely.")
-                    else:
-                        logger.warning("Rewrite failed or empty. Dropping sentence.")
-                    contradictions_found += 1
+                check = np.asarray(model.predict([[premise, rewritten]]))
+                if check.ndim == 1:
+                    check = check.reshape(1, -1)
+                exp = np.exp(check - check.max(axis=-1, keepdims=True))
+                if float((exp / exp.sum(axis=-1, keepdims=True))[0][0]) < 0.50:
+                    replacement = rewritten
+                    logger.info("NLI Smoothing successful: '%s'", rewritten)
                 else:
-                    valid_sentences.append(sentence)
+                    logger.warning("Rewritten sentence still contradicts. Dropping entirely.")
             except Exception as exc:
-                logger.error(f"NLI prediction failed for sentence: {exc}")
-                # Fallback to keeping the sentence on error
-                valid_sentences.append(sentence)
-                
-        if valid_sentences:
-            cleaned_paragraphs.append(" ".join(valid_sentences))
-            
+                logger.error("NLI re-check failed (%s) — dropping sentence", exc)
+        else:
+            logger.warning("Rewrite failed or empty. Dropping sentence.")
+        layout[para_index][slot] = replacement
+
+    cleaned_paragraphs = []
+    for row in layout:
+        kept = [s for s in row if s]
+        if kept:
+            cleaned_paragraphs.append(" ".join(kept))
+
     if contradictions_found > 0:
         logger.info(f"NLI Fact-Checker removed {contradictions_found} hallucinated sentences.")
-        
+
     return "\n\n".join(cleaned_paragraphs)

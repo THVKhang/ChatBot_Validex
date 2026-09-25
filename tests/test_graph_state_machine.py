@@ -4,7 +4,6 @@ Covers:
 - Route decisions (simple vs complex topics)
 - Edit intent skips RAG
 - Editor revision loop limits (circuit breaker at 3)
-- ML Gate shadow mode behavior
 - Supervisor complexity scoring
 - Deep Researcher deduplication
 """
@@ -19,8 +18,7 @@ from app.graph import (
     route_after_parser,
     route_after_rag_complex,
     route_after_supervisor,
-    route_after_editor_with_ml,
-    route_after_ml_gate,
+    route_after_editor,
 )
 
 
@@ -46,20 +44,21 @@ class TestRouteAfterParser:
 
 
 
-class TestRouteAfterEditorWithML:
-    """Test Editor → ML Quality Gate routing."""
+class TestRouteAfterEditor:
+    """Test Editor exit routing (accept -> END, reject -> Writer)."""
 
-    def test_no_feedback_goes_to_ml_gate(self):
+    def test_no_feedback_finishes(self):
         state = {"editor_feedback": None}
-        assert route_after_editor_with_ml(state) == "ML_Quality_Gate"
+        assert route_after_editor(state) == END
 
     def test_feedback_below_limit_goes_to_writer(self):
         state = {"editor_feedback": "Improve tone", "loop_step": 1, "revision_count": 1}
-        assert route_after_editor_with_ml(state) == "Writer"
+        assert route_after_editor(state) == "Writer"
 
-    def test_feedback_at_limit_goes_to_ml_gate(self):
+    def test_feedback_at_limit_finishes(self):
+        """Circuit breaker: stop revising and publish rather than loop forever."""
         state = {"editor_feedback": "Still bad", "loop_step": 3, "revision_count": 3}
-        assert route_after_editor_with_ml(state) == "ML_Quality_Gate"
+        assert route_after_editor(state) == END
 
 
 
@@ -129,74 +128,3 @@ class TestSupervisorNode:
         assert "compliance" in COMPLEX_INDICATORS
 
 
-class TestMLGateRouting:
-    """Test ML Quality Gate routing decisions."""
-
-    def test_shadow_mode_always_passes(self):
-        state = {
-            "ml_quality_prediction": {"gate_mode": "shadow", "quality_class": "low", "quality_confidence": 0.99},
-        }
-        assert route_after_ml_gate(state) == "ML_Collector"
-
-    def test_enforce_mode_passes_medium_quality(self):
-        state = {
-            "ml_quality_prediction": {
-                "gate_mode": "enforce",
-                "model_available": True,
-                "quality_class": "medium",
-                "quality_confidence": 0.9,
-            },
-            "revision_count": 0,
-            "retrieval_attempts": 0,
-        }
-        assert route_after_ml_gate(state) == "ML_Collector"
-
-    def test_enforce_mode_blocks_low_retrieval(self):
-        state = {
-            "ml_quality_prediction": {
-                "gate_mode": "enforce",
-                "model_available": True,
-                "quality_class": "low",
-                "quality_confidence": 0.85,
-                "failure_source": "retrieval",
-            },
-            "revision_count": 0,
-            "retrieval_attempts": 0,
-        }
-        assert route_after_ml_gate(state) == "Researcher"
-
-    def test_enforce_mode_blocks_low_generation(self):
-        state = {
-            "ml_quality_prediction": {
-                "gate_mode": "enforce",
-                "model_available": True,
-                "quality_class": "low",
-                "quality_confidence": 0.85,
-                "failure_source": "generation",
-            },
-            "revision_count": 0,
-            "retrieval_attempts": 0,
-        }
-        assert route_after_ml_gate(state) == "Writer"
-
-    def test_enforce_mode_skips_block_at_revision_limit(self):
-        state = {
-            "ml_quality_prediction": {
-                "gate_mode": "enforce",
-                "model_available": True,
-                "quality_class": "low",
-                "quality_confidence": 0.95,
-                "failure_source": "generation",
-            },
-            "revision_count": 2,
-            "retrieval_attempts": 0,
-        }
-        assert route_after_ml_gate(state) == "ML_Collector"
-
-    def test_no_prediction_passes_through(self):
-        state = {"ml_quality_prediction": None}
-        assert route_after_ml_gate(state) == "ML_Collector"
-
-    def test_empty_prediction_passes_through(self):
-        state = {"ml_quality_prediction": {}}
-        assert route_after_ml_gate(state) == "ML_Collector"

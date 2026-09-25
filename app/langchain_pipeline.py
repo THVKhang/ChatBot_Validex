@@ -30,7 +30,8 @@ from langchain_community.cache import SQLAlchemyCache
 import sqlalchemy
 
 from app.cache import response_cache
-from app.config import settings
+from app.llm.provider import extract_text
+from app.config import settings, length_word_bounds
 import re
 if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", settings.pgvector_table):
     raise ValueError(f"Invalid table name format: '{settings.pgvector_table}'. Only alphanumeric characters and underscores are allowed.")
@@ -63,6 +64,72 @@ except Exception:  # pragma: no cover - optional dependency
 
 
 logger = logging.getLogger(__name__)
+
+def _summarize_section_for_history(section_markdown: str, max_points: int = 3) -> str:
+    """Condense a written section to a heading plus its opening sentences.
+
+    Enough for the next section to avoid repeating ground, without re-sending
+    the whole section body on every subsequent call.
+    """
+    lines = (section_markdown or "").strip().split("\n")
+    heading = lines[0].lstrip("# ").strip() if lines else ""
+    body = " ".join(line.strip() for line in lines[1:] if line.strip())
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", body) if s.strip()]
+    points = "; ".join(sentences[:max_points])
+    if len(points) > 400:
+        points = points[:400].rstrip() + "…"
+    return f"- {heading}: {points}" if points else f"- {heading}"
+
+
+_SENTENCE_END_RE = re.compile(r"[.!?][\"')\]]*(?=\s|$)")
+
+
+def _trim_to_last_complete_sentence(text: str) -> str:
+    """Drop a trailing half-sentence, keeping list items and headings intact.
+
+    Model output gets cut mid-sentence when a call is throttled or hits the
+    output-token ceiling. Publishing "...building trust and maintaining" is
+    worse than publishing one sentence less, so trim back to the last full stop.
+    """
+    body = (text or "").rstrip()
+    if not body:
+        return ""
+
+    tail = body.rsplit("\n", 1)[-1].strip()
+    # Bullets and headings legitimately end without terminal punctuation.
+    if tail.startswith(("-", "*", "#", "|", ">")) or tail.endswith(":"):
+        return body
+    if _SENTENCE_END_RE.search(body[-3:] if len(body) >= 3 else body):
+        return body
+
+    matches = list(_SENTENCE_END_RE.finditer(body))
+    if not matches:
+        return body  # nothing complete to fall back to — leave it to the caller
+    return body[: matches[-1].end()].rstrip()
+
+
+def _resolve_last_updated(row: dict[str, Any]) -> str:
+    """Best-effort recency stamp for a knowledge chunk, as an ISO date string.
+
+    Most specific signal first: the legislation's own effective_date, then the
+    Delta Sync verification timestamp, then the ingestion date. The last one
+    matters in practice — effective_date and last_verified_at are only populated
+    by the enrichment and delta-sync paths, so without the created_at fallback
+    RAGEvaluator's freshness dimension would score a constant 0.5 on a corpus
+    that has not been through them.
+    """
+    effective_date = str(row.get("effective_date") or "").strip()
+    if effective_date:
+        return effective_date
+    for key in ("last_verified_at", "created_at"):
+        value = row.get(key)
+        if value:
+            try:
+                return value.isoformat()
+            except AttributeError:
+                return str(value)
+    return ""
+
 
 MISSING_INTERNAL_DATA_TEXT = "Internal data does not currently address this topic."
 SOURCE_LINE_PREFIX = "Source:"
@@ -110,6 +177,11 @@ class PromptParseSchema(BaseModel):
     audience: str = Field(default="general audience")
     length: str = Field(default="medium")
     custom_instructions: str = Field(default="")
+
+
+# Divisor that inflates the per-section word ask. Not a true "delivery ratio":
+# see the note at its use site — the model responds only weakly to this number.
+_MODEL_WORD_DELIVERY = 0.75
 
 
 class LangChainRAGPipeline:
@@ -276,8 +348,8 @@ class LangChainRAGPipeline:
                 "but do NOT dedicate paragraphs or sections to off-topic checks.\n\n"
 
                 "### LENGTH RULES:\n"
-                "- Target 800-1200 words. For 'long' length, target 1200-1800 words.\n"
-                "- NEVER produce fewer than 700 words.\n"
+                "- Obey the WORD BUDGET stated in Custom Instructions — it is the contract the editor grades against.\n"
+                "- Do not pad to reach that budget, and do not overshoot it.\n"
                 "- Every paragraph must add value — no padding, no filler.\n\n"
 
                 "### CONCLUSION:\n"
@@ -1337,7 +1409,10 @@ class LangChainRAGPipeline:
                         "approved": bool(row["approved"]),
                         "score": score,
                         "semantic_score": round(similarity, 4),
-                        "rrf_score": round(rrf_score, 4)
+                        "rrf_score": round(rrf_score, 4),
+                        # RAGEvaluator._score_freshness() reads "last_updated";
+                        # without it every document scored a constant 0.5.
+                        "last_updated": _resolve_last_updated(row),
                     },
                 )
             )
@@ -1386,7 +1461,10 @@ class LangChainRAGPipeline:
     def _retrieve(self, payload: dict) -> RetrievalBundle:
         topic = payload["effective_topic"]
         retrieval_top_k = int(payload.get("retrieval_top_k") or settings.top_k)
-        retrieval_top_k = max(1, min(7, retrieval_top_k))
+        # Ceiling must clear the token planner's own appetite: TOP_K_LONG_MAX is
+        # 12, so a hardcoded 7 capped every long article at roughly half the
+        # context it asked for and made input_budget_sufficient permanently false.
+        retrieval_top_k = max(1, min(settings.top_k_long_max, retrieval_top_k))
         complexity_level = payload.get("complexity_level", "simple")
         
         # Increase initial top_k for reranking buffer
@@ -1414,57 +1492,45 @@ class LangChainRAGPipeline:
         else:
             bundle = self._retrieve_from_local_guard(topic, initial_top_k)
             
-        # Rerank with FlashRank
-        if len(bundle.documents) > retrieval_top_k:
+        # Cross-encoder rerank via the shared singleton in app/reranker.py, which
+        # caches the model across requests and prefers the fine-tuned Validex
+        # reranker when one has been trained.
+        #
+        # Callers that fan out over several expanded queries pass skip_rerank and
+        # rerank the merged pool once instead: reranking every per-query result
+        # set ran the cross-encoder five times per request (~3s each on CPU) and
+        # the first four passes were thrown away by the merge anyway.
+        if payload.get("skip_rerank"):
+            bundle.documents = bundle.documents[:retrieval_top_k]
+        elif len(bundle.documents) > retrieval_top_k:
             try:
-                from flashrank import Ranker, RerankRequest
-                ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir="data/models")
-                passages = []
-                for i, doc in enumerate(bundle.documents):
-                    passages.append({
-                        "id": i,
-                        "text": doc.page_content,
-                        "meta": doc.metadata
-                    })
-                rerankrequest = RerankRequest(query=topic, passages=passages)
-                results = ranker.rerank(rerankrequest)
-                
-                reranked_docs = []
-                for res in results[:retrieval_top_k]:
-                    reranked_docs.append(bundle.documents[res["id"]])
-                
-                bundle.documents = reranked_docs
+                from app.reranker import get_reranker
+
+                doc_dicts = [
+                    {"_index": i, "content": doc.page_content, "doc_id": doc.metadata.get("doc_id", "")}
+                    for i, doc in enumerate(bundle.documents)
+                ]
+                reranked = get_reranker().rerank(topic, doc_dicts, top_k=retrieval_top_k)
+                # rerank() returns the input untouched when no backend is
+                # available, so apply the top_k cut here regardless.
+                bundle.documents = [bundle.documents[d["_index"]] for d in reranked[:retrieval_top_k]]
             except Exception as exc:
                 logger.warning("Reranking failed: %s, falling back to top_k slicing", exc)
                 bundle.documents = bundle.documents[:retrieval_top_k]
-                
-        # Autonomous Web Search Fallback
-        if settings.allow_hybrid_fallback and (len(bundle.documents) == 0 or bundle.decision.status in {"no_match", "low_confidence", "out_of_domain"}):
-            logger.info("pipeline.autonomous_web_search", extra={"topic": topic})
-            try:
-                from ddgs import DDGS
-                with DDGS() as ddgs:
-                    ddg_results = list(ddgs.text(topic, max_results=3))
-                
-                if ddg_results:
-                    bundle.documents = [
-                        Document(
-                            page_content=r.get("body", ""),
-                            metadata={
-                                "doc_id": f"web_{i}",
-                                "title": r.get("title", ""),
-                                "source_url": r.get("href", ""),
-                                "score": 100,
-                                "semantic_score": 1.0,
-                            }
-                        )
-                        for i, r in enumerate(ddg_results)
-                    ]
-                    # Keep original status for diagnostic purposes
-                    bundle.decision.message = "Fallback to Web Search successful"
-                    logger.info("pipeline.autonomous_web_search_success", extra={"results": len(ddg_results)})
-            except Exception as exc:
-                logger.error("DuckDuckGo search failed: %s", exc)
+
+
+        # NOTE: a DuckDuckGo fallback used to run here, populating
+        # bundle.documents on a failed retrieval. It was dead work: retrieval
+        # only feeds generation when decision.status == "ok", and this path is
+        # reached precisely when it is not — so _generate_with_hybrid_fallback()
+        # ran with docs=[] and the fetched snippets were always discarded, at the
+        # cost of a network round-trip per failed query.
+        #
+        # Web search still exists where it is actually wired up: the LangGraph
+        # researcher node (_web_search_with_scraping), whose documents do reach
+        # generation. Feeding unverified snippets into this path instead would
+        # mean citing sources the grounding/citation enforcement never sees —
+        # a product decision, not a cleanup.
 
         logger.info(
             "pipeline.retrieve_done",
@@ -1636,13 +1702,16 @@ class LangChainRAGPipeline:
         doc_id = str(doc.metadata.get("doc_id", "unknown_doc"))
         title = _sanitize_ui_artifacts(str(doc.metadata.get("title", "")).strip()) or doc_id
         source_url = str(doc.metadata.get("source_url", "")).strip()
-        # Sanitize local file paths — never expose internal disk paths
+        # Never expose internal disk paths — and never invent a URL to replace
+        # them. Most of this corpus comes from government PDFs dropped into
+        # data/raw/pdfs/ with no origin URL recorded; pointing those citations at
+        # validex.com.au credited Validex for ACIC and legislation content and
+        # left the reader unable to verify the claim. Cite the document instead.
         if not source_url or source_url.startswith("file://") or source_url.startswith("C:") or source_url.startswith("/"):
-            # Use act_name or title as display reference instead of file path
             act_name = _sanitize_ui_artifacts(str(doc.metadata.get("act_name", "")).strip())
             if act_name:
                 return f"{title} | Ref: {act_name}"
-            return f"{title} | URL: https://www.validex.com.au"
+            return f"{title} | Source document (no public URL on file)"
         return f"{title} | URL: {source_url}"
 
     @classmethod
@@ -1806,15 +1875,18 @@ class LangChainRAGPipeline:
 
         history_instruction = ""
         if draft_history:
-            history_text = "\n\n".join(draft_history)
+            # Only a digest of what came before, never the full prose. Embedding
+            # every previous section verbatim made prompt size grow with the
+            # square of the section count: section 7 re-sent sections 1-6 in
+            # full, for no benefit the digest does not already provide.
+            history_text = "\n\n".join(_summarize_section_for_history(item) for item in draft_history)
             history_instruction = (
-                f"\n\n--- DRAFT HISTORY (What has already been written in previous sections) ---\n"
+                f"\n\n--- ALREADY COVERED IN EARLIER SECTIONS ---\n"
                 f"{history_text}\n"
-                f"--- END DRAFT HISTORY ---\n\n"
+                f"--- END ---\n\n"
                 f"CRITICAL REPETITION RULE:\n"
-                f"- Review the DRAFT HISTORY above.\n"
-                f"- Do NOT repeat any points, facts, numbers, document scores, or conclusions that have already been written.\n"
-                f"- Avoid any overlap in wording or explanations. Each section must cover completely new details.\n"
+                f"- Do NOT repeat any points, facts, numbers, or conclusions listed above.\n"
+                f"- Avoid any overlap in wording or explanations. Cover completely new details.\n"
             )
 
         if is_conclusion:
@@ -1965,6 +2037,126 @@ class LangChainRAGPipeline:
         
         return "\n\n".join(relevant_contents)
 
+    def _generate_all_sections_in_one_call(
+        self,
+        parsed: ParsedPrompt,
+        outline: list[str],
+        docs: list[Document],
+        *,
+        min_words: int,
+        target_words: int,
+        max_words: int,
+    ) -> dict[str, str] | None:
+        """Write every section in a single LLM call; return heading -> body.
+
+        Returns None when the call fails or the response cannot be split back
+        into the requested headings, so the caller can fall back to per-section
+        generation.
+        """
+        if self._llm is None or not outline:
+            return None
+
+        context_text = self._format_context(docs)
+        # target_words used to be len(outline) * 170, so the requested length
+        # profile had no effect here at all and every profile landed near 1000
+        # words. It now comes from config.length_word_bounds via the caller.
+        #
+        # A per-section band is far more effective than a total word count:
+        # asked only for a total, the model spread ~520 words across 7 sections
+        # and every one came out thin. The band is two-sided because a bare
+        # floor ("at least N words") made every draft overshoot its ceiling.
+        per_section = max(60, round(target_words / max(1, len(outline))))
+        # Compensation for the model's under-delivery. Measured honestly, the
+        # per-section ask is a WEAK lever: raising it from ~115 to ~150 words
+        # moved actual output only from 75 to 78 words per section. Section
+        # count is what really sets length (4/6/8 sections -> ~320/573/978
+        # words). This constant is kept because it nudges output the right way,
+        # not because output tracks it proportionally.
+        per_section_ask = round(per_section / _MODEL_WORD_DELIVERY)
+        sec_lo, sec_hi = round(per_section_ask * 0.9), round(per_section_ask * 1.15)
+        paragraphs_per_section = max(2, round(per_section / 55))
+        headings_block = "\n".join(
+            f"## {heading}   ({sec_lo}-{sec_hi} words)" for heading in outline
+        )
+        # Whatever the writer node put in custom_instructions — the word budget,
+        # the editor's rejection feedback on a revision, a non-English language
+        # instruction — reached nothing before this. This is the only live
+        # generation path and it never read the field.
+        custom_block = (
+            "ADDITIONAL INSTRUCTIONS (these override the defaults below):\n"
+            f"{parsed.custom_instructions}\n\n"
+            if getattr(parsed, "custom_instructions", "")
+            else ""
+        )
+
+        prompt = (
+            "You are a professional Australian compliance writer for validex.com.au.\n\n"
+            f"Write a complete blog post of about {target_words} words in total.\n"
+            f"HARD LIMIT: the article is rejected below {min_words} words or above "
+            f"{max_words} words. Prefer cutting detail over exceeding {max_words}.\n\n"
+            f"TITLE: {format_title(parsed.topic)}\n"
+            f"USER REQUEST: {parsed.raw_prompt}\n\n"
+            f"{custom_block}"
+            "SECTIONS — use these exact H2 headings, in this order, and write every one.\n"
+            f"Every section must land between {sec_lo} and {sec_hi} words. Both a thin "
+            "section and an over-long one are failures:\n"
+            f"{headings_block}\n"
+            "Use these H2 headings EXACTLY as written above, in English, even if the "
+            "body text is in another language.\n\n"
+            "VERIFIED CONTEXT — every factual claim must come from here:\n"
+            f"{context_text}\n\n"
+            "RULES:\n"
+            f"- Australian English. Audience: {parsed.audience}. Tone: {parsed.tone}.\n"
+            # The editor gates on Flesch-Kincaid <= 12 and on repeated phrases.
+            # Vague guidance ("short sentences") let a longer draft drift to
+            # FK 12.3 with four repeated phrases, costing two revision cycles;
+            # concrete, countable limits are what the model can actually follow.
+            "- READABILITY (CRITICAL — the draft is rejected if it fails):\n"
+            "  * Maximum 20 words per sentence. Split anything longer into two.\n"
+            "  * Prefer one- and two-syllable words. Replace jargon with plain English.\n"
+            "  * Active voice only. No nominalisations ('provides verification of' -> 'verifies').\n"
+            "- NO REPEATED PHRASES: never reuse any run of 4+ words anywhere in the\n"
+            "  article. Vary how you refer to recurring concepts instead of repeating\n"
+            "  the same stock phrase in every section.\n"
+            f"- Each section: exactly {paragraphs_per_section} paragraphs, each at "
+            "least 40 words. Use '- ' bullet lists for steps.\n"
+            "- Do NOT repeat facts, numbers or conclusions between sections.\n"
+            "- Only cite these Acts if relevant: Crimes Act, Privacy Act, Spent Convictions Act.\n"
+            "- Never alter legal facts, fees or point systems to fit the user's assumptions.\n"
+            f'- If the context does not support a claim, write exactly: "{MISSING_INTERNAL_DATA_TEXT}"\n'
+            "- Every section MUST end with a complete sentence.\n"
+            "- Output Markdown only. No preamble, no commentary, no code fences.\n"
+        )
+
+        try:
+            response = self._llm.invoke(prompt)
+            raw = extract_text(response).strip()
+        except Exception as exc:
+            logger.warning("Single-pass generation failed: %s", exc)
+            return None
+
+        if not raw:
+            return None
+
+        raw = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", raw.strip())
+
+        # Split on the H2 headings and match them back to the requested outline,
+        # tolerating the model's casing/punctuation drift.
+        parts = re.split(r"(?m)^##\s+(.+?)\s*$", raw)
+        if len(parts) < 3:
+            return None
+
+        def _key(text: str) -> str:
+            return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+        wanted = {_key(heading): heading for heading in outline}
+        sections: dict[str, str] = {}
+        for index in range(1, len(parts) - 1, 2):
+            heading = wanted.get(_key(parts[index]))
+            if heading:
+                sections[heading] = parts[index + 1].strip()
+        return sections or None
+
     def _generate_with_chunked_sections(
         self,
         parsed: ParsedPrompt,
@@ -1991,6 +2183,7 @@ class LangChainRAGPipeline:
         # Phase 1: Build outline
         from app.generator import _build_topic_aware_outline, format_title
         outline = _build_topic_aware_outline(parsed)
+        min_words, target_words, max_words = length_word_bounds(parsed.length)
         title = format_title(parsed.topic)
         context_text = self._format_context(docs)
 
@@ -2003,37 +2196,69 @@ class LangChainRAGPipeline:
         results: dict[str, str] = {}
         draft_history: list[str] = []
 
-        for heading in outline:
+        # Fast path: one call for the whole article. Measured at 4.83s for a
+        # ~900-word piece, versus one call per section (7+) that also had to
+        # re-send the earlier sections as anti-repetition context. Writing the
+        # article in a single pass also removes cross-section repetition at the
+        # source instead of policing it afterwards.
+        if getattr(settings, "single_pass_generation", True):
+            single = self._generate_all_sections_in_one_call(
+                parsed,
+                outline,
+                docs,
+                min_words=min_words,
+                target_words=target_words,
+                max_words=max_words,
+            )
+            if single:
+                missing = [h for h in outline if h not in single]
+                if len(missing) <= len(outline) // 2:
+                    for heading in outline:
+                        body = _trim_to_last_complete_sentence(single.get(heading, "").strip())
+                        if body and len(body.split()) >= 25:
+                            results[heading] = body
+                        else:
+                            hard_failure_count += 1
+                    logger.info(
+                        "pipeline.single_pass_generation_ok",
+                        extra={"sections": len(results), "elapsed_seconds": round(_time.time() - t_start, 2)},
+                    )
+                else:
+                    logger.warning(
+                        "Single-pass returned only %d/%d sections, falling back to per-section",
+                        len(single), len(outline),
+                    )
+
+        for heading in outline if not results else []:
             sharded_context = self._shard_context_for_section(heading, docs, max_docs=2)
             prompt_text = self._build_section_prompt(
                 parsed, heading, scope_map[heading], sharded_context, draft_history=draft_history
             )
+            # One call per section. self._llm is a ResilientLLM that already
+            # retries and falls back internally; wrapping it in another 3-attempt
+            # loop multiplied out to up to 12 API calls per section and was the
+            # main driver of the self-inflicted 429/503 storm.
             body = None
-            for attempt in range(3):
-                try:
-                    response = self._llm.invoke(prompt_text)
-                    body = str(getattr(response, "content", "") or "").strip()
-                    if body and len(body.split()) >= 25:
-                        break
-                    if attempt < 2:
-                        _time.sleep(1.0)
-                except Exception as exc:
-                    import logging
-                    logging.getLogger("app.langchain_pipeline").error(f"Sequential generation failed for '{heading}': {exc}")
-                    if attempt < 2:
-                        _time.sleep(1.0)
+            try:
+                response = self._llm.invoke(prompt_text)
+                body = extract_text(response).strip()
+            except Exception as exc:
+                logger.error("Section generation failed for '%s': %s", heading, exc)
 
-            if body is not None:
+            # A section cut off mid-sentence is worse than a shorter one: trim
+            # back to the last complete sentence so nothing half-written ships.
+            body = _trim_to_last_complete_sentence(body) if body else ""
+
+            if body and len(body.split()) >= 25:
                 results[heading] = body
                 draft_history.append(f"## {heading}\n\n{body}")
             else:
+                # Drop the section rather than padding it with filler prose. The
+                # old placeholder ("The integration of ... ensures comprehensive
+                # operational reliability") was meaningless text being published
+                # as if it were researched content.
                 hard_failure_count += 1
-                fallback_body = (
-                    f"The integration of {heading.lower()} into the {parsed.topic} "
-                    f"framework ensures comprehensive operational reliability."
-                )
-                results[heading] = fallback_body
-                draft_history.append(f"## {heading}\n\n{fallback_body}")
+                logger.warning("Dropping section '%s' (no usable body)", heading)
 
         elapsed = _time.time() - t_start
         logger.info(
@@ -2356,7 +2581,7 @@ class LangChainRAGPipeline:
             self._log_raw_llm_exchange("markdown_direct_error", llm_instruction, f"ERROR: {exc}")
             return None
 
-        raw = str(getattr(response, "content", "") or "").strip()
+        raw = extract_text(response).strip()
         self._log_raw_llm_exchange("markdown_direct", llm_instruction, raw)
         if not raw:
             self._record_llm_failure(llm_trace, "markdown_direct", "empty_response")
@@ -2540,7 +2765,7 @@ class LangChainRAGPipeline:
             self._log_raw_llm_exchange("json_output_error", llm_instruction, f"ERROR: {exc}")
             return None
 
-        raw = getattr(response, "content", "")
+        raw = extract_text(response)
         if not isinstance(raw, str):
             self._record_llm_failure(llm_trace, "json_output", "non_string_response")
             return None
